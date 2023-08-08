@@ -1006,6 +1006,17 @@ static int cf_check init_header(struct pci_dev *pdev)
     if ( rc )
         return rc;
 
+    rc = vpci_add_register(pdev->vpci, vpci_hw_read8,
+                           is_hwdom ? vpci_hw_write8 : NULL, PCI_INTERRUPT_LINE,
+                           1, NULL);
+    if ( rc )
+        return rc;
+
+    rc = vpci_add_register(pdev->vpci, vpci_hw_read8, NULL, PCI_INTERRUPT_PIN,
+                           1, NULL);
+    if ( rc )
+        return rc;
+
     if ( type == PCI_HEADER_TYPE_NORMAL )
     {
         rc = vpci_add_register(pdev->vpci,
@@ -1023,21 +1034,7 @@ static int cf_check init_header(struct pci_dev *pdev)
                                PCI_SUBSYSTEM_ID, 2, NULL);
         if ( rc )
             return rc;
-    }
 
-    rc = vpci_add_register(pdev->vpci, vpci_hw_read8,
-                           is_hwdom ? vpci_hw_write8 : NULL, PCI_INTERRUPT_LINE,
-                           1, NULL);
-    if ( rc )
-        return rc;
-
-    rc = vpci_add_register(pdev->vpci, vpci_hw_read8, NULL, PCI_INTERRUPT_PIN,
-                           1, NULL);
-    if ( rc )
-        return rc;
-
-    if ( type == PCI_HEADER_TYPE_NORMAL )
-    {
         rc = vpci_add_register(pdev->vpci, vpci_hw_read8, NULL, PCI_MIN_GNT,
                                1, NULL);
         if ( rc )
