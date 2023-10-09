@@ -34,6 +34,16 @@ static int vpci_mmio_read(struct vcpu *v, mmio_info_t *info, register_t *r,
     /* data is needed to prevent a pointer cast on 32bit */
     unsigned long data;
 
+    /*
+     * vpci_access_allowed() lets the hardware domain make unaligned
+     * accesses, but the Arm config space accessors cannot carry them out.
+     */
+    if ( !IS_ALIGNED(info->gpa, 1U << info->dabt.size) )
+    {
+        *r = invalid;
+        return 0;
+    }
+
     if ( vpci_ecam_read(sbdf, ECAM_REG_OFFSET(info->gpa),
                         1U << info->dabt.size, &data) )
     {
@@ -71,6 +81,10 @@ static int vpci_mmio_read_child(struct vcpu *v, mmio_info_t *info,
 static int vpci_mmio_write(struct vcpu *v, mmio_info_t *info, register_t r,
                            pci_sbdf_t sbdf)
 {
+    /* See vpci_mmio_read(). */
+    if ( !IS_ALIGNED(info->gpa, 1U << info->dabt.size) )
+        return 0;
+
     return vpci_ecam_write(sbdf, ECAM_REG_OFFSET(info->gpa),
                            1U << info->dabt.size, r);
 }
