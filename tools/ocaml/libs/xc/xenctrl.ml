@@ -46,7 +46,6 @@ type x86_arch_emulation_flags =
   | X86_EMU_IOMMU
   | X86_EMU_PIT
   | X86_EMU_USE_PIRQ
-  | X86_EMU_VPCI
 
 type x86_arch_misc_flags =
   | X86_MSR_RELAXED
@@ -71,7 +70,11 @@ type domain_create_flag =
   | CDF_NESTED_VIRT
   | CDF_VPMU
   | CDF_TRAP_UNMAPPED_ACCESSES
+<<<<<<< HEAD
   | CDF_VNUMA_APIC_TOPOLOGY
+=======
+  | CDF_VPCI
+>>>>>>> b1b4ff209c (xen/vpci: move xen_domctl_createdomain vPCI flag to common)
 
 type domain_create_iommu_opts =
   | IOMMU_NO_SHAREPT
