@@ -801,6 +801,7 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
     bool hap = config->flags & XEN_DOMCTL_CDF_hap;
     bool iommu = config->flags & XEN_DOMCTL_CDF_iommu;
     bool vpmu = config->flags & XEN_DOMCTL_CDF_vpmu;
+    bool vpci = config->flags & XEN_DOMCTL_CDF_vpci;
     bool vnuma_apic_topology = config->flags & XEN_DOMCTL_CDF_vnuma_apic_topology;
 
     if ( config->flags &
@@ -808,7 +809,7 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
            XEN_DOMCTL_CDF_s3_integrity | XEN_DOMCTL_CDF_oos_off |
            XEN_DOMCTL_CDF_xs_domain | XEN_DOMCTL_CDF_iommu |
            XEN_DOMCTL_CDF_nested_virt | XEN_DOMCTL_CDF_vpmu |
-           XEN_DOMCTL_CDF_trap_unmapped_accesses |
+           XEN_DOMCTL_CDF_trap_unmapped_accesses | XEN_DOMCTL_CDF_vpci |
            XEN_DOMCTL_CDF_vnuma_apic_topology) )
     {
         dprintk(XENLOG_INFO, "Unknown CDF flags %#x\n", config->flags);
@@ -874,6 +875,18 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
     if ( vpmu && !vpmu_is_available )
     {
         dprintk(XENLOG_INFO, "vpmu requested but cannot be enabled this way\n");
+        return -EINVAL;
+    }
+
+    if ( vpci && !IS_ENABLED(CONFIG_HAS_VPCI) )
+    {
+        dprintk(XENLOG_INFO, "vPCI requested but not enabled\n");
+        return -EINVAL;
+    }
+
+    if ( vpci && !hvm )
+    {
+        dprintk(XENLOG_INFO, "vPCI requested for non-HVM guest\n");
         return -EINVAL;
     }
 

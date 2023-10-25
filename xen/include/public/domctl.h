@@ -68,6 +68,8 @@ struct xen_domctl_createdomain {
 #define XEN_DOMCTL_CDF_vpmu           (1U << 7)
 /* Should we trap guest accesses to unmapped addresses? */
 #define XEN_DOMCTL_CDF_trap_unmapped_accesses  (1U << 8)
+/* Should vPCI be enabled for the guest? */
+#define XEN_DOMCTL_CDF_vpci           (1U << 9)
 
 /*
  * Should Xen use vNUMA-derived APIC ID encoding for this domain?
