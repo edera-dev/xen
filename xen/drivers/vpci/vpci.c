@@ -732,7 +732,7 @@ uint32_t vpci_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int size)
      * pci_lock is sufficient.
      */
     read_lock(&d->pci_lock);
-    if ( is_hardware_domain(d) )
+    if ( !has_vpci_bridge(d) )
     {
         pdev = pci_get_pdev(d, sbdf);
         if ( !pdev )
@@ -859,7 +859,7 @@ void vpci_write(pci_sbdf_t sbdf, unsigned int reg, unsigned int size,
      * are modifying BARs, so there is a room for improvement.
      */
     write_lock(&d->pci_lock);
-    if ( is_hardware_domain(d) )
+    if ( !has_vpci_bridge(d) )
     {
         pdev = pci_get_pdev(d, sbdf);
         if ( !pdev )
