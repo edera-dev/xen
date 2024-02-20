@@ -1624,6 +1624,14 @@ int __init make_vpci_node(struct domain *d, void *fdt)
         res = dt_for_each_range(bridge->dt_node, handle_vpci_range, &vpci);
         if ( res < 0 )
             return -EINVAL;
+
+#if CONFIG_EARLY_UART_BASE_ADDRESS == 0x9000000
+        /* qemu pci-scan=yes hack */
+        vpci.vpci_mem_base = 0x10000000;
+        vpci.vpci_mem_size = 0x2eff0000;
+        vpci.vpci_mem_prefetch_base = 0x8000000000ULL;
+        vpci.vpci_mem_prefetch_size = 0x8000000000ULL;
+#endif
     }
 
     snprintf(buf, sizeof(buf), "pcie@%"PRIx64, vpci.vpci_ecam_base);
