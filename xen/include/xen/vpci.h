@@ -32,6 +32,12 @@ uint32_t vpci_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int size);
 void vpci_write(pci_sbdf_t sbdf, unsigned int reg, unsigned int size,
                 uint32_t data);
 
+void cf_check vpci_guest_mem_bar_write(const struct pci_dev *pdev,
+                                       unsigned int reg, uint32_t val,
+                                       void *data);
+uint32_t cf_check vpci_guest_mem_bar_read(const struct pci_dev *pdev,
+                                          unsigned int reg, void *data);
+
 /*
  * Check for pending vPCI operations on this vcpu. Returns true if the vcpu
  * should not run.
