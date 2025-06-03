@@ -159,7 +159,7 @@ static int vpci_ext_capability_hide(
     return 0;
 }
 
-static int vpci_init_capability_list(struct pci_dev *pdev)
+int vpci_init_capability_list(struct pci_dev *pdev)
 {
     int rc;
     bool mask_cap_list = false;
