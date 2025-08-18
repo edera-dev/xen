@@ -459,14 +459,15 @@ int vpci_modify_bars(const struct pci_dev *pdev, uint16_t cmd,
             }
         }
 
-        rc = pci_sanitize_bar_memory(mem);
-        if ( rc )
-        {
-            gprintk(XENLOG_WARNING,
-                    "%pp: failed to sanitize BAR#%u memory: %d\n",
-                    &pdev->sbdf, i, rc);
-            destroy_map_task(task);
-            return rc;
+        if (is_hardware_domain(pdev->domain)) {
+            rc = pci_sanitize_bar_memory(mem);
+            if ( rc )
+            {
+                gprintk(XENLOG_WARNING,
+                        "%pp: failed to sanitize BAR#%u memory: %d\n",
+                        &pdev->sbdf, i, rc);
+                return rc;
+            }
         }
     }
 
