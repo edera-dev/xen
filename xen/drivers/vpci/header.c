@@ -1165,6 +1165,18 @@ int vpci_init_header(struct pci_dev *pdev)
         bars[i].size = size;
         bars[i].prefetchable = val & PCI_BASE_ADDRESS_MEM_PREFETCH;
 
+        if ( !is_hwdom )
+        {
+            int rc = iomem_permit_access(pdev->domain,
+                                        PFN_DOWN(addr),
+                                        PFN_DOWN(addr + size - 1));
+            if ( rc )
+            {
+                printk(XENLOG_WARNING "Failed to grant MMIO access for BAR%d: %d\n", i, rc);
+                goto fail;
+            }
+        }
+
         rc = vpci_add_register(pdev->vpci,
                                is_hwdom ? vpci_hw_read32
                                         : vpci_guest_mem_bar_read,
@@ -1188,6 +1200,18 @@ int vpci_init_header(struct pci_dev *pdev)
         rom->guest_addr = is_hwdom ? addr : 0;
         header->rom_enabled = pci_conf_read32(pdev->sbdf, rom_reg) &
                               PCI_ROM_ADDRESS_ENABLE;
+
+        if ( !is_hwdom )
+        {
+            int rc = iomem_permit_access(pdev->domain,
+                                        PFN_DOWN(addr),
+                                        PFN_DOWN(addr + size - 1));
+            if ( rc )
+            {
+                printk(XENLOG_WARNING "Failed to grant MMIO access for ROM BAR: %d\n", rc);
+                goto fail;
+            }
+        }
 
         rc = vpci_add_register(pdev->vpci, vpci_hw_read32, rom_write, rom_reg,
                                4, rom);
