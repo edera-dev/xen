@@ -61,9 +61,9 @@ static int cf_check init_rebar(struct pci_dev *pdev)
 
     if ( !is_hardware_domain(pdev->domain) )
     {
-        printk(XENLOG_ERR "%pp: resizable BARs unsupported for unpriv %pd\n",
+        printk(XENLOG_WARNING "%pp: resizable BARs unsupported for unpriv %pd\n",
                &pdev->sbdf, pdev->domain);
-        return -EOPNOTSUPP;
+        return 0;
     }
 
     ctrl = pci_conf_read32(pdev->sbdf, rebar_offset + PCI_REBAR_CTRL(0));
