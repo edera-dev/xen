@@ -494,6 +494,14 @@ struct domain *alloc_domain_struct(void)
     d = alloc_xenheap_pages(0, MEMF_bits(bits));
     if ( d != NULL )
         clear_page(d);
+
+#ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
+    /* vpci: ensure PCI_SBDF(0,0,0,0) is reserved, we don't want userspace
+     * applications confused about a device at that address
+     */
+    __set_bit(0, &d->vpci_dev_assigned_map);
+#endif
+
     return d;
 }
 
