@@ -739,7 +739,7 @@ static uint64_t read_pci_mem_bar(const struct pci_dev *pdev, uint8_t bir,
     return (addr & PCI_BASE_ADDRESS_MEM_MASK) + disp;
 }
 
-#define is_msix_capable_domain(d) (is_hardware_domain(d) || has_vpci(d))
+#define is_msix_capable_domain(d) (is_hardware_domain(d) || (has_vpci(d) && iommu_intremap != iommu_intremap_off))
 
 /**
  * msix_capability_init - configure device's MSI-X capability
