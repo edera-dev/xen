@@ -37,6 +37,7 @@
 #include <xen/iommu.h>
 #include <xsm/xsm.h>
 #include <xen/vpci.h>
+#include <xen/domain.h>
 
 static int8_t __ro_after_init use_msi = -1;
 boolean_param("msi", use_msi);
@@ -740,6 +741,8 @@ static uint64_t read_pci_mem_bar(pci_sbdf_t sbdf, uint8_t bir, int vf,
     return (addr & PCI_BASE_ADDRESS_MEM_MASK) + disp;
 }
 
+#define is_msix_capable_domain(d) (is_hardware_domain(d) || has_vpci(d))
+
 /**
  * msix_capability_init - configure device's MSI-X capability
  * @dev: pointer to the pci_dev data structure of MSI-X device function
@@ -806,7 +809,7 @@ static int msix_capability_init(struct pci_dev *dev,
     table_offset = pci_conf_read32(dev->sbdf, msix_table_offset_reg(pos));
     if ( !msix->used_entries &&
          (!msi ||
-          (is_hardware_domain(current->domain) &&
+          (is_msix_capable_domain(current->domain) &&
            (dev->domain == current->domain || dev->domain == dom_io))) )
     {
         unsigned int bir = table_offset & PCI_MSIX_BIRMASK, pbus, pslot, pfunc;
@@ -972,15 +975,15 @@ static int msix_capability_init(struct pci_dev *dev,
             struct domain *currd = current->domain;
             struct domain *d = dev->domain ?: currd;
 
-            if ( !is_hardware_domain(currd) || d != currd )
+            if ( !is_msix_capable_domain(currd) || d != currd )
                 printk("%s use of MSI-X on %pp by %pd\n",
                        is_hardware_domain(currd)
                        ? XENLOG_WARNING "Potentially insecure"
                        : XENLOG_ERR "Insecure",
                        &dev->sbdf, d);
-            if ( !is_hardware_domain(d) &&
+            if ( !is_msix_capable_domain(d) &&
                  /* Assume a domain without memory has no mappings yet. */
-                 (!is_hardware_domain(currd) || domain_tot_pages(d)) )
+                 (!is_msix_capable_domain(currd) || domain_tot_pages(d)) )
                 domain_crash(d);
             /* XXX How to deal with existing mappings? */
         }
