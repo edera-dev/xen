@@ -17,6 +17,7 @@
  * License along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <xen/iocap.h>
 #include <xen/sched.h>
 #include <xen/vpci.h>
 
@@ -233,6 +234,7 @@ static int vf_init_header(struct pci_dev *vf_pdev)
 #ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
     if ( pf_pdev->domain != vf_pdev->domain /* TODO: !hw_dom? */)
     {
+        uint32_t cid = pci_conf_read32(pf_pdev->sbdf, PCI_CLASS_REVISION);
         uint16_t vid = pci_conf_read16(pf_pdev->sbdf, PCI_VENDOR_ID);
         uint16_t did = pci_conf_read16(pf_pdev->sbdf, sriov_pos + PCI_SRIOV_VF_DID);
         struct vpci_bar *bars = vf_pdev->vpci->header.bars;
@@ -247,6 +249,12 @@ static int vf_init_header(struct pci_dev *vf_pdev)
         rc = vpci_add_register(vf_pdev->vpci, vpci_read_val, NULL,
                                PCI_DEVICE_ID, 2,
                                (void *)(uintptr_t)did);
+        if ( rc )
+            return rc;
+
+        rc = vpci_add_register(vf_pdev->vpci, vpci_read_val, NULL,
+                               PCI_CLASS_REVISION, 4,
+                               (void *)(uintptr_t)cid);
         if ( rc )
             return rc;
 
@@ -278,6 +286,15 @@ static int vf_init_header(struct pci_dev *vf_pdev)
 
         for ( i = 0; i < PCI_SRIOV_NUM_BARS; i++ )
         {
+            rc = iomem_permit_access(vf_pdev->domain,
+                                     PFN_DOWN(bars[i].addr),
+                                     PFN_DOWN(bars[i].addr + bars[i].size - 1));
+            if ( rc )
+            {
+                printk(XENLOG_WARNING "Failed to grant MMIO access for VF BAR%d: %d\n", i, rc);
+                return rc;
+            }
+
             switch ( pf_pdev->vpci->sriov->vf_bars[i].type )
             {
             case VPCI_BAR_MEM32:
