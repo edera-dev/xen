@@ -228,6 +228,13 @@ static int vf_init_header(struct pci_dev *vf_pdev)
     pf_pdev = vf_pdev->pf_pdev;
     ASSERT(pf_pdev);
 
+    /*
+     * If dom0 is not PVH, we can't do SR-IOV, because the PF will not have
+     * vpci initialized.
+     */
+    if ( !pf_pdev->vpci )
+        return -EOPNOTSUPP;
+
     sriov_pos = pci_find_ext_capability(pf_pdev->sbdf, PCI_EXT_CAP_ID_SRIOV);
     ctrl = pci_conf_read16(pf_pdev->sbdf, sriov_pos + PCI_SRIOV_CTRL);
 
