@@ -21,6 +21,7 @@
 #include <xen/lib.h>
 #include <xen/sched.h>
 #include <xen/softirq.h>
+#include <xen/pci.h>
 #include <xen/vpci.h>
 
 #include <xsm/xsm.h>
@@ -210,7 +211,7 @@ static bool vpci_process_map_task(struct vpci_map_task *task)
                             false);
             spin_unlock(&pdev->vpci->lock);
 
-            if ( !is_hardware_domain(task->domain) )
+            if ( !is_hwdom_or_vpci(task->domain) )
                 domain_crash(task->domain);
 
             return false;

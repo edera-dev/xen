@@ -298,4 +298,6 @@ static inline int arch_pci_clean_pirqs(struct domain *d)
 }
 #endif /* CONFIG_HVM */
 
+#define is_hwdom_or_vpci(d) (is_hardware_domain(d) || (has_vpci(d) && iommu_intremap != iommu_intremap_off))
+
 #endif /* __XEN_PCI_H__ */
