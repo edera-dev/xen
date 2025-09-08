@@ -340,7 +340,7 @@ static int vf_init_header(struct pci_dev *vf_pdev)
     return rc;
 }
 
-static int init_sriov(struct pci_dev *pdev)
+static int cf_check init_sriov(struct pci_dev *pdev)
 {
     unsigned int pos;
 
