@@ -213,7 +213,7 @@ static uint32_t cf_check vf_cmd_read(
 }
 #endif /* CONFIG_HAS_VPCI_GUEST_SUPPORT */
 
-static int vf_init_header(struct pci_dev *vf_pdev)
+int vf_init_header(struct pci_dev *vf_pdev)
 {
     const struct pci_dev *pf_pdev;
     unsigned int sriov_pos;
