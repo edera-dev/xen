@@ -45,6 +45,7 @@ typedef struct {
     REGISTER_VPCI_CAPABILITY(PCI_EXT_CAP_ID_##name, name, finit, fclean, true)
 
 int __must_check vpci_init_header(struct pci_dev *pdev);
+int __must_check vf_init_header(struct pci_dev *vf_pdev);
 
 /* Assign vPCI to device by adding handlers. */
 int __must_check vpci_assign_device(struct pci_dev *pdev);

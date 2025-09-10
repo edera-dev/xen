@@ -402,7 +402,11 @@ int vpci_assign_device(struct pci_dev *pdev)
         goto out;
 #endif
 
-    rc = vpci_init_header(pdev);
+    if ( !pdev->info.is_virtfn )
+        rc = vpci_init_header(pdev);
+    else
+        rc = vf_init_header(pdev);
+
     if ( rc )
         goto out;
 
