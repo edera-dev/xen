@@ -14,6 +14,7 @@
 
 #include <xen/acpi.h>
 #include <xen/dmi.h>
+#include <xen/efi.h>
 #include <xen/init.h>
 #include <xen/mm.h>
 #include <xen/param.h>
@@ -346,6 +347,13 @@ static int __init is_mmconf_reserved(
         if (size < (16UL<<20))
             break;
     }
+
+    /* MCFG area is reserved directly by ACPI PNP resources per PCI firmware
+     * specification revision 3.3.  if we are booting on EFI, we assume that
+     * this is the case.
+     */
+    if ( efi_enabled(EFI_BOOT) )
+        return 1;
 
     if (size >= (16UL<<20) || size == old_size) {
         printk(KERN_NOTICE "PCI: MCFG area at %lx reserved in E820\n", addr);
