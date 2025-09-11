@@ -238,6 +238,10 @@ int vf_init_header(struct pci_dev *vf_pdev)
     sriov_pos = pci_find_ext_capability(pf_pdev->sbdf, PCI_EXT_CAP_ID_SRIOV);
     ctrl = pci_conf_read16(pf_pdev->sbdf, sriov_pos + PCI_SRIOV_CTRL);
 
+    if ( !pf_pdev->vpci->sriov )
+        panic("SR-IOV not initialized for PF %pp (VF %pp), sriov_pos=%x ctrl=%x\n",
+              &pf_pdev->sbdf, &vf_pdev->sbdf, sriov_pos, ctrl);
+
 #ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
     if ( pf_pdev->domain != vf_pdev->domain /* TODO: !hw_dom? */)
     {
