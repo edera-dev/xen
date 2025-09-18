@@ -268,15 +268,24 @@ bool __initdata opt_dom0_shadow;
 bool __initdata opt_dom0_pvh = !IS_ENABLED(CONFIG_PV);
 bool __initdata opt_dom0_verbose = IS_ENABLED(CONFIG_VERBOSE_DEBUG);
 bool __initdata opt_dom0_msr_relaxed;
+bool __initdata opt_dom0_pvh_auto = false;
 
 int __init parse_arch_dom0_param(const char *s, const char *e)
 {
     int val;
 
     if ( IS_ENABLED(CONFIG_PV) && !cmdline_strcmp(s, "pv") )
+    {
+        opt_dom0_pvh_auto = false;
         opt_dom0_pvh = false;
+    }
     else if ( IS_ENABLED(CONFIG_HVM) && !cmdline_strcmp(s, "pvh") )
+    {
+        opt_dom0_pvh_auto = false;
         opt_dom0_pvh = true;
+    }
+    else if ( !cmdline_strcmp(s, "pvh-auto") )
+        opt_dom0_pvh_auto = true;
 #ifdef CONFIG_SHADOW_PAGING
     else if ( (val = parse_boolean("shadow", s, e)) >= 0 )
         opt_dom0_shadow = val;
