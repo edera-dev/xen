@@ -2206,6 +2206,20 @@ void asmlinkage __init noreturn __start_xen(void)
     }
 
     /*
+     * We now know enough to determine whether or not we should use PVH, so
+     * opportunistically upgrade if dom0=pvh-auto has been provided on the
+     * Xen command-line.
+     */
+    if ( opt_dom0_pvh_auto )
+    {
+        opt_dom0_pvh = iommu_enabled && hvm_enabled;
+
+        if ( !opt_dom0_pvh )
+            printk(XENLOG_WARNING "Unable to use PVH mode (iommu: %d, hvm: %d)\n",
+                   iommu_enabled, hvm_enabled);
+    }
+
+    /*
      * We're going to setup domain0 using the module(s) that we stashed safely
      * above our heap. The second module, if present, is an initrd ramdisk.
      */
