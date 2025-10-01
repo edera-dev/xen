@@ -80,8 +80,10 @@ endef
 # Dynamically linked OCaml libraries ("plugins" in Dynlink parlance)
 # need to compile an .cmxs file
 define OCAML_DYN_LIBRARY_template
+ifneq ($(nosharedlibs),y)
  $(1).cmxs: $(1).cmxa
 	$(call mk-caml-shared-lib-native,$$@, $(1).cmxa)
+endif
  $(1).cmxa: lib$(1)_stubs.a $(foreach obj,$($(1)_OBJS),$(obj).cmx)
 	$(call mk-caml-lib-native,$$@, -cclib -l$(1)_stubs $(foreach lib,$(LIBS_$(1)),-cclib $(lib)), $(foreach obj,$($(1)_OBJS),$(obj).cmx))
  $(1)_stubs.a: $(foreach obj,$$($(1)_C_OBJS),$(obj).o)
