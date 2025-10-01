@@ -9,7 +9,10 @@ OCAMLINCLUDE += -I ./ -I ../
 
 OBJS = domain_getinfo_v1
 INTF = $(foreach obj, $(OBJS),$(obj).cmi)
-LIBS = domain_getinfo_v1.cmxa domain_getinfo_v1.cmxs
+LIBS = domain_getinfo_v1.cmxa
+ifneq ($(nosharedlibs),y)
+LIBS += domain_getinfo_v1.cmxs
+endif
 
 LIBS_domain_getinfo_v1 = $(call xenlibs-ldflags-ldlibs,ctrl)
 
