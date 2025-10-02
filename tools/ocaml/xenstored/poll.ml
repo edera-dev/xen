@@ -30,8 +30,10 @@ external set_fd_limit: int -> unit = "stub_set_fd_limit"
 let get_sys_fs_nr_open () =
   try
     let ch = open_in "/proc/sys/fs/nr_open" in
-    let v = Utils.int_of_string_exn (input_line ch) in
-    close_in_noerr ch; v
+    let line = input_line ch in
+    close_in_noerr ch;
+    let trimmed = String.trim line in
+    int_of_string trimmed
   with _ -> 1024 * 1024
 
 let init_event () = {read = false; write = false; except = false}
