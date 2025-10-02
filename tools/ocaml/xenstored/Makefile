@@ -18,12 +18,10 @@ OCAMLINCLUDE += \
 	-I $(OCAML_TOPLEVEL)/libs/eventchn \
 	-I $(OCAML_TOPLEVEL)/libs/xsd_glue
 
-LIBS = syslog.cma syslog.cmxa poll.cma poll.cmxa
+LIBS = syslog.cma syslog.cmxa
 syslog_OBJS = syslog
 syslog_C_OBJS = syslog_stubs
-poll_OBJS = poll
-poll_C_OBJS = select_stubs
-OCAML_LIBRARY = syslog poll
+OCAML_LIBRARY = syslog
 
 LIBS += systemd.cma systemd.cmxa
 systemd_OBJS = systemd
@@ -57,26 +55,26 @@ OBJS = paths \
 	poll \
 	xenstored
 
-INTF = symbol.cmi trie.cmi syslog.cmi systemd.cmi poll.cmi
+INTF = symbol.cmi trie.cmi syslog.cmi systemd.cmi
 
 XENSTOREDLIBS = \
 	unix.cmxa \
 	dynlink.cmxa \
 	-ccopt -L -ccopt . syslog.cmxa \
 	-ccopt -L -ccopt . systemd.cmxa \
-	-ccopt -L -ccopt . poll.cmxa \
 	-ccopt -L -ccopt $(OCAML_TOPLEVEL)/libs/mmap $(OCAML_TOPLEVEL)/libs/mmap/xenmmap.cmxa \
 	-ccopt -L -ccopt $(OCAML_TOPLEVEL)/libs/eventchn $(OCAML_TOPLEVEL)/libs/eventchn/xeneventchn.cmxa \
 	-ccopt -L -ccopt $(OCAML_TOPLEVEL)/libs/xc $(OCAML_TOPLEVEL)/libs/xc/xenctrl.cmxa \
 	-ccopt -L -ccopt $(OCAML_TOPLEVEL)/libs/xb $(OCAML_TOPLEVEL)/libs/xb/xenbus.cmxa \
 	-ccopt -L -ccopt $(OCAML_TOPLEVEL)/libs/xsd_glue $(OCAML_TOPLEVEL)/libs/xsd_glue/plugin_interface_v1.cmxa \
-	-ccopt -L -ccopt $(OCAML_TOPLEVEL)/libs/xsd_glue/domain_getinfo_plugin_v1 $(OCAML_TOPLEVEL)/libs/xsd_glue/domain_getinfo_plugin_v1/domain_getinfo_v1.cmxa \
+	-ccopt -L -ccopt $(OCAML_TOPLEVEL)/libs/xsd_glue/domain_getinfo_plugin_v1 -linkall $(OCAML_TOPLEVEL)/libs/xsd_glue/domain_getinfo_plugin_v1/domain_getinfo_v1.cmxa \
 	-ccopt -L -ccopt $(XEN_ROOT)/tools/libs/ctrl \
 	-cclib $(XEN_ROOT)/tools/libs/call/libxencall.a \
 	-cclib $(XEN_ROOT)/tools/libs/foreignmemory/libxenforeignmemory.a \
 	-cclib $(XEN_ROOT)/tools/libs/devicemodel/libxendevicemodel.a \
 	-cclib $(XEN_ROOT)/tools/libs/toolcore/libxentoolcore.a \
-	-cclib $(XEN_ROOT)/tools/libs/toollog/libxentoollog.a
+	-cclib $(XEN_ROOT)/tools/libs/toollog/libxentoollog.a \
+	-cclib libselect_stubs.a
 
 PROGRAMS = oxenstored
 
@@ -86,10 +84,14 @@ oxenstored_LIBS = $(XENSTOREDLIBS)
 # dependencies between files
 oxenstored_MLSORTED = $(shell $(OCAMLDEP) -sort $(OBJS:=.ml))
 oxenstored_OBJS = $(oxenstored_MLSORTED:.ml=)
+oxenstored_EXTRA_DEPS = libselect_stubs.a
 
 OCAML_PROGRAM = oxenstored
 
 all: $(INTF) $(LIBS) $(PROGRAMS)
+
+libselect_stubs.a: select_stubs.o
+	$(AR) rc $@ $^
 
 bins: $(PROGRAMS)
 
