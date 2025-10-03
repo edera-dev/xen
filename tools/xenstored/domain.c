@@ -1122,9 +1122,6 @@ static struct domain *introduce_domain(const void *ctx,
 		if (!interface && !restore)
 			return NULL;
 
-		if (!restore && interface->evtchn_port)
-			port = interface->evtchn_port;
-
 		if (new_domain(domain, port, restore)) {
 			rc = errno;
 			if (interface)
