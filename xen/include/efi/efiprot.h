@@ -367,6 +367,29 @@ typedef struct _EFI_LOAD_FILE_INTERFACE {
     EFI_LOAD_FILE                       LoadFile;
 } EFI_LOAD_FILE_INTERFACE;
 
+//
+// Load File 2 Protocol
+//
+
+
+#define LOAD_FILE2_PROTOCOL \
+    { 0x4006C0C1, 0xFCB3, 0x403E, {0x99, 0x6D, 0x4A, 0x6C, 0x87, 0x24, 0xE0, 0x6D } }
+
+INTERFACE_DECL(_EFI_LOAD_FILE2_INTERFACE);
+
+typedef
+EFI_STATUS
+(EFIAPI *EFI_LOAD_FILE2)(
+  IN struct _EFI_LOAD_FILE2_INTERFACE *This,
+  IN EFI_DEVICE_PATH                  *FilePath,
+  IN BOOLEAN                          BootPolicy,
+  IN OUT UINTN                        *BufferSize,
+  IN VOID                             *Buffer OPTIONAL
+  );
+
+typedef struct _EFI_LOAD_FILE2_INTERFACE {
+  EFI_LOAD_FILE2    LoadFile;
+} EFI_LOAD_FILE2_INTERFACE;
 
 //
 // Device IO protocol
