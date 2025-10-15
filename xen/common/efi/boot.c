@@ -46,6 +46,40 @@
   { 0xb122a263U, 0x3661, 0x4f68, {0x99, 0x29, 0x78, 0xf8, 0xb0, 0xd6, 0x21, 0x80} }
 #define EFI_SYSTEM_RESOURCE_TABLE_FIRMWARE_RESOURCE_VERSION 1
 
+#define XEN_EFI_CONFIG_MEDIA_GUID \
+  { 0xbf61f458U, 0xa28e, 0x46cd, {0x93, 0xd7, 0x07, 0xda, 0xc5, 0xe8, 0xcd, 0x66} }
+#define XEN_EFI_KERNEL_MEDIA_GUID \
+  { 0x4010c8bfU, 0x6ced, 0x40f5, {0xa5, 0x3f, 0xe8, 0x20, 0xae, 0xe8, 0xf3, 0x4b} }
+#define XEN_EFI_RAMDISK_MEDIA_GUID \
+  { 0x5db1fd01U, 0xc3cb, 0x4812, {0xb2, 0xba, 0x87, 0x91, 0xe5, 0x2d, 0x4a, 0x89} }
+#define XEN_EFI_XSM_MEDIA_GUID \
+  { 0xc37ebf4dU, 0x382e, 0x4a4a, {0xa2, 0xe8, 0xc8, 0xe4, 0x04, 0x1a, 0xc7, 0x0b} }
+
+#define XEN_EFI_MEDIA_DEFINE_DEV_PATH(name, guid)                   \
+    static const __initconst struct {                               \
+        VENDOR_DEVICE_PATH vendor;                                  \
+        EFI_DEVICE_PATH end;                                        \
+    } __packed name = {                                             \
+        .vendor = {                                                 \
+            .Header = {                                             \
+                .Type = MEDIA_DEVICE_PATH,                          \
+                .SubType = MEDIA_VENDOR_DP,                         \
+                .Length = { sizeof(VENDOR_DEVICE_PATH) },           \
+            },                                                      \
+            .Guid = guid                                            \
+        },                                                          \
+        .end = {                                                    \
+            .Type = END_DEVICE_PATH_TYPE,                           \
+            .SubType = END_ENTIRE_DEVICE_PATH_SUBTYPE,              \
+            .Length = { sizeof(EFI_DEVICE_PATH) }                   \
+        }                                                           \
+    }
+
+XEN_EFI_MEDIA_DEFINE_DEV_PATH(XEN_EFI_CONFIG_MEDIA_DEV_PATH, XEN_EFI_CONFIG_MEDIA_GUID);
+XEN_EFI_MEDIA_DEFINE_DEV_PATH(XEN_EFI_KERNEL_MEDIA_DEV_PATH, XEN_EFI_KERNEL_MEDIA_GUID);
+XEN_EFI_MEDIA_DEFINE_DEV_PATH(XEN_EFI_RAMDISK_MEDIA_DEV_PATH, XEN_EFI_RAMDISK_MEDIA_GUID);
+XEN_EFI_MEDIA_DEFINE_DEV_PATH(XEN_EFI_XSM_MEDIA_DEV_PATH, XEN_EFI_XSM_MEDIA_GUID);
+
 typedef struct {
     EFI_GUID FwClass;
     UINT32 FwType;
@@ -143,6 +177,9 @@ struct file {
 
 static bool read_file(EFI_FILE_HANDLE dir_handle, CHAR16 *name,
                       struct file *file, const char *options);
+static bool read_media_loader(const CHAR16 *name, const EFI_GUID *media_guid,
+                      EFI_DEVICE_PATH *devp, struct file *file,
+                      const char *options);
 static bool read_section(const EFI_LOADED_IMAGE *image, const CHAR16 *name,
                          struct file *file, const char *options);
 
@@ -915,6 +952,49 @@ static bool __init read_file(EFI_FILE_HANDLE dir_handle, CHAR16 *name,
     /* not reached */
 }
 
+static bool __init read_media_loader(const CHAR16 *name, const EFI_GUID *media_guid, EFI_DEVICE_PATH *devp, struct file *file, const char *options)
+{
+    EFI_LOAD_FILE2_INTERFACE *lf2;
+    EFI_STATUS ret;
+    EFI_HANDLE handle;
+
+    EFI_DEVICE_PATH* dp = devp;
+    EFI_GUID lf2_proto_guid = LOAD_FILE2_PROTOCOL;
+
+    ret = efi_bs->LocateDevicePath(&lf2_proto_guid, &dp, &handle);
+    if ( EFI_ERROR(ret) )
+        goto fail;
+    ret = efi_bs->HandleProtocol(handle, &lf2_proto_guid, (void **)&lf2);
+    if ( EFI_ERROR(ret) )
+        goto fail;
+
+    file->size = 0;
+    ret = lf2->LoadFile(lf2, dp, false, &file->size, NULL);
+    if ( ret != EFI_BUFFER_TOO_SMALL )
+        goto fail;
+
+    file->addr = min(1UL << (32 + PAGE_SHIFT),
+                     HYPERVISOR_VIRT_END - DIRECTMAP_VIRT_START);
+    ret = efi_bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
+                                PFN_UP(file->size), &file->addr);
+    if ( EFI_ERROR(ret) )
+        goto fail;
+
+    file->need_to_free = true;
+    handle_file_info(name, file, options);
+
+    ret = lf2->LoadFile(lf2, dp, false, &file->size, (void*) file->addr);
+    if ( EFI_ERROR(ret) ) {
+        efi_bs->FreePages(file->addr, PFN_UP(file->size));
+        goto fail;
+    }
+    efi_arch_flush_dcache_area(file->ptr, file->size);
+    return true;
+
+ fail:
+    return false;
+}
+
 static bool __init read_section(const EFI_LOADED_IMAGE *image,
                                 const CHAR16 *name, struct file *file,
                                 const char *options)
@@ -1429,6 +1509,11 @@ void EFIAPI __init noreturn efi_start(EFI_HANDLE ImageHandle,
                                       EFI_SYSTEM_TABLE *SystemTable)
 {
     static EFI_GUID __initdata loaded_image_guid = LOADED_IMAGE_PROTOCOL;
+    static EFI_GUID __initdata xen_config_media_guid = XEN_EFI_CONFIG_MEDIA_GUID;
+    static EFI_GUID __initdata xen_kernel_media_guid = XEN_EFI_KERNEL_MEDIA_GUID;
+    static EFI_GUID __initdata xen_ramdisk_media_guid = XEN_EFI_RAMDISK_MEDIA_GUID;
+    static EFI_GUID __initdata xen_xsm_media_guid = XEN_EFI_XSM_MEDIA_GUID;
+
     EFI_LOADED_IMAGE *loaded_image;
     EFI_STATUS status;
     unsigned int i;
@@ -1540,6 +1625,8 @@ void EFIAPI __init noreturn efi_start(EFI_HANDLE ImageHandle,
         /* Read and parse the config file. */
         if ( read_section(loaded_image, L"config", &cfg, NULL) )
             PrintStr(L"Using builtin config file\r\n");
+        else if ( read_media_loader(L"config", &xen_config_media_guid, (EFI_DEVICE_PATH*) &XEN_EFI_CONFIG_MEDIA_DEV_PATH, &cfg, NULL) )
+            PrintStr(L"Using media loader config file\r\n");
         else
         {
             ensure_dir_handle(loaded_image, &dir_handle, &file_name);
@@ -1599,9 +1686,12 @@ void EFIAPI __init noreturn efi_start(EFI_HANDLE ImageHandle,
         if ( !read_section(loaded_image, L"kernel", &kernel, option_str) &&
              name.s )
         {
-            ensure_dir_handle(loaded_image, &dir_handle, &file_name);
-            read_file(dir_handle, s2w(&name), &kernel, option_str);
-            efi_bs->FreePool(name.w);
+            if ( !read_media_loader(L"kernel", &xen_kernel_media_guid, (EFI_DEVICE_PATH*) &XEN_EFI_KERNEL_MEDIA_DEV_PATH, &kernel, option_str) )
+            {
+                ensure_dir_handle(loaded_image, &dir_handle, &file_name);
+                read_file(dir_handle, s2w(&name), &kernel, option_str);
+                efi_bs->FreePool(name.w);
+            }
         }
         else
         {
@@ -1611,23 +1701,29 @@ void EFIAPI __init noreturn efi_start(EFI_HANDLE ImageHandle,
 
         if ( !read_section(loaded_image, L"ramdisk", &ramdisk, NULL) )
         {
-            name.s = get_value(&cfg, section.s, "ramdisk");
-            if ( name.s )
+            if ( !read_media_loader(L"ramdisk", &xen_ramdisk_media_guid, (EFI_DEVICE_PATH*) &XEN_EFI_RAMDISK_MEDIA_DEV_PATH, &ramdisk, NULL) )
             {
-                ensure_dir_handle(loaded_image, &dir_handle, &file_name);
-                read_file(dir_handle, s2w(&name), &ramdisk, NULL);
-                efi_bs->FreePool(name.w);
+                name.s = get_value(&cfg, section.s, "ramdisk");
+                if ( name.s )
+                {
+                    ensure_dir_handle(loaded_image, &dir_handle, &file_name);
+                    read_file(dir_handle, s2w(&name), &ramdisk, NULL);
+                    efi_bs->FreePool(name.w);
+                }
             }
         }
 
         if ( !read_section(loaded_image, L"xsm", &xsm, NULL) )
         {
-            name.s = get_value(&cfg, section.s, "xsm");
-            if ( name.s )
+            if ( !read_media_loader(L"xsm", &xen_xsm_media_guid, (EFI_DEVICE_PATH*) &XEN_EFI_XSM_MEDIA_DEV_PATH, &xsm, NULL) )
             {
-                ensure_dir_handle(loaded_image, &dir_handle, &file_name);
-                read_file(dir_handle, s2w(&name), &xsm, NULL);
-                efi_bs->FreePool(name.w);
+                name.s = get_value(&cfg, section.s, "xsm");
+                if ( name.s )
+                {
+                    ensure_dir_handle(loaded_image, &dir_handle, &file_name);
+                    read_file(dir_handle, s2w(&name), &xsm, NULL);
+                    efi_bs->FreePool(name.w);
+                }
             }
         }
 
