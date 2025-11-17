@@ -167,7 +167,11 @@ static void cf_check control_write(const struct pci_dev *pdev, unsigned int reg,
             size_vf_bars((struct pci_dev *)pdev, sriov_pos);
 
             list_for_each_entry(vf_pdev, &pdev->vf_list, vf_list)
-                map_vf(vf_pdev, PCI_COMMAND_MEMORY, VPCI_MAP);
+            {
+                int rc = map_vf(vf_pdev, PCI_COMMAND_MEMORY, VPCI_MAP);
+                if ( rc )
+                    return;
+            }
         }
         /* TODO: unmap vf */
     }
