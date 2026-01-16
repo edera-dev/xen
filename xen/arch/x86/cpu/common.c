@@ -213,6 +213,13 @@ static void setup_doitm(void)
 {
     uint64_t msr;
 
+    /*
+     * If we are running under another hypervisor, we can't turn on DOITM as the
+     * parent hypervisor will block it.
+     */
+    if ( cpu_has_hypervisor )
+        return;
+
     if ( !cpu_has_doitm )
         return;
 
