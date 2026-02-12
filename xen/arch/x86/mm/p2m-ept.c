@@ -21,6 +21,7 @@
 #include <asm/hvm/cacheattr.h>
 #include <xen/keyhandler.h>
 #include <xen/softirq.h>
+#include <xen/timer.h>
 
 #include "mm-locks.h"
 #include "p2m.h"
@@ -1502,13 +1503,23 @@ static const char *memory_type_to_str(unsigned int x)
     return memory_types[x][0] ? memory_types[x] : "?";
 }
 
-static void cf_check ept_dump_p2m_table(unsigned char key)
+static struct timer ept_dump_timer;
+
+struct ept_dump_state {
+    bool active;
+    bool hit_dom0;
+    domid_t domid;
+    unsigned long gfn;
+};
+static struct ept_dump_state ept_dump_st;
+
+static void ept_dump_step_fn(void *unused)
 {
     struct domain *d;
     ept_entry_t *table, *ept_entry;
-    int order;
+    int order = 0;
     int i;
-    unsigned long gfn, gfn_remainder;
+    unsigned long gfn_remainder;
     unsigned long record_counter = 0;
     struct p2m_domain *p2m;
     struct ept_data *ept;
@@ -1517,19 +1528,28 @@ static void cf_check ept_dump_p2m_table(unsigned char key)
 
     for_each_domain(d)
     {
+        if ( d->domain_id < ept_dump_st.domid )
+            continue;
+
         if ( !hap_enabled(d) )
             continue;
 
         p2m = p2m_get_hostp2m(d);
         ept = &p2m->ept;
-        printk("\ndomain%d EPT p2m table:\n", d->domain_id);
+        if ( d->domain_id != ept_dump_st.domid || ( d->domain_id == 0 && !ept_dump_st.hit_dom0 ) )
+        {
+            printk("\ndomain%d EPT p2m table:\n", d->domain_id);
+            ept_dump_st.domid = d->domain_id;
+            ept_dump_st.gfn = 0;
+            ept_dump_st.hit_dom0 = true;
+        }
 
-        for ( gfn = 0; gfn <= p2m->max_mapped_pfn; gfn += 1UL << order )
+        for ( ; ept_dump_st.gfn <= p2m->max_mapped_pfn; ept_dump_st.gfn += 1UL << order )
         {
             char c = 0;
             int ret = GUEST_TABLE_MAP_FAILED;
 
-            gfn_remainder = gfn;
+            gfn_remainder = ept_dump_st.gfn;
             table = map_domain_page(pagetable_get_mfn(p2m_get_pagetable(p2m)));
 
             for ( i = ept->wl; i > 0; i-- )
@@ -1547,30 +1567,59 @@ static void cf_check ept_dump_p2m_table(unsigned char key)
             if ( ret != GUEST_TABLE_MAP_FAILED && is_epte_valid(ept_entry) )
             {
                 if ( p2m_is_pod(ept_entry->sa_p2mt) )
-                    printk("gfn: %13lx order: %2d PoD\n", gfn, order);
+                    printk("gfn: %13lx order: %2d PoD\n", ept_dump_st.gfn, order);
                 else
-                    printk("gfn: %13lx order: %2d mfn: %13lx %c%c%c %c%c%c\n",
-                           gfn, order, ept_entry->mfn + 0UL,
+                    printk("gfn: %13lx order: %2d mfn: %13lx %c%c%c %c%c%c sa_p2mt: %x\n",
+                           ept_dump_st.gfn, order, ept_entry->mfn + 0UL,
                            ept_entry->r ? 'r' : ' ',
                            ept_entry->w ? 'w' : ' ',
                            ept_entry->x ? 'x' : ' ',
                            memory_type_to_str(ept_entry->emt)[0],
                            memory_type_to_str(ept_entry->emt)[1]
                            ?: ept_entry->emt + '0',
-                           c ?: ept_entry->ipat ? '!' : ' ');
+                           c ?: ept_entry->ipat ? '!' : ' ',
+                           ept_entry->sa_p2mt);
 
-                if ( !(record_counter++ % 100) )
-                    process_pending_softirqs();
+                record_counter++;
             }
             unmap_domain_page(table);
+
+            if ( record_counter >= 500 )
+            {
+                rcu_read_unlock(&domlist_read_lock);
+                set_timer(&ept_dump_timer, NOW() + MILLISECS(10));
+                return;
+            }
         }
     }
 
     rcu_read_unlock(&domlist_read_lock);
+
+    printk("\nEPT dump completed\n");
+    ept_dump_st.active = false;
+}
+
+static void cf_check ept_dump_p2m_table(unsigned char key)
+{
+    if ( ept_dump_st.active )
+    {
+        ept_dump_st.active = false;
+        kill_timer(&ept_dump_timer);
+        printk("\nEPT dump aborted\n");
+        return;
+    }
+
+    ept_dump_st.active = true;
+    ept_dump_st.domid = 0;
+    ept_dump_st.gfn = 0;
+    ept_dump_st.hit_dom0 = false;
+
+    set_timer(&ept_dump_timer, NOW());
 }
 
 void __init setup_ept_dump(void)
 {
+    init_timer(&ept_dump_timer, ept_dump_step_fn, NULL, 0);
     register_keyhandler('D', ept_dump_p2m_table, "dump VT-x EPT tables", 0);
 }
 
