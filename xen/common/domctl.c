@@ -933,6 +933,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     case XEN_DOMCTL_assign_device:
     case XEN_DOMCTL_test_assign_device:
     case XEN_DOMCTL_deassign_device:
+    case XEN_DOMCTL_vpci_get_devices:
         ret = iommu_do_domctl(op, d, u_domctl);
         break;
 

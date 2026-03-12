@@ -1892,6 +1892,56 @@ static bool needs_vpci(const struct domain *d)
     return arch_needs_vpci(d);
 }
 
+#ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
+static int vpci_get_devices(
+    const struct domain *d,
+    struct xen_domctl *domctl,
+    XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
+{
+    uint32_t count = 0;
+    struct pci_dev *pdev;
+    xen_domctl_vpci_device_t dev;
+    struct xen_domctl_vpci_get_devices *devs = &domctl->u.vpci_get_devices;
+
+    /* only the control domain is allowed to see this information */
+    if ( !is_control_domain(d) )
+        return -EPERM;
+
+    list_for_each_entry(pdev, &d->pdev_list, domain_list)
+    {
+        if ( !pdev->vpci )
+            continue;
+
+        if ( pdev->vpci->guest_sbdf.sbdf == INVALID_GUEST_SBDF.sbdf )
+            continue;
+
+        if ( guest_handle_is_null(devs->devs) )
+        {
+            count++;
+            continue;
+        }
+
+        if ( count >= devs->device_count )
+            return -ENOBUFS;
+
+        dev.host_sbdf  = pdev->sbdf.sbdf;
+        dev.guest_sbdf = pdev->vpci->guest_sbdf.sbdf;
+
+        if ( copy_to_guest_offset(devs->devs, count, &dev, 1) )
+            return -EFAULT;
+
+        count++;
+    }
+
+    if ( __copy_to_guest(u_domctl, domctl, 1) )
+        return -EFAULT;
+
+    devs->device_count = count;
+
+    return 0;
+}
+#endif
+
 int iommu_do_pci_domctl(
     struct xen_domctl *domctl, struct domain *d,
     XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
@@ -2017,6 +2067,14 @@ int iommu_do_pci_domctl(
         ret = deassign_device(d, seg, bus, devfn);
         pcidevs_unlock();
         break;
+
+#ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
+    case XEN_DOMCTL_vpci_get_devices:
+        pcidevs_lock();
+        ret = vpci_get_devices(d, domctl, u_domctl);
+        pcidevs_unlock();
+        break;
+#endif
 
     default:
         ret = -ENOSYS;
