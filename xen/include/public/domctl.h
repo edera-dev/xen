@@ -818,6 +818,19 @@ struct xen_domctl_gdbsx_domstatus {
     uint32_t         vcpu_ev;    /* if yes, what event? */
 };
 
+/* XEN_DOMCTL_vpci_get_devices */
+struct xen_domctl_vpci_device {
+    uint32_t host_sbdf;
+    uint32_t guest_sbdf;
+};
+typedef struct xen_domctl_vpci_device xen_domctl_vpci_device_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_vpci_device_t);
+
+struct xen_domctl_vpci_get_devices {
+    uint32_t device_count;                              /* IN/OUT */
+    XEN_GUEST_HANDLE_64(xen_domctl_vpci_device_t) devs; /* IN/OUT */
+};
+
 /*
  * VM event operations
  */
@@ -1374,6 +1387,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
 #define XEN_DOMCTL_gdbsx_domstatus             1003
+#define XEN_DOMCTL_vpci_get_devices            2000
     uint32_t interface_version; /* XEN_DOMCTL_INTERFACE_VERSION */
     domid_t  domain;
     uint16_t _pad[3];
@@ -1438,6 +1452,7 @@ struct xen_domctl {
 #endif
         struct xen_domctl_set_llc_colors    set_llc_colors;
         struct xen_domctl_get_domain_state  get_domain_state;
+        struct xen_domctl_vpci_get_devices  vpci_get_devices;
         uint8_t                             pad[128];
     } u;
 };
