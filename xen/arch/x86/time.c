@@ -667,6 +667,11 @@ static int64_t __init cf_check init_tsc(struct platform_timesource *pts)
         ret = 0;
     }
 
+    if ( boot_cpu_has(X86_FEATURE_TSC_ADJUST) && boot_cpu_has(X86_FEATURE_ITSC) )
+    {
+        tsc_flags |= TSC_RELIABLE_SOCKET;
+    }
+
     if ( nr_sockets > 1 && !(tsc_flags & TSC_RELIABLE_SOCKET) )
     {
         printk(XENLOG_WARNING "TSC: Not invariant across sockets\n");
