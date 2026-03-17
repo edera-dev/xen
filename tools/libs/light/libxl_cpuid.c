@@ -414,13 +414,13 @@ int libxl_cpuid_parse_config(libxl_cpuid_policy_list *policy, const char* str)
 int libxl_cpuid_parse_config_xend(libxl_cpuid_policy_list *policy,
                                   const char* str)
 {
-    char *endptr;
+    const char *endptr;
     unsigned long value;
     uint32_t leaf, subleaf = XEN_CPUID_INPUT_UNUSED;
     struct xc_xend_cpuid *entry;
 
     /* parse the leaf number */
-    value = strtoul(str, &endptr, 0);
+    value = strtoul(str, (char **)&endptr, 0);
     if (str == endptr) {
         return 1;
     }
@@ -428,7 +428,7 @@ int libxl_cpuid_parse_config_xend(libxl_cpuid_policy_list *policy,
     /* check for an optional subleaf number */
     if (*endptr == ',') {
         str = endptr + 1;
-        value = strtoul(str, &endptr, 0);
+        value = strtoul(str, (char **)&endptr, 0);
         if (str == endptr) {
             return 2;
         }
