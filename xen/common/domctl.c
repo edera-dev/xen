@@ -307,6 +307,14 @@ void iocaps_double_unlock(struct domain *d, bool write)
         read_unlock(&d->caps_lock);
 }
 
+/*
+ * Arch hook called from XEN_DOMCTL_setvnumainfo after d->vnuma is installed
+ * and the domain is paused.  Allows architectures to recalculate any state
+ * derived from vNUMA topology (e.g. CPUID topology leaves on x86).
+ * The strong definition lives in arch/x86/cpu-policy.c.
+ */
+void __weak arch_domain_update_vnuma(struct domain *d) {}
+
 static bool is_stable_domctl(uint32_t cmd)
 {
     return cmd == XEN_DOMCTL_get_domain_state;
@@ -909,6 +917,17 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         }
 
         vnuma_replace(d, vnuma);
+
+        /*
+         * Notify the architecture layer that vNUMA topology has changed.
+         * On x86 this recalculates CPUID topology leaves (leaf 0xB and
+         * 0x80000008 ECX) that are derived from the vNUMA node count and
+         * vCPU-per-node distribution.  This domctl is a construction-time
+         * operation issued before the domain is started, so no domain_pause()
+         * is required.
+         */
+        arch_domain_update_vnuma(d);
+
         break;
     }
 

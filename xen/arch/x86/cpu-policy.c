@@ -335,6 +335,178 @@ static void recalculate_misc(struct cpu_policy *p)
     }
 }
 
+/*
+ * Recalculate CPUID topology leaves to reflect vNUMA topology when the
+ * domain has a virtual NUMA configuration.  Must be called after
+ * recalculate_misc(), which resets p->topo.raw and clamps p->extd.raw[0x8].c
+ * to its allowed bits.
+ *
+ * Two leaves are fixed here:
+ *
+ * 1. CPUID 0x80000008 ECX (AMD/Hygon only)
+ *    recalculate_misc() zeroes leaf 0x8000001D (TopoExt Cache) entirely, so
+ *    the guest kernel falls back to CPUID 0x80000008 for package topology on
+ *    AMD.  Without this fix, the host NC and ApicIdSize values leak through
+ *    unchanged, encoding the physical package size.  This makes all vCPUs
+ *    appear to be LLC siblings regardless of vNUMA node boundaries, producing
+ *    "topology_sane" WARN_ON splats in the guest at boot.
+ *
+ *    recalculate_misc() preserves ECX bits [17:12] and [7:0] through its
+ *    mask (0x0003f0ff), so our corrected values are not subsequently
+ *    clobbered.  We fix:
+ *      ECX[7:0]   = NC:          logical processors per package, minus 1
+ *      ECX[15:12] = ApicIdSize:  (x2)APIC ID bits encoding core in package
+ *
+ * 2. CPUID 0xB subleaves (all vendors with x2APIC)
+ *    recalculate_misc() unconditionally zeroes p->topo.raw.  With all fields
+ *    zero, the guest kernel sees ECX[15:8]=0 (type=invalid) on subleaf 0 and
+ *    stops enumeration immediately, ignoring the x2APIC IDs in EDX.  We
+ *    populate the structural subleaf fields from vNUMA config; the per-vCPU
+ *    EDX fixup already present in guest_cpuid() case 0xb requires no changes.
+ *
+ * x2APIC IDs are assigned as (vcpu_id * 2) by the dynamic fixup in
+ * guest_cpuid().  Bit 0 is permanently clear — each vCPU is a single-threaded
+ * core with no SMT sibling.  The NUMA-node (package) boundary falls at bit
+ * pkg_shift, where:
+ *
+ *   pkg_shift = 1 (SMT bit) + log2(vcpus_per_node)
+ *
+ * Example with 16 vCPUs per node across 2 vNUMA nodes (32 vCPUs total):
+ *   pkg_shift = 5; IDs 0-30  (vcpu_id  0-15) → package 0 (bit 5 = 0)
+ *               5; IDs 32-62 (vcpu_id 16-31) → package 1 (bit 5 = 1)
+ *
+ * This encoding is only valid when vcpus_per_node is a power of 2 and vCPUs
+ * are assigned to vNUMA nodes in contiguous ascending order (0..N-1 → node 0,
+ * N..2N-1 → node 1, etc.), which is assumed to be the case when the toolstack
+ * calls XEN_DOMCTL_SETVNUMAINFO before XEN_DOMCTL_set_cpu_policy.
+ *
+ * Leaf 0x1F (Extended Topology v2, preferred over 0xB by LLVM OpenMP and
+ * other modern runtimes per Intel SDM Vol. 2A) is not handled here because:
+ *   1. Xen currently caps the guest basic max leaf below 0x1F.
+ *   2. There is no subleaf-indexed backing storage for leaf 0x1F in struct
+ *      cpu_policy (leaf 0xB uses p->topo.raw; no equivalent exists for 0x1F).
+ *   3. guest_cpuid() would need a new case 0x1f: for the per-vCPU EDX fixup.
+ * Supporting leaf 0x1F is deferred until the broader topology rework
+ * referenced by the TODO comments throughout this file.
+ */
+static void recalculate_vnuma_topo(const struct domain *d, struct cpu_policy *p)
+{
+    const struct vnuma_info *vnuma;
+    unsigned int nr_vnodes, vcpus_per_node, pkg_shift;
+
+    vnuma = d->vnuma;
+    /*
+     * nr_vnodes <= 1 covers both the unset (0) and single-node cases;
+     * neither needs topology fixup.  The check also guarantees nr_vnodes >= 2
+     * below, so the d->max_vcpus % nr_vnodes modulo is safe.
+     */
+    if ( !vnuma || vnuma->nr_vnodes <= 1 )
+        return;
+
+    nr_vnodes = vnuma->nr_vnodes;
+
+    /* Guard against non-uniform vCPU distribution across vnodes. */
+    if ( !d->max_vcpus || d->max_vcpus % nr_vnodes )
+        return;
+
+    vcpus_per_node = d->max_vcpus / nr_vnodes;
+
+    /*
+     * All topology encodings below require vcpus_per_node to be a power of 2
+     * so the package boundary falls on a clean bit position in the APIC ID.
+     * Fall back to defaults (zeroed topo, host 80000008 values) if not.
+     */
+    if ( !vcpus_per_node || (vcpus_per_node & (vcpus_per_node - 1)) )
+        return;
+
+    /*
+     * fls(x) returns 1 + floor(log2(x)) for x > 0.  For a power-of-2
+     * vcpus_per_node this equals 1 + log2(vcpus_per_node), which is the
+     * shift distance to the package boundary in the x2APIC ID (one extra
+     * bit for the always-zero SMT slot at bit 0).
+     */
+    pkg_shift = fls(vcpus_per_node);
+
+    /*
+     * AMD/Hygon: correct CPUID 0x80000008 ECX to encode the virtual package
+     * size rather than the physical one.
+     *
+     * On AMD, without leaf 0x8000001D (zeroed by recalculate_misc()) and
+     * without leaf 0x8000001E (also zeroed), the Linux kernel falls back to
+     * CPUID 0x80000008 for package-topology detection:
+     *
+     *   ECX[7:0]   = NC:          logical processors per package, minus 1
+     *   ECX[15:12] = ApicIdSize:  bits in the (x2)APIC ID encoding the
+     *                             core within its physical package
+     *
+     * The host values reflect the physical package (e.g. NC=63, ApicIdSize=6
+     * for a 64-thread processor), so all vCPUs whose APIC IDs fit within 2^6
+     * = 64 entries appear to be in one package — which with vcpu_id*2 IDs
+     * covers the entire guest.  Linux then considers all vCPUs to be
+     * LLC-siblings and emits "topology_sane" WARN_ON splats when it finds
+     * CPUs it believes share the LLC straddling two different NUMA nodes.
+     *
+     * recalculate_misc() preserves ECX[15:12] and ECX[7:0] in its mask
+     * (0x0003f0ff covers bits [17:12] and [7:0]), so our values are not
+     * subsequently clobbered.
+     */
+    if ( p->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
+    {
+        /* Clear ECX[15:12] (ApicIdSize) and ECX[7:0] (NC), then set both. */
+        p->extd.raw[0x8].c &= ~((uint32_t)0x0000f0ff);
+        p->extd.raw[0x8].c |= (pkg_shift << 12) | (vcpus_per_node - 1);
+    }
+
+    /*
+     * Leaf 0xB (Extended Topology Enumeration) is only meaningful when
+     * x2APIC is advertised.  The per-vCPU EDX fixup in guest_cpuid()
+     * case 0xb is also gated on x2apic.
+     */
+    if ( !p->basic.x2apic )
+        return;
+
+    /*
+     * Subleaf 0 — SMT level.
+     *
+     * EAX[4:0]  = 1: one bit spans the SMT level.  Bit 0 of vcpu_id * 2
+     *               is always 0, so every vCPU is alone at this level.
+     * EBX[15:0] = 1: one logical processor per "core" (no hyperthreading).
+     * ECX[15:8] = 1: level type = SMT.
+     * ECX[7:0]  = 0: subleaf index placeholder; the existing dynamic fixup
+     *               in guest_cpuid() case 0xb overwrites this with the
+     *               actual subleaf number at intercept time.
+     * EDX       = 0: x2APIC ID placeholder; filled per-vCPU by guest_cpuid().
+     */
+    p->topo.raw[0].a = 1;
+    p->topo.raw[0].b = 1;
+    p->topo.raw[0].c = 0x00000100; /* type=SMT(1), index=0 */
+    p->topo.raw[0].d = 0;
+
+    /*
+     * Subleaf 1 — Core/package level.
+     *
+     * EAX[4:0]  = pkg_shift: bits [pkg_shift-1:0] of the x2APIC ID identify
+     *               logical processors within the same package.
+     * EBX[15:0] = vcpus_per_node: logical processors per package.
+     * ECX[15:8] = 2: level type = Core.
+     * ECX[7:0]  = 1: subleaf index placeholder; overwritten by guest_cpuid().
+     * EDX       = 0: x2APIC ID placeholder; filled per-vCPU by guest_cpuid().
+     */
+    p->topo.raw[1].a = pkg_shift;
+    p->topo.raw[1].b = vcpus_per_node;
+    p->topo.raw[1].c = 0x00000201; /* type=Core(2), index=1 */
+    p->topo.raw[1].d = 0;
+
+    /*
+     * Subleaf 2 is the implicit terminator.  CPUID_GUEST_NR_TOPO == 2, so
+     * p->topo.raw has valid indices 0 and 1 only.  guest_cpuid() returns an
+     * all-zeros leaf for any subleaf >= ARRAY_SIZE(p->topo.raw), and ECX[15:8]
+     * = 0 (type = invalid) in that all-zeros response is what signals
+     * end-of-enumeration to the guest.  recalculate_misc() zeroed the array
+     * before we ran, so no explicit write is needed or possible here.
+     */
+}
+
 void calculate_raw_cpu_policy(void)
 {
     struct cpu_policy *p = &raw_cpu_policy;
@@ -955,6 +1127,7 @@ void recalculate_cpuid_policy(struct domain *d)
         : (IS_ENABLED(CONFIG_HVM) ? &hvm_max_cpu_policy : NULL);
     uint32_t fs[FSCAPINTS], max_fs[FSCAPINTS];
     unsigned int i;
+    int llc_idx = -1; /* index of the LLC subleaf in p->cache.raw, or -1 */
 
     if ( !max )
     {
@@ -1039,6 +1212,13 @@ void recalculate_cpuid_policy(struct domain *d)
     recalculate_xstate(p);
     recalculate_misc(p);
 
+    /*
+     * Populate vNUMA topology leaves from vNUMA configuration.
+     * recalculate_misc() above resets both p->topo.raw and the AMD
+     * 0x80000008 ECX fields, so this must come after it.
+     */
+    recalculate_vnuma_topo(d, p);
+
     for ( i = 0; i < ARRAY_SIZE(p->cache.raw); ++i )
     {
         if ( p->cache.subleaf[i].type >= 1 &&
@@ -1047,12 +1227,49 @@ void recalculate_cpuid_policy(struct domain *d)
             /* Subleaf has a valid cache type. Zero reserved fields. */
             p->cache.raw[i].a &= 0xffffc3ffu;
             p->cache.raw[i].d &= 0x00000007u;
+
+            /*
+             * Track the highest-level unified (type=3) cache as the LLC.
+             * Subleafs are enumerated in ascending cache-level order, so the
+             * last type=3 entry seen is the LLC.
+             */
+            if ( p->cache.subleaf[i].type == 3 )
+                llc_idx = i;
         }
         else
         {
             /* Subleaf is not valid.  Zero the rest of the union. */
             zero_leaves(p->cache.raw, i, ARRAY_SIZE(p->cache.raw) - 1);
             break;
+        }
+    }
+
+    /*
+     * Intel only: fix the LLC threads-sharing count in leaf 4 EAX[25:14]
+     * (0-based) for vNUMA guests.  The host value reflects the physical LLC
+     * sharing domain, which typically spans more CPUs than a single vNUMA
+     * node.  Linux's topology_sane() cross-checks this field against SRAT
+     * node assignments and emits a warning when they conflict.
+     *
+     * The corrected value is (vcpus_per_node - 1): each vNUMA node maps to
+     * one virtual package, and all vCPUs in that package share the LLC.
+     *
+     * AMD guests use leaf 0x8000001D for cache topology, which
+     * recalculate_misc() zeroes unconditionally.  The package-topology fix
+     * in recalculate_vnuma_topo() (CPUID 0x80000008 ECX) is sufficient to
+     * resolve LLC-sibling mismatches on AMD.
+     */
+    if ( llc_idx >= 0 &&
+         p->x86_vendor == X86_VENDOR_INTEL &&
+         d->vnuma && d->vnuma->nr_vnodes > 1 )
+    {
+        unsigned int cpn = d->max_vcpus / d->vnuma->nr_vnodes;
+
+        if ( cpn > 0 && !(cpn & (cpn - 1)) )
+        {
+            /* Clear EAX[25:14] and write (vcpus_per_node - 1). */
+            p->cache.raw[llc_idx].a &= ~((uint32_t)0xfff << 14);
+            p->cache.raw[llc_idx].a |= (cpn - 1) << 14;
         }
     }
 
@@ -1106,6 +1323,18 @@ void __init init_dom0_cpuid_policy(struct domain *d)
     if ( !opt_dom0_cpuid_faulting && is_control_domain(d) && is_pv_domain(d) )
         p->platform_info.cpuid_faulting = false;
 
+    recalculate_cpuid_policy(d);
+}
+
+/*
+ * Arch hook invoked by the common XEN_DOMCTL_setvnumainfo handler after
+ * d->vnuma has been installed and the domain has been paused.  Recalculates
+ * the CPUID policy fields that are derived from vNUMA topology: leaf 0xB
+ * subleaves and CPUID 0x80000008 ECX (AMD/Hygon), and leaf 4 LLC count
+ * (Intel).  The weak default in xen/common/domctl.c is a no-op.
+ */
+void arch_domain_update_vnuma(struct domain *d)
+{
     recalculate_cpuid_policy(d);
 }
 
