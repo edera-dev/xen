@@ -1933,10 +1933,10 @@ static int vpci_get_devices(
         count++;
     }
 
+    devs->device_count = count;
+
     if ( __copy_to_guest(u_domctl, domctl, 1) )
         return -EFAULT;
-
-    devs->device_count = count;
 
     return 0;
 }
