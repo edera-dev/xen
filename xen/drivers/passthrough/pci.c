@@ -1902,7 +1902,7 @@ static int vpci_get_devices(
     struct xen_domctl_vpci_get_devices *devs = &domctl->u.vpci_get_devices;
 
     /* only the control domain is allowed to see this information */
-    if ( !is_control_domain(d) )
+    if ( !is_control_domain(current->domain) )
         return -EPERM;
 
     list_for_each_entry(pdev, &d->pdev_list, domain_list)
