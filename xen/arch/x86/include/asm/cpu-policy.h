@@ -30,4 +30,19 @@ void recalculate_cpuid_policy(struct domain *d);
  */
 void calculate_raw_cpu_policy(void);
 
+/*
+ * Compute the x2APIC identifier assigned to a guest vCPU.  When the domain
+ * has a multi-vnode vNUMA topology and the CPU policy has been patched by
+ * recalculate_vnuma_topo(), the ID encodes (vnode_index, intra_pkg_offset)
+ * so the package boundary in CPUID 0xB falls on a clean bit and APIC IDs do
+ * not collide across packages — including for non-power-of-two and
+ * unbalanced per-vnode vCPU counts.  Otherwise the legacy vcpu_id * 2
+ * encoding is returned.
+ *
+ * All call sites that produce a guest-observable APIC ID (CPUID leaves 0x1
+ * EBX[31:24], 0xB EDX, and vlapic register state) must use this helper so
+ * the guest never observes inconsistent APIC IDs between interfaces.
+ */
+uint32_t guest_vcpu_x2apic_id(const struct domain *d, unsigned int vcpu_id);
+
 #endif /* X86_CPU_POLICY_H */

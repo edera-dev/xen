@@ -742,15 +742,24 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
     bool iommu = config->flags & XEN_DOMCTL_CDF_iommu;
     bool vpmu = config->flags & XEN_DOMCTL_CDF_vpmu;
     bool vpci = config->flags & XEN_DOMCTL_CDF_vpci;
+    bool vnuma_apic_topology = config->flags & XEN_DOMCTL_CDF_vnuma_apic_topology;
 
     if ( config->flags &
          ~(XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap |
            XEN_DOMCTL_CDF_s3_integrity | XEN_DOMCTL_CDF_oos_off |
            XEN_DOMCTL_CDF_xs_domain | XEN_DOMCTL_CDF_iommu |
            XEN_DOMCTL_CDF_nested_virt | XEN_DOMCTL_CDF_vpmu |
-           XEN_DOMCTL_CDF_trap_unmapped_accesses | XEN_DOMCTL_CDF_vpci) )
+           XEN_DOMCTL_CDF_trap_unmapped_accesses | XEN_DOMCTL_CDF_vpci |
+           XEN_DOMCTL_CDF_vnuma_apic_topology) )
     {
         dprintk(XENLOG_INFO, "Unknown CDF flags %#x\n", config->flags);
+        return -EINVAL;
+    }
+
+    if ( vnuma_apic_topology && !hvm )
+    {
+        dprintk(XENLOG_INFO,
+                "vNUMA APIC topology encoding requested for non-HVM guest\n");
         return -EINVAL;
     }
 
