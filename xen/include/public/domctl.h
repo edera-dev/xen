@@ -69,8 +69,29 @@ struct xen_domctl_createdomain {
 /* Should we trap guest accesses to unmapped addresses? */
 #define XEN_DOMCTL_CDF_trap_unmapped_accesses  (1U << 8)
 
+/*
+ * Should Xen use vNUMA-derived APIC ID encoding for this domain?
+ *
+ * When unset (default, matches upstream behavior): per-vCPU APIC IDs are
+ * assigned as `vcpu_id * 2`, and recalculate_vnuma_topo() patches CPUID 0xB
+ * only for power-of-two-balanced multi-vnode layouts.  Non-power-of-two or
+ * unbalanced per-vnode vCPU counts silently fall back to default CPUID
+ * topology -- matching how stock Xen has always behaved.
+ *
+ * When set: APIC IDs encode (vnode_index, intra_pkg_offset) so the package
+ * boundary in CPUID 0xB falls on a clean bit even for non-power-of-two or
+ * unbalanced per-vnode vCPU counts.  In return, the toolstack MUST source
+ * MADT processor entries' APIC IDs from XEN_DOMCTL_get_vcpu_apicids rather
+ * than hardcoding `vcpu_id * 2`, since the encoding can produce values that
+ * disagree with that formula.  Failing to do so will produce a MADT
+ * inconsistent with Xen's vlapic state, hanging secondary CPU bringup.
+ *
+ * HVM/PVH only -- rejected for PV at createdomain time.
+ */
+#define XEN_DOMCTL_CDF_vnuma_apic_topology  (1U << 10)
+
 /* Max XEN_DOMCTL_CDF_* constant.  Used for ABI checking. */
-#define XEN_DOMCTL_CDF_MAX XEN_DOMCTL_CDF_trap_unmapped_accesses
+#define XEN_DOMCTL_CDF_MAX XEN_DOMCTL_CDF_vnuma_apic_topology
 
     uint32_t flags;
 

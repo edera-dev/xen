@@ -169,6 +169,44 @@ static void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
     }
 }
 
+uint32_t guest_vcpu_x2apic_id(const struct domain *d, unsigned int vcpu_id)
+{
+    const struct cpu_policy *p = d->arch.cpu_policy;
+    const struct vnuma_info *vnuma = d->vnuma;
+    unsigned int pkg_shift = p ? p->topo.raw[1].a : 0;
+
+    /*
+     * The vNUMA-derived encoding is opt-in (XEN_DOMCTL_CDF_vnuma_apic_topology
+     * at createdomain).  Domains without the flag stay on the legacy
+     * vcpu_id * 2 encoding regardless of vNUMA configuration -- this keeps
+     * Xen wire-compatible with toolstacks that hardcode `vcpu_id * 2` in
+     * MADT (libxl and friends).
+     *
+     * Even with the flag, the helper only diverges from the legacy formula
+     * when the domain has a real multi-vnode layout that
+     * recalculate_vnuma_topo() actually patched (pkg_shift > 0).  For
+     * POT-balanced vnodes the new encoding is bit-identical to vcpu_id * 2,
+     * so opted-in toolstacks observe a change only for the layouts the
+     * legacy code couldn't represent at all.
+     */
+    if ( (d->options & XEN_DOMCTL_CDF_vnuma_apic_topology) &&
+         vnuma && vnuma->nr_vnodes > 1 && pkg_shift > 0 &&
+         vcpu_id < d->max_vcpus )
+    {
+        unsigned int vnode = vnuma->vcpu_to_vnode[vcpu_id];
+        unsigned int offset = 0;
+        unsigned int i;
+
+        for ( i = 0; i < vcpu_id; i++ )
+            if ( vnuma->vcpu_to_vnode[i] == vnode )
+                offset++;
+
+        return (vnode << pkg_shift) | (offset * 2);
+    }
+
+    return vcpu_id * 2;
+}
+
 void guest_cpuid(const struct vcpu *v, uint32_t leaf,
                  uint32_t subleaf, struct cpuid_leaf *res)
 {
@@ -278,7 +316,7 @@ void guest_cpuid(const struct vcpu *v, uint32_t leaf,
         /* TODO: Rework topology logic. */
         res->b &= 0x00ffffffu;
         if ( is_hvm_domain(d) )
-            res->b |= (v->vcpu_id * 2) << 24;
+            res->b |= guest_vcpu_x2apic_id(d, v->vcpu_id) << 24;
 
         /* TODO: Rework vPMU control in terms of toolstack choices. */
         if ( vpmu_available(v) &&
@@ -460,8 +498,8 @@ void guest_cpuid(const struct vcpu *v, uint32_t leaf,
         {
             *(uint8_t *)&res->c = subleaf;
 
-            /* Fix the x2APIC identifier. */
-            res->d = v->vcpu_id * 2;
+            /* Fix the x2APIC identifier — vNUMA-aware encoding. */
+            res->d = guest_vcpu_x2apic_id(d, v->vcpu_id);
         }
         break;
 
