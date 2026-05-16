@@ -10,6 +10,7 @@
 #include <asm/cpu-policy.h>
 #include <asm/hvm/nestedhvm.h>
 #include <asm/hvm/svm.h>
+#include <asm/hvm/vlapic.h>
 #include <asm/intel-family.h>
 #include <asm/msr-index.h>
 #include <asm/paging.h>
@@ -364,21 +365,47 @@ static void recalculate_misc(struct cpu_policy *p)
  *    populate the structural subleaf fields from vNUMA config; the per-vCPU
  *    EDX fixup already present in guest_cpuid() case 0xb requires no changes.
  *
- * x2APIC IDs are assigned as (vcpu_id * 2) by the dynamic fixup in
- * guest_cpuid().  Bit 0 is permanently clear — each vCPU is a single-threaded
- * core with no SMT sibling.  The NUMA-node (package) boundary falls at bit
- * pkg_shift, where:
+ * x2APIC IDs are constructed from (vnode_index, intra_package_offset) by the
+ * dynamic fixup in guest_cpuid() as:
  *
- *   pkg_shift = 1 (SMT bit) + log2(vcpus_per_node)
+ *   apic_id = (vnode_index << pkg_shift) | (intra_package_offset * 2)
  *
- * Example with 16 vCPUs per node across 2 vNUMA nodes (32 vCPUs total):
- *   pkg_shift = 5; IDs 0-30  (vcpu_id  0-15) → package 0 (bit 5 = 0)
- *               5; IDs 32-62 (vcpu_id 16-31) → package 1 (bit 5 = 1)
+ * where pkg_shift is chosen so the per-package APIC ID window is the smallest
+ * power of two large enough to hold the largest vnode's vCPUs (counting only
+ * even APIC IDs, since bit 0 is the always-clear SMT slot):
  *
- * This encoding is only valid when vcpus_per_node is a power of 2 and vCPUs
- * are assigned to vNUMA nodes in contiguous ascending order (0..N-1 → node 0,
- * N..2N-1 → node 1, etc.), which is assumed to be the case when the toolstack
- * calls XEN_DOMCTL_SETVNUMAINFO before XEN_DOMCTL_set_cpu_policy.
+ *   pkg_shift = fls(2 * max_per_node - 1)
+ *
+ * Two consequences worth flagging:
+ *
+ * 1. APIC IDs are not necessarily contiguous across packages.  With
+ *    max_per_node = 24, each package consumes a 64-slot window (pkg_shift = 6)
+ *    but only 24 even IDs are used, leaving holes 48-63 in package 0 unused
+ *    before package 1 begins at 64.  Linux tolerates holes; it iterates over
+ *    online vCPUs rather than the contiguous range.
+ *
+ * 2. Unbalanced vnodes (e.g. 25/24 from a 49-vCPU domain) are advertised with
+ *    EBX[15:0] = max_per_node (25), even though one package contains fewer
+ *    real vCPUs than that.  Intel SDM treats EBX as a hint for software
+ *    sizing decisions, not a strict invariant.
+ *
+ * Examples:
+ *
+ *   16 vCPUs/node × 2 nodes (POT):
+ *     pkg_shift = 5; IDs 0-30  (vcpu  0-15) → package 0
+ *                 5; IDs 32-62 (vcpu 16-31) → package 1
+ *
+ *   24 vCPUs/node × 2 nodes (NPOT, balanced):
+ *     pkg_shift = 6; IDs 0-46    (vcpu  0-23) → package 0
+ *                 6; IDs 64-110  (vcpu 24-47) → package 1
+ *
+ *   25/24 split (NPOT, unbalanced):
+ *     pkg_shift = 6; IDs 0-48    (vcpu  0-24) → package 0
+ *                 6; IDs 64-110  (vcpu 25-48) → package 1
+ *
+ * vCPUs are not required to be assigned to vnodes in contiguous ascending
+ * order; intra_package_offset is computed from a walk over vcpu_to_vnode[],
+ * so any ordering produces correct APIC IDs.
  *
  * Leaf 0x1F (Extended Topology v2, preferred over 0xB by LLVM OpenMP and
  * other modern runtimes per Intel SDM Vol. 2A) is not handled here because:
@@ -392,40 +419,71 @@ static void recalculate_misc(struct cpu_policy *p)
 static void recalculate_vnuma_topo(const struct domain *d, struct cpu_policy *p)
 {
     const struct vnuma_info *vnuma;
-    unsigned int nr_vnodes, vcpus_per_node, pkg_shift;
+    unsigned int i, nr_vnodes, max_per_node, pkg_shift;
+    bool extended = d->options & XEN_DOMCTL_CDF_vnuma_apic_topology;
 
     vnuma = d->vnuma;
     /*
      * nr_vnodes <= 1 covers both the unset (0) and single-node cases;
-     * neither needs topology fixup.  The check also guarantees nr_vnodes >= 2
-     * below, so the d->max_vcpus % nr_vnodes modulo is safe.
+     * neither needs topology fixup.
      */
-    if ( !vnuma || vnuma->nr_vnodes <= 1 )
+    if ( !vnuma || vnuma->nr_vnodes <= 1 || !d->max_vcpus )
         return;
 
     nr_vnodes = vnuma->nr_vnodes;
 
-    /* Guard against non-uniform vCPU distribution across vnodes. */
-    if ( !d->max_vcpus || d->max_vcpus % nr_vnodes )
-        return;
+    /*
+     * Determine the largest per-vnode vCPU count.  In the legacy
+     * (non-opted-in) path we require all vnodes to have the same
+     * power-of-two count -- this preserves the upstream behavior that
+     * silently falls back to default CPUID for any layout that does not
+     * fit a clean APIC ID bit boundary.
+     *
+     * When XEN_DOMCTL_CDF_vnuma_apic_topology is set, we instead walk
+     * vcpu_to_vnode[] to find the largest vnode and use that as the
+     * window size; pkg_shift is rounded up to the next power-of-two big
+     * enough to hold it, and smaller vnodes simply leave the tail of
+     * their window unused.  This requires the toolstack to source MADT
+     * APIC IDs from XEN_DOMCTL_get_vcpu_apicids (see guest_vcpu_x2apic_id
+     * in cpuid.c) -- which is exactly the contract the CDF flag opts
+     * into.
+     */
+    if ( !extended )
+    {
+        if ( d->max_vcpus % nr_vnodes )
+            return;
+        max_per_node = d->max_vcpus / nr_vnodes;
+        if ( !max_per_node || (max_per_node & (max_per_node - 1)) )
+            return;
+    }
+    else
+    {
+        max_per_node = 0;
+        for ( i = 0; i < nr_vnodes; i++ )
+        {
+            unsigned int j, count = 0;
 
-    vcpus_per_node = d->max_vcpus / nr_vnodes;
+            for ( j = 0; j < d->max_vcpus; j++ )
+                if ( vnuma->vcpu_to_vnode[j] == i )
+                    count++;
+
+            if ( count > max_per_node )
+                max_per_node = count;
+        }
+
+        if ( !max_per_node )
+            return;
+    }
 
     /*
-     * All topology encodings below require vcpus_per_node to be a power of 2
-     * so the package boundary falls on a clean bit position in the APIC ID.
-     * Fall back to defaults (zeroed topo, host 80000008 values) if not.
+     * pkg_shift is the smallest n such that 2^n >= 2 * max_per_node, i.e.
+     * the package window must hold max_per_node even APIC IDs (bit 0 is
+     * the always-clear SMT slot).  For max_per_node = 16 this gives
+     * pkg_shift = 5 (matching the legacy POT-only encoding); for
+     * max_per_node = 24 it gives pkg_shift = 6, leaving APIC IDs 48-63
+     * unused in each package.
      */
-    if ( !vcpus_per_node || (vcpus_per_node & (vcpus_per_node - 1)) )
-        return;
-
-    /*
-     * fls(x) returns 1 + floor(log2(x)) for x > 0.  For a power-of-2
-     * vcpus_per_node this equals 1 + log2(vcpus_per_node), which is the
-     * shift distance to the package boundary in the x2APIC ID (one extra
-     * bit for the always-zero SMT slot at bit 0).
-     */
-    pkg_shift = fls(vcpus_per_node);
+    pkg_shift = fls(2 * max_per_node - 1);
 
     /*
      * AMD/Hygon: correct CPUID 0x80000008 ECX to encode the virtual package
@@ -452,9 +510,13 @@ static void recalculate_vnuma_topo(const struct domain *d, struct cpu_policy *p)
      */
     if ( p->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
     {
-        /* Clear ECX[15:12] (ApicIdSize) and ECX[7:0] (NC), then set both. */
+        /*
+         * Clear ECX[15:12] (ApicIdSize) and ECX[7:0] (NC), then set both.
+         * For unbalanced vnodes, we advertise the largest package's size;
+         * underfilled packages just look like they have idle slots.
+         */
         p->extd.raw[0x8].c &= ~((uint32_t)0x0000f0ff);
-        p->extd.raw[0x8].c |= (pkg_shift << 12) | (vcpus_per_node - 1);
+        p->extd.raw[0x8].c |= (pkg_shift << 12) | (max_per_node - 1);
     }
 
     /*
@@ -468,8 +530,10 @@ static void recalculate_vnuma_topo(const struct domain *d, struct cpu_policy *p)
     /*
      * Subleaf 0 — SMT level.
      *
-     * EAX[4:0]  = 1: one bit spans the SMT level.  Bit 0 of vcpu_id * 2
-     *               is always 0, so every vCPU is alone at this level.
+     * EAX[4:0]  = 1: one bit spans the SMT level.  The per-vCPU APIC ID
+     *               assigned by guest_cpuid() always has bit 0 = 0
+     *               (low half is offset * 2), so every vCPU is alone at
+     *               this level — no SMT siblings exposed to the guest.
      * EBX[15:0] = 1: one logical processor per "core" (no hyperthreading).
      * ECX[15:8] = 1: level type = SMT.
      * ECX[7:0]  = 0: subleaf index placeholder; the existing dynamic fixup
@@ -487,13 +551,14 @@ static void recalculate_vnuma_topo(const struct domain *d, struct cpu_policy *p)
      *
      * EAX[4:0]  = pkg_shift: bits [pkg_shift-1:0] of the x2APIC ID identify
      *               logical processors within the same package.
-     * EBX[15:0] = vcpus_per_node: logical processors per package.
+     * EBX[15:0] = max_per_node: logical processors per package (largest vnode;
+     *               unbalanced layouts advertise the max and underfill).
      * ECX[15:8] = 2: level type = Core.
      * ECX[7:0]  = 1: subleaf index placeholder; overwritten by guest_cpuid().
      * EDX       = 0: x2APIC ID placeholder; filled per-vCPU by guest_cpuid().
      */
     p->topo.raw[1].a = pkg_shift;
-    p->topo.raw[1].b = vcpus_per_node;
+    p->topo.raw[1].b = max_per_node;
     p->topo.raw[1].c = 0x00000201; /* type=Core(2), index=1 */
     p->topo.raw[1].d = 0;
 
@@ -1246,8 +1311,9 @@ void recalculate_cpuid_policy(struct domain *d)
      * node.  Linux's topology_sane() cross-checks this field against SRAT
      * node assignments and emits a warning when they conflict.
      *
-     * The corrected value is (vcpus_per_node - 1): each vNUMA node maps to
-     * one virtual package, and all vCPUs in that package share the LLC.
+     * The corrected value is (max_per_node - 1).  For unbalanced vnodes we
+     * advertise the largest package's size; underfilled packages just look
+     * like the LLC has unused threads, which Linux tolerates.
      *
      * AMD guests use leaf 0x8000001D for cache topology, which
      * recalculate_misc() zeroes unconditionally.  The package-topology fix
@@ -1256,15 +1322,48 @@ void recalculate_cpuid_policy(struct domain *d)
      */
     if ( llc_idx >= 0 &&
          p->x86_vendor == X86_VENDOR_INTEL &&
-         d->vnuma && d->vnuma->nr_vnodes > 1 )
+         d->vnuma && d->vnuma->nr_vnodes > 1 && d->max_vcpus )
     {
-        unsigned int cpn = d->max_vcpus / d->vnuma->nr_vnodes;
+        const struct vnuma_info *vnuma = d->vnuma;
+        bool extended = d->options & XEN_DOMCTL_CDF_vnuma_apic_topology;
+        unsigned int i, max_per_node = 0;
 
-        if ( cpn > 0 && !(cpn & (cpn - 1)) )
+        /*
+         * Without the CDF opt-in, only patch for the layouts upstream Xen
+         * has historically handled: balanced power-of-two per-vnode counts.
+         * With the opt-in, compute the largest per-vnode count and use it
+         * as the LLC scope; smaller vnodes have a few advertised siblings
+         * that don't exist, which Linux tolerates.
+         */
+        if ( !extended )
         {
-            /* Clear EAX[25:14] and write (vcpus_per_node - 1). */
+            if ( d->max_vcpus % vnuma->nr_vnodes == 0 )
+            {
+                unsigned int cpn = d->max_vcpus / vnuma->nr_vnodes;
+                if ( cpn > 0 && !(cpn & (cpn - 1)) )
+                    max_per_node = cpn;
+            }
+        }
+        else
+        {
+            for ( i = 0; i < vnuma->nr_vnodes; i++ )
+            {
+                unsigned int j, count = 0;
+
+                for ( j = 0; j < d->max_vcpus; j++ )
+                    if ( vnuma->vcpu_to_vnode[j] == i )
+                        count++;
+
+                if ( count > max_per_node )
+                    max_per_node = count;
+            }
+        }
+
+        if ( max_per_node > 0 )
+        {
+            /* Clear EAX[25:14] and write (max_per_node - 1). */
             p->cache.raw[llc_idx].a &= ~((uint32_t)0xfff << 14);
-            p->cache.raw[llc_idx].a |= (cpn - 1) << 14;
+            p->cache.raw[llc_idx].a |= (max_per_node - 1) << 14;
         }
     }
 
@@ -1327,10 +1426,35 @@ void __init init_dom0_cpuid_policy(struct domain *d)
  * the CPUID policy fields that are derived from vNUMA topology: leaf 0xB
  * subleaves and CPUID 0x80000008 ECX (AMD/Hygon), and leaf 4 LLC count
  * (Intel).  The weak default in xen/common/domctl.c is a no-op.
+ *
+ * For HVM domains that opted into the vNUMA-derived APIC ID encoding
+ * (XEN_DOMCTL_CDF_vnuma_apic_topology), we also re-derive each vCPU's APIC
+ * ID under the updated encoding so the value stored in the vlapic register
+ * state stays consistent with CPUID 0xB.  Without this, vCPUs created
+ * before the setvnumainfo would keep their initial vcpu_id * 2 APIC IDs
+ * while the guest-visible CPUID 0xB EDX advertises the (vnode_index,
+ * intra_pkg_offset) encoding -- a mismatch that breaks Linux's topology
+ * detection.
+ *
+ * Domains without the CDF flag set keep their vcpu_id * 2 APIC IDs;
+ * recalculate_vnuma_topo above also restricts itself to layouts that
+ * agree with that encoding, so no reinit is required.
+ *
+ * Safe because setvnumainfo is a construction-time operation: the domain
+ * has not been unpaused yet, so no vCPU is observing APIC state.
  */
 void arch_domain_update_vnuma(struct domain *d)
 {
     recalculate_cpuid_policy(d);
+
+    if ( is_hvm_domain(d) &&
+         (d->options & XEN_DOMCTL_CDF_vnuma_apic_topology) )
+    {
+        struct vcpu *v;
+
+        for_each_vcpu ( d, v )
+            vlapic_reinit_apic_id(v);
+    }
 }
 
 static void __init __maybe_unused build_assertions(void)

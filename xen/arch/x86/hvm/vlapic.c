@@ -17,6 +17,7 @@
 #include <xen/lib.h>
 #include <xen/sched.h>
 #include <xen/numa.h>
+#include <asm/cpu-policy.h>
 #include <asm/current.h>
 #include <asm/page.h>
 #include <asm/apic.h>
@@ -1092,7 +1093,7 @@ static uint32_t x2apic_ldr_from_id(uint32_t id)
 static void set_x2apic_id(struct vlapic *vlapic)
 {
     const struct vcpu *v = vlapic_vcpu(vlapic);
-    uint32_t apic_id = v->vcpu_id * 2;
+    uint32_t apic_id = guest_vcpu_x2apic_id(v->domain, v->vcpu_id);
     uint32_t apic_ldr = x2apic_ldr_from_id(apic_id);
 
     /*
@@ -1474,8 +1475,48 @@ void vlapic_reset(struct vlapic *vlapic)
     if ( v->vcpu_id == 0 )
         vlapic->hw.apic_base_msr |= APIC_BASE_BSP;
 
-    vlapic_set_reg(vlapic, APIC_ID, (v->vcpu_id * 2) << 24);
+    vlapic_set_reg(vlapic, APIC_ID,
+                   guest_vcpu_x2apic_id(v->domain, v->vcpu_id) << 24);
     vlapic_do_init(vlapic);
+}
+
+/*
+ * Re-derive a vCPU's APIC ID under the current vNUMA encoding and write it
+ * into the vlapic register state.  Called from arch_domain_update_vnuma()
+ * after a XEN_DOMCTL_setvnumainfo so the value the guest reads from APIC_ID
+ * stays consistent with the CPUID 0xB topology that recalculate_vnuma_topo()
+ * just recomputed.  setvnumainfo is a construction-time operation and runs
+ * before the domain is started; nothing else is observing APIC state.
+ *
+ * For domains using the legacy POT-balanced encoding (or no vNUMA at all),
+ * guest_vcpu_x2apic_id() returns vcpu_id * 2 — identical to what vlapic_init
+ * wrote, so this is a no-op write in the common case.
+ */
+void vlapic_reinit_apic_id(struct vcpu *v)
+{
+    struct vlapic *vlapic = vcpu_vlapic(v);
+    uint32_t apic_id;
+
+    if ( !has_vlapic(v->domain) )
+        return;
+
+    apic_id = guest_vcpu_x2apic_id(v->domain, v->vcpu_id);
+
+    if ( vlapic_x2apic_mode(vlapic) )
+    {
+        uint32_t apic_ldr = x2apic_ldr_from_id(apic_id);
+
+        if ( v->domain->arch.hvm.bug_x2apic_ldr_vcpu_id )
+            apic_ldr = x2apic_ldr_from_id(v->vcpu_id);
+
+        vlapic_set_reg(vlapic, APIC_ID, apic_id);
+        vlapic_set_reg(vlapic, APIC_LDR, apic_ldr);
+    }
+    else
+    {
+        /* xAPIC: APIC ID occupies bits 24..31 of the APIC_ID register. */
+        vlapic_set_reg(vlapic, APIC_ID, apic_id << 24);
+    }
 }
 
 /* rearm the actimer if needed, after a HVM restore */
