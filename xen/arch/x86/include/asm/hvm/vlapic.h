@@ -109,6 +109,14 @@ int vlapic_ack_pending_irq(struct vcpu *v, int vector, bool force_ack);
 int  vlapic_init(struct vcpu *v);
 void vlapic_destroy(struct vcpu *v);
 
+/*
+ * Re-derive a vCPU's APIC ID under the current vNUMA encoding and write it
+ * into the vlapic register state.  Must be called after the toolstack
+ * updates vNUMA topology via XEN_DOMCTL_setvnumainfo so the value the guest
+ * reads from APIC_ID stays consistent with CPUID 0xB.
+ */
+void vlapic_reinit_apic_id(struct vcpu *v);
+
 void vlapic_reset(struct vlapic *vlapic);
 
 int guest_wrmsr_apic_base(struct vcpu *v, uint64_t val);
