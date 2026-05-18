@@ -8,9 +8,13 @@
  */
 
 #include <xen/acpi.h>
+#include <xen/domain.h>
+#include <xen/err.h>
 #include <xen/init.h>
 #include <xen/libelf.h>
 #include <xen/multiboot.h>
+#include <xen/nodemask.h>
+#include <xen/numa.h>
 #include <xen/pci.h>
 #include <xen/softirq.h>
 
@@ -1328,6 +1332,169 @@ static void __hwdom_init pvh_setup_mmcfg(struct domain *d)
     }
 }
 
+/*
+ * Compute and install a vNUMA layout for dom0 derived from the host's
+ * physical NUMA topology.  Only runs when dom0_vnuma_enabled() (in
+ * arch/x86/dom0_build.c) set XEN_DOMCTL_CDF_vnuma_apic_topology on
+ * dom0; otherwise it is a no-op.
+ *
+ * Under the supported constraints (PVH dom0, hard 1:1 vCPU pinning, dom0
+ * vCPU count == pCPU count), each dom0 vCPU N is pinned to pCPU N, so
+ * the per-vCPU vnode assignment is exactly cpu_to_node(N).  The set of
+ * vnodes is the set of physical nodes the host has — no layout decisions
+ * to make.
+ *
+ * Must run AFTER pvh_setup_e820() (called from pvh_init_p2m) because we
+ * read d->arch.e820 to size and place vmemrange entries.  Must run
+ * BEFORE pvh_setup_acpi() because the MADT, SRAT and SLIT generation
+ * that runs there will source per-vCPU APIC IDs and per-node memory
+ * ranges from the vNUMA state we install here.
+ */
+static int __init dom0_setup_vnuma(struct domain *d)
+{
+    struct vnuma_info *vnuma;
+    nodeid_t pnodes[MAX_NUMNODES];
+    nodemask_t used_nodes;
+    unsigned int nr_vnodes, nr_vmemranges = 0, range_idx, i, j;
+    nodeid_t node;
+
+    if ( !(d->options & XEN_DOMCTL_CDF_vnuma_apic_topology) )
+        return 0;
+
+    if ( !d->max_vcpus )
+        return -EINVAL;
+
+    /*
+     * Discover the set of physical nodes dom0's pinned vCPUs span.  With
+     * dom0_vcpus_pin=1 and dom0_max_vcpus == num_present_cpus(), vCPU N
+     * is pinned to pCPU N, so cpu_to_node(N) gives the host NUMA node
+     * that hosts this vCPU.
+     */
+    nodes_clear(used_nodes);
+    for ( i = 0; i < d->max_vcpus; i++ )
+    {
+        node = cpu_to_node(i);
+        if ( node != NUMA_NO_NODE )
+            node_set(node, used_nodes);
+    }
+
+    nr_vnodes = nodes_weight(used_nodes);
+    if ( nr_vnodes <= 1 )
+        return 0;  /* Single-node host or all CPUs on one node — no vNUMA. */
+
+    /*
+     * Build dense vnode index → physical node ID mapping.  Iteration over
+     * used_nodes yields nodes in ascending order, so vnode 0 corresponds
+     * to the lowest-numbered physical node dom0 spans, and so on.
+     */
+    i = 0;
+    for_each_node_mask ( node, used_nodes )
+        pnodes[i++] = node;
+
+    /* One vmemrange per (E820 RAM region, vnode) pair. */
+    for ( i = 0; i < d->arch.nr_e820; i++ )
+        if ( d->arch.e820[i].type == E820_RAM )
+            nr_vmemranges += nr_vnodes;
+
+    if ( nr_vmemranges == 0 )
+    {
+        printk(XENLOG_WARNING
+               "%pd: no E820 RAM regions; skipping vNUMA setup\n", d);
+        return 0;
+    }
+
+    vnuma = vnuma_alloc(nr_vnodes, nr_vmemranges, d->max_vcpus);
+    if ( IS_ERR(vnuma) )
+        return PTR_ERR(vnuma);
+
+    vnuma->nr_vnodes = nr_vnodes;
+    vnuma->nr_vmemranges = nr_vmemranges;
+
+    /* vnode → pnode mapping. */
+    for ( i = 0; i < nr_vnodes; i++ )
+        vnuma->vnode_to_pnode[i] = pnodes[i];
+
+    /* vCPU → vnode mapping via cpu_to_node. */
+    for ( i = 0; i < d->max_vcpus; i++ )
+    {
+        nodeid_t cpu_node = cpu_to_node(i);
+
+        for ( j = 0; j < nr_vnodes; j++ )
+            if ( pnodes[j] == cpu_node )
+            {
+                vnuma->vcpu_to_vnode[i] = j;
+                break;
+            }
+    }
+
+    /* SLIT: mirror the host SLIT for the nodes we use. */
+    for ( i = 0; i < nr_vnodes; i++ )
+        for ( j = 0; j < nr_vnodes; j++ )
+            vnuma->vdistance[i * nr_vnodes + j] =
+                __node_distance(pnodes[i], pnodes[j]);
+
+    /*
+     * vmemranges: split each E820 RAM region equally across vnodes.  Each
+     * vnode has the same proportional share of the host's physical CPUs
+     * (1:1 vCPU/pCPU pinning, dom0 vCPU count == pCPU count), so equal
+     * memory share is the natural choice.
+     *
+     * The last vnode's chunk absorbs any rounding remainder so the union
+     * of vmemrange entries exactly covers the original E820 RAM region.
+     */
+    range_idx = 0;
+    for ( i = 0; i < d->arch.nr_e820; i++ )
+    {
+        uint64_t base, size, chunk;
+
+        if ( d->arch.e820[i].type != E820_RAM )
+            continue;
+
+        base = d->arch.e820[i].addr;
+        size = d->arch.e820[i].size;
+        /* Page-align per-vnode chunk to keep vmemrange boundaries clean. */
+        chunk = (size / nr_vnodes) & ~(PAGE_SIZE - 1);
+
+        for ( j = 0; j < nr_vnodes; j++ )
+        {
+            uint64_t start = base + j * chunk;
+            uint64_t end = (j == nr_vnodes - 1) ? base + size
+                                                : start + chunk;
+
+            vnuma->vmemrange[range_idx].start = start;
+            vnuma->vmemrange[range_idx].end = end;
+            vnuma->vmemrange[range_idx].flags = 0;
+            vnuma->vmemrange[range_idx].nid = j;
+            range_idx++;
+        }
+    }
+    ASSERT(range_idx == nr_vmemranges);
+
+    write_lock(&d->vnuma_rwlock);
+    vnuma_destroy(d->vnuma);
+    d->vnuma = vnuma;
+    write_unlock(&d->vnuma_rwlock);
+
+    /*
+     * Recalculate CPUID topology now that d->vnuma is populated.  This
+     * also refreshes per-vCPU vlapic APIC IDs via vlapic_reinit_apic_id().
+     * Init dom0 cpuid policy ran much earlier (setup.c:init_dom0_cpuid_policy)
+     * with empty d->vnuma; the recalc overwrites those values with the
+     * vNUMA-aware ones.
+     */
+    arch_domain_update_vnuma(d);
+
+    if ( opt_dom0_verbose )
+    {
+        printk(XENLOG_INFO "%pd vNUMA: %u vnodes\n", d, nr_vnodes);
+        for ( i = 0; i < nr_vnodes; i++ )
+            printk(XENLOG_INFO "  vnode %u -> pnode %u\n",
+                   i, vnuma->vnode_to_pnode[i]);
+    }
+
+    return 0;
+}
+
 int __init dom0_construct_pvh(const struct boot_domain *bd)
 {
     paddr_t entry, start_info;
@@ -1366,6 +1533,19 @@ int __init dom0_construct_pvh(const struct boot_domain *bd)
      * will likely add mappings required by devices to the p2m (ie: RMRRs).
      */
     pvh_init_p2m(d);
+
+    /*
+     * Install dom0's vNUMA layout now that the E820 map is built but before
+     * memory is allocated.  pvh_populate_p2m() consumes it to drive per-node
+     * memory allocation; pvh_setup_acpi() consumes it to generate
+     * MADT/SRAT/SLIT.
+     */
+    rc = dom0_setup_vnuma(d);
+    if ( rc )
+    {
+        printk("Failed to setup Dom0 vNUMA: %d\n", rc);
+        return rc;
+    }
 
     iommu_hwdom_init(d);
 

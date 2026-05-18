@@ -161,9 +161,9 @@ void vnuma_destroy(struct vnuma_info *vnuma)
  * Verifies that single allocation does not exceed
  * PAGE_SIZE.
  */
-static struct vnuma_info *vnuma_alloc(unsigned int nr_vnodes,
-                                      unsigned int nr_ranges,
-                                      unsigned int nr_vcpus)
+struct vnuma_info *vnuma_alloc(unsigned int nr_vnodes,
+                               unsigned int nr_ranges,
+                               unsigned int nr_vcpus)
 {
 
     struct vnuma_info *vnuma;
