@@ -92,6 +92,34 @@ static int __init modify_identity_mmio(struct domain *d, unsigned long pfn,
     return rc;
 }
 
+/*
+ * Look up the physical NUMA node that should back a given guest physical
+ * address, based on dom0's vNUMA layout.  Returns NUMA_NO_NODE when there
+ * is no vNUMA topology installed, when node binding has been disabled
+ * after a per-node allocation failure, or when no vmemrange covers the
+ * GPA (shouldn't happen in practice but we don't want to lie).
+ */
+static bool __initdata dom0_vnuma_binding_disabled;
+
+static nodeid_t __init dom0_gpa_to_pnode(const struct domain *d, paddr_t gpa)
+{
+    const struct vnuma_info *vnuma = d->vnuma;
+    unsigned int i;
+
+    if ( dom0_vnuma_binding_disabled || !vnuma )
+        return NUMA_NO_NODE;
+
+    for ( i = 0; i < vnuma->nr_vmemranges; i++ )
+    {
+        const struct xen_vmemrange *r = &vnuma->vmemrange[i];
+
+        if ( gpa >= r->start && gpa < r->end )
+            return vnuma->vnode_to_pnode[r->nid];
+    }
+
+    return NUMA_NO_NODE;
+}
+
 /* Populate a HVM memory range using the biggest possible order. */
 static int __init pvh_populate_memory_range(struct domain *d,
                                             unsigned long start,
@@ -114,6 +142,8 @@ static int __init pvh_populate_memory_range(struct domain *d,
     {
         unsigned int order, j;
         unsigned long end;
+        nodeid_t pnode;
+        unsigned int node_memflags = 0;
 
         /* Search for the largest page size which can fulfil this request. */
         for ( j = 0; j < ARRAY_SIZE(orders); j++ )
@@ -147,9 +177,45 @@ static int __init pvh_populate_memory_range(struct domain *d,
         order = min(order ? order - 1 : 0, max_order);
         /* The order allocated and populated must be aligned to the address. */
         order = min(order, start ? ffsl(start) - 1U : MAX_ORDER + 0U);
-        page = alloc_domheap_pages(d, order, dom0_memflags | MEMF_no_scrub);
+
+        /*
+         * When dom0 has a vNUMA topology, bind this allocation to the
+         * physical node that hosts the vmemrange covering this GPA.
+         * Combined with MEMF_exact_node in dom0_memflags, this is a
+         * strict bind: allocation fails rather than spilling to other
+         * nodes -- which is what we want, because spillover would
+         * silently make the SRAT we just generated lie about where
+         * memory actually lives.  The order==0 fallback below disables
+         * node binding if even strict allocation can't be satisfied,
+         * trading the topology guarantee for the ability to boot at all.
+         */
+        pnode = dom0_gpa_to_pnode(d, (paddr_t)start << PAGE_SHIFT);
+        if ( pnode != NUMA_NO_NODE )
+            node_memflags = MEMF_node(pnode);
+
+        page = alloc_domheap_pages(d, order,
+                                   dom0_memflags | node_memflags |
+                                   MEMF_no_scrub);
         if ( page == NULL )
         {
+            if ( order == 0 && node_memflags )
+            {
+                /*
+                 * Per-node allocation failed.  Disable node binding for
+                 * the remainder of dom0 construction and retry.  This
+                 * means dom0's SRAT may end up advertising a memory
+                 * layout that doesn't match physical placement, which is
+                 * a real degradation, but the alternative (refusing to
+                 * boot dom0 at all) is worse.
+                 */
+                printk(XENLOG_WARNING
+                       "dom0 vNUMA: per-node allocation failed, "
+                       "disabling node binding (SRAT may diverge from "
+                       "actual memory placement)\n");
+                dom0_vnuma_binding_disabled = true;
+                max_order = MAX_ORDER;
+                continue;
+            }
             if ( order == 0 && dom0_memflags )
             {
                 /* Try again without any dom0_memflags. */
