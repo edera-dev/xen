@@ -1026,6 +1026,44 @@ struct xen_domctl_vcpu_msrs {
 };
 #endif
 
+/*
+ * XEN_DOMCTL_get_vcpu_apicids: retrieve the per-vCPU x2APIC identifiers
+ * currently assigned to a domain.
+ *
+ * On x86, when a multi-vnode vNUMA topology has been installed via
+ * XEN_DOMCTL_setvnumainfo, the APIC IDs encode (vnode_index,
+ * intra_pkg_offset) so the package boundary in CPUID 0xB falls on a clean
+ * bit even for non-power-of-two or unbalanced per-vnode vCPU counts.
+ * Without vNUMA (or with a single vnode), APIC IDs follow the legacy
+ * vcpu_id * 2 encoding.
+ *
+ * Toolstacks generating ACPI MADT processor entries for the guest must use
+ * the values returned here to keep the MADT consistent with the values the
+ * guest reads from CPUID 0xB and the vlapic register state.
+ *
+ * Buffer sizing follows the XEN_DOMCTL_get_vcpu_msrs convention:
+ *
+ *   - Pass a NULL apicid_array (or nr_vcpus == 0) for a capacity query;
+ *     no data is copied and nr_filled is set to the domain's max_vcpus.
+ *   - Otherwise nr_vcpus must be >= max_vcpus.  On success the full
+ *     array is written and nr_filled is set to max_vcpus.  If the buffer
+ *     is too small, -ENOBUFS is returned and nr_filled is set to the
+ *     required size so the caller can retry with the right capacity.
+ *
+ * Older Xen builds without this domctl return -ENOSYS, which callers may
+ * use as a capability probe.
+ */
+struct xen_domctl_get_vcpu_apicids {
+    /* IN: output buffer for APIC IDs; entry i is the APIC ID of vCPU i.
+     *     NULL handle = capacity query. */
+    XEN_GUEST_HANDLE_64(uint32) apicid_array;
+    /* IN: capacity of apicid_array in 32-bit elements; 0 = capacity query. */
+    uint32_t nr_vcpus;
+    /* OUT: number of entries written, or max_vcpus for capacity queries
+     *      and -ENOBUFS responses. */
+    uint32_t nr_filled;
+};
+
 /* XEN_DOMCTL_setvnumainfo: specifies a virtual NUMA topology for the guest */
 struct xen_domctl_vnuma {
     /* IN: number of vNUMA nodes to setup. Shall be greater than 0 */
@@ -1375,6 +1413,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
 #define XEN_DOMCTL_gdbsx_domstatus             1003
+#define XEN_DOMCTL_get_vcpu_apicids            2110
     uint32_t interface_version; /* XEN_DOMCTL_INTERFACE_VERSION */
     domid_t  domain;
     uint16_t _pad[3];
@@ -1439,6 +1478,7 @@ struct xen_domctl {
 #endif
         struct xen_domctl_set_llc_colors    set_llc_colors;
         struct xen_domctl_get_domain_state  get_domain_state;
+        struct xen_domctl_get_vcpu_apicids  get_vcpu_apicids;
         uint8_t                             pad[128];
     } u;
 };
