@@ -262,6 +262,38 @@ struct vcpu *__init alloc_dom0_vcpu0(struct domain *dom0)
     return vcpu_create(dom0, 0);
 }
 
+/*
+ * Detection gate for dom0 vNUMA topology.
+ *
+ * Enables a vNUMA-derived NUMA topology for dom0 (SRAT, SLIT, CPUID 0xB,
+ * per-node memory binding) only when all of the following hold:
+ *
+ *  - dom0 is PVH.  PV dom0 cannot observe vNUMA via the standard ACPI
+ *    path because Xen filters SRAT/SLIT out of the tables passed through
+ *    to dom0.
+ *  - dom0 vCPUs are hard-pinned 1:1 to pCPUs (`dom0_vcpus_pin=1`).
+ *  - dom0's vCPU count equals the present pCPU count, so every pCPU has a
+ *    corresponding dom0 vCPU and the layout is the identity mapping
+ *    `vcpu_to_vnode[N] = cpu_to_node(N)`.
+ *  - The host actually has more than one NUMA node.
+ *
+ * Under these conditions there are no layout decisions to make: the
+ * topology directly mirrors the host.
+ */
+bool __init dom0_vnuma_enabled(unsigned int max_vcpus)
+{
+    if ( !opt_dom0_pvh )
+        return false;
+    if ( !opt_dom0_vcpus_pin )
+        return false;
+    if ( max_vcpus != num_present_cpus() )
+        return false;
+    if ( num_online_nodes() <= 1 )
+        return false;
+
+    return true;
+}
+
 #ifdef CONFIG_SHADOW_PAGING
 bool __initdata opt_dom0_shadow;
 #endif
