@@ -22,6 +22,7 @@
 
 #include <asm/bootinfo.h>
 #include <asm/bzimage.h>
+#include <asm/cpu-policy.h>
 #include <asm/dom0_build.h>
 #include <asm/hvm/support.h>
 #include <asm/io_apic.h>
@@ -950,7 +951,13 @@ static int __init pvh_setup_acpi_madt(struct domain *d, paddr_t *addr)
         x2apic->header.type = ACPI_MADT_TYPE_LOCAL_X2APIC;
         x2apic->header.length = sizeof(*x2apic);
         x2apic->uid = i;
-        x2apic->local_apic_id = i * 2;
+        /*
+         * Source APIC IDs from guest_vcpu_x2apic_id() so MADT agrees with
+         * the values dom0 reads from CPUID 0xB and the vlapic register
+         * state.  Without a vNUMA topology installed (or with the CDF
+         * flag unset), the helper returns vcpu_id * 2.
+         */
+        x2apic->local_apic_id = guest_vcpu_x2apic_id(d, i);
         x2apic->lapic_flags = ACPI_MADT_ENABLED;
         x2apic++;
     }
