@@ -1124,6 +1124,102 @@ static int __init pvh_setup_acpi_srat(struct domain *d, paddr_t *addr)
     return rc;
 }
 
+/*
+ * Build a System Locality Distance Information Table from d->vnuma's
+ * vdistance matrix.  Returns 0 on success with *addr set to the SLIT's
+ * guest physical address, or 0 with *addr = 0 when dom0 has no vNUMA
+ * topology (single-node host, detection gate unmet, etc.) and we should
+ * skip SLIT entirely.
+ *
+ * SLIT body is a square matrix of u8 distances indexed [i*N + j] where
+ * N = nr_vnodes.  Distances follow the ACPI SLIT convention: 10 = local,
+ * 11..253 = remote (larger means farther), 254 = unreachable, 255 = reserved.
+ *
+ * Without a SLIT, Linux uses a default distance matrix (10 local /
+ * 20 remote) regardless of actual host topology.  Emitting one lets the
+ * dom0 kernel make better-informed NUMA scheduling decisions.
+ */
+static int __init pvh_setup_acpi_slit(struct domain *d, paddr_t *addr)
+{
+    struct acpi_table_slit *slit;
+    const struct vnuma_info *vnuma;
+    unsigned long size;
+    unsigned int i, j, n;
+    int rc;
+
+    *addr = 0;
+
+    read_lock(&d->vnuma_rwlock);
+    vnuma = d->vnuma;
+    if ( !vnuma || vnuma->nr_vnodes <= 1 )
+    {
+        read_unlock(&d->vnuma_rwlock);
+        return 0;
+    }
+
+    n = vnuma->nr_vnodes;
+
+    /*
+     * struct acpi_table_slit declares entry[1]; the real allocation must
+     * be sized for n*n entries.  Subtract the one entry already counted.
+     */
+    size = sizeof(*slit) + (n * n - 1) * sizeof(slit->entry[0]);
+
+    slit = xzalloc_bytes(size);
+    if ( !slit )
+    {
+        read_unlock(&d->vnuma_rwlock);
+        printk("Unable to allocate memory for SLIT table\n");
+        return -ENOMEM;
+    }
+
+    memcpy(slit->header.signature, ACPI_SIG_SLIT, ACPI_NAME_SIZE);
+    slit->header.revision = 1;
+    safe_strcpy(slit->header.oem_id, "Xen");
+    safe_strcpy(slit->header.oem_table_id, "HVM");
+    slit->header.oem_revision = 0;
+    safe_strcpy(slit->header.asl_compiler_id, "XEN");
+    slit->header.asl_compiler_revision = 0;
+    slit->locality_count = n;
+
+    for ( i = 0; i < n; i++ )
+        for ( j = 0; j < n; j++ )
+        {
+            unsigned int d_ij = vnuma->vdistance[i * n + j];
+
+            /* SLIT entries are u8; clamp at 254 (255 is reserved). */
+            slit->entry[i * n + j] = d_ij > 254 ? 254 : d_ij;
+        }
+
+    read_unlock(&d->vnuma_rwlock);
+
+    slit->header.length = size;
+    slit->header.checksum -= acpi_tb_checksum(ACPI_CAST_PTR(u8, slit), size);
+
+    if ( pvh_steal_ram(d, size, 0, GB(4), addr) )
+    {
+        printk("Unable to steal guest RAM for SLIT\n");
+        rc = -ENOMEM;
+        goto out;
+    }
+
+    if ( pvh_add_mem_range(d, *addr, *addr + size, E820_ACPI) )
+        printk("Unable to add SLIT region to memory map\n");
+
+    rc = hvm_copy_to_guest_phys(*addr, slit, size, d->vcpu[0]);
+    if ( rc )
+    {
+        printk("Unable to copy SLIT into guest memory\n");
+        goto out;
+    }
+
+    rc = 0;
+
+ out:
+    xfree(slit);
+    return rc;
+}
+
 static bool __init acpi_memory_banned(unsigned long address,
                                       unsigned long size)
 {
@@ -1190,7 +1286,8 @@ static bool __init pvh_acpi_xsdt_table_allowed(const char *sig,
 }
 
 static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
-                                      paddr_t srat_addr, paddr_t *addr)
+                                      paddr_t srat_addr, paddr_t slit_addr,
+                                      paddr_t *addr)
 {
     struct acpi_table_xsdt *xsdt;
     struct acpi_table_header *table;
@@ -1198,8 +1295,8 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
     const struct acpi_table_desc *tables = acpi_gbl_root_table_list.tables;
     unsigned long size = sizeof(*xsdt);
     unsigned int i, j, num_tables = 0;
-    /* MADT is always present; SRAT only when vNUMA is active. */
-    unsigned int extra_tables = 1 + (srat_addr ? 1 : 0);
+    /* MADT is always present; SRAT and SLIT only when vNUMA is active. */
+    unsigned int extra_tables = 1 + (srat_addr ? 1 : 0) + (slit_addr ? 1 : 0);
     paddr_t xsdt_paddr;
     int rc;
 
@@ -1275,9 +1372,11 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
     j = 0;
     xsdt->table_offset_entry[j++] = madt_addr;
 
-    /* Add the custom SRAT when dom0 has a vNUMA topology installed. */
+    /* Add the custom SRAT and SLIT when dom0 has a vNUMA topology. */
     if ( srat_addr )
         xsdt->table_offset_entry[j++] = srat_addr;
+    if ( slit_addr )
+        xsdt->table_offset_entry[j++] = slit_addr;
 
     /* Copy the addresses of the rest of the allowed tables. */
     for( i = 0; i < acpi_gbl_root_table_list.count; i++ )
@@ -1325,7 +1424,7 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
 static int __init pvh_setup_acpi(struct domain *d, paddr_t start_info)
 {
     unsigned long pfn, nr_pages;
-    paddr_t madt_paddr, srat_paddr, xsdt_paddr, rsdp_paddr;
+    paddr_t madt_paddr, srat_paddr, slit_paddr, xsdt_paddr, rsdp_paddr;
     unsigned int i;
     int rc;
     struct acpi_table_rsdp *native_rsdp, rsdp = {
@@ -1392,7 +1491,12 @@ static int __init pvh_setup_acpi(struct domain *d, paddr_t start_info)
     if ( rc )
         return rc;
 
-    rc = pvh_setup_acpi_xsdt(d, madt_paddr, srat_paddr, &xsdt_paddr);
+    rc = pvh_setup_acpi_slit(d, &slit_paddr);
+    if ( rc )
+        return rc;
+
+    rc = pvh_setup_acpi_xsdt(d, madt_paddr, srat_paddr, slit_paddr,
+                             &xsdt_paddr);
     if ( rc )
         return rc;
 
