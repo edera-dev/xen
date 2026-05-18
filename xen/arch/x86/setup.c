@@ -1006,13 +1006,14 @@ static struct domain *__init create_dom0(struct boot_info *bi)
 {
     char *cmdline = NULL;
     size_t cmdline_size;
+    unsigned int dom0_vcpus = dom0_max_vcpus();
     struct xen_domctl_createdomain dom0_cfg = {
         .flags = IS_ENABLED(CONFIG_TBOOT) ? XEN_DOMCTL_CDF_s3_integrity : 0,
         .max_evtchn_port = -1,
         .max_grant_frames = -1,
         .max_maptrack_frames = -1,
         .grant_opts = XEN_DOMCTL_GRANT_version(opt_gnttab_max_version),
-        .max_vcpus = dom0_max_vcpus(),
+        .max_vcpus = dom0_vcpus,
         .arch = {
             .misc_flags = opt_dom0_msr_relaxed ? XEN_X86_MSR_RELAXED : 0,
         },
@@ -1035,6 +1036,9 @@ static struct domain *__init create_dom0(struct boot_info *bi)
 
     if ( iommu_enabled )
         dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;
+
+    if ( dom0_vnuma_enabled(dom0_vcpus) )
+        dom0_cfg.flags |= XEN_DOMCTL_CDF_vnuma_apic_topology;
 
     /* Allocate initial domain ID.  Not d0 for pvshim. */
     bd->domid = domid_alloc(get_initial_domain_id());
