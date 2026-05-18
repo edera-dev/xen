@@ -17,6 +17,7 @@
 #include <xen/numa.h>
 #include <xen/pci.h>
 #include <xen/softirq.h>
+#include <xen/string.h>
 
 #include <acpi/actables.h>
 
@@ -1002,6 +1003,124 @@ static int __init pvh_setup_acpi_madt(struct domain *d, paddr_t *addr)
     return rc;
 }
 
+/*
+ * Build a System Resource Affinity Table reflecting d->vnuma and write it
+ * into guest memory.  Returns 0 on success with *addr set to the SRAT's
+ * guest physical address, or 0 with *addr = 0 when dom0 has no vNUMA
+ * topology (single-node host, detection gate unmet, etc.) and we should
+ * skip SRAT entirely.
+ *
+ * SRAT body:
+ *   - One Processor Local x2APIC Affinity entry per vCPU
+ *     (proximity_domain = vcpu_to_vnode[i], apic_id from guest_vcpu_x2apic_id)
+ *   - One Memory Affinity entry per vnuma->vmemrange[]
+ *     (proximity_domain = range->nid, base_address/length from range)
+ *
+ * The proximity_domain values are vnode indices; Linux uses them to build
+ * its NUMA node map and to cross-reference processor and memory affinity.
+ */
+static int __init pvh_setup_acpi_srat(struct domain *d, paddr_t *addr)
+{
+    struct acpi_table_srat *srat;
+    struct acpi_srat_x2apic_cpu_affinity *x2apic;
+    struct acpi_srat_mem_affinity *mem;
+    const struct vnuma_info *vnuma;
+    unsigned long size;
+    unsigned int i;
+    int rc;
+
+    *addr = 0;
+
+    read_lock(&d->vnuma_rwlock);
+    vnuma = d->vnuma;
+    if ( !vnuma || vnuma->nr_vnodes <= 1 )
+    {
+        read_unlock(&d->vnuma_rwlock);
+        return 0;
+    }
+
+    size = sizeof(*srat);
+    size += sizeof(*x2apic) * d->max_vcpus;
+    size += sizeof(*mem) * vnuma->nr_vmemranges;
+
+    srat = xzalloc_bytes(size);
+    if ( !srat )
+    {
+        read_unlock(&d->vnuma_rwlock);
+        printk("Unable to allocate memory for SRAT table\n");
+        return -ENOMEM;
+    }
+
+    memcpy(srat->header.signature, ACPI_SIG_SRAT, ACPI_NAME_SIZE);
+    srat->header.revision = 3;
+    /* OEM fields match the style used by the custom MADT we build. */
+    safe_strcpy(srat->header.oem_id, "Xen");
+    safe_strcpy(srat->header.oem_table_id, "HVM");
+    srat->header.oem_revision = 0;
+    safe_strcpy(srat->header.asl_compiler_id, "XEN");
+    srat->header.asl_compiler_revision = 0;
+    srat->table_revision = 1;
+
+    x2apic = (void *)(srat + 1);
+    for ( i = 0; i < d->max_vcpus; i++ )
+    {
+        x2apic->header.type = ACPI_SRAT_TYPE_X2APIC_CPU_AFFINITY;
+        x2apic->header.length = sizeof(*x2apic);
+        x2apic->proximity_domain = vnuma->vcpu_to_vnode[i];
+        x2apic->apic_id = guest_vcpu_x2apic_id(d, i);
+        x2apic->flags = ACPI_SRAT_CPU_ENABLED;
+        x2apic++;
+    }
+
+    mem = (void *)x2apic;
+    for ( i = 0; i < vnuma->nr_vmemranges; i++ )
+    {
+        const struct xen_vmemrange *range = &vnuma->vmemrange[i];
+
+        mem->header.type = ACPI_SRAT_TYPE_MEMORY_AFFINITY;
+        mem->header.length = sizeof(*mem);
+        mem->proximity_domain = range->nid;
+        mem->base_address = range->start;
+        mem->length = range->end - range->start;
+        mem->flags = ACPI_SRAT_MEM_ENABLED;
+        mem++;
+    }
+
+    read_unlock(&d->vnuma_rwlock);
+
+    ASSERT(((void *)mem - (void *)srat) == size);
+    srat->header.length = size;
+    /*
+     * Calling acpi_tb_checksum here is a layering violation, but mirrors
+     * what pvh_setup_acpi_madt() does -- introducing a wrapper for such
+     * simple usage seems overkill.
+     */
+    srat->header.checksum -= acpi_tb_checksum(ACPI_CAST_PTR(u8, srat), size);
+
+    if ( pvh_steal_ram(d, size, 0, GB(4), addr) )
+    {
+        printk("Unable to steal guest RAM for SRAT\n");
+        rc = -ENOMEM;
+        goto out;
+    }
+
+    if ( pvh_add_mem_range(d, *addr, *addr + size, E820_ACPI) )
+        printk("Unable to add SRAT region to memory map\n");
+
+    rc = hvm_copy_to_guest_phys(*addr, srat, size, d->vcpu[0]);
+    if ( rc )
+    {
+        printk("Unable to copy SRAT into guest memory\n");
+        goto out;
+    }
+
+    rc = 0;
+
+ out:
+    xfree(srat);
+    return rc;
+}
+
 static bool __init acpi_memory_banned(unsigned long address,
                                       unsigned long size)
 {
@@ -1068,7 +1187,7 @@ static bool __init pvh_acpi_xsdt_table_allowed(const char *sig,
 }
 
 static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
-                                      paddr_t *addr)
+                                      paddr_t srat_addr, paddr_t *addr)
 {
     struct acpi_table_xsdt *xsdt;
     struct acpi_table_header *table;
@@ -1076,6 +1195,8 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
     const struct acpi_table_desc *tables = acpi_gbl_root_table_list.tables;
     unsigned long size = sizeof(*xsdt);
     unsigned int i, j, num_tables = 0;
+    /* MADT is always present; SRAT only when vNUMA is active. */
+    unsigned int extra_tables = 1 + (srat_addr ? 1 : 0);
     paddr_t xsdt_paddr;
     int rc;
 
@@ -1095,11 +1216,14 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
     }
 
     /*
-     * No need to add or subtract anything because struct acpi_table_xsdt
-     * includes one array slot already, and we have filtered out the original
-     * MADT and we are going to add a custom built MADT.
+     * struct acpi_table_xsdt includes one array slot already.  That slot
+     * accommodates our custom MADT (which replaces the filtered native
+     * MADT, keeping the count balanced).  Any additional Xen-generated
+     * tables (e.g. SRAT when dom0 vNUMA is active) need extra slots beyond
+     * the one already included in struct acpi_table_xsdt.
      */
     size += num_tables * sizeof(xsdt->table_offset_entry[0]);
+    size += (extra_tables - 1) * sizeof(xsdt->table_offset_entry[0]);
 
     xsdt = xzalloc_bytes(size);
     if ( !xsdt )
@@ -1144,11 +1268,16 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
      */
     xsdt->header.signature[0] = 'X';
 
-    /* Add the custom MADT. */
-    xsdt->table_offset_entry[0] = madt_addr;
+    /* Add the custom MADT (always present). */
+    j = 0;
+    xsdt->table_offset_entry[j++] = madt_addr;
+
+    /* Add the custom SRAT when dom0 has a vNUMA topology installed. */
+    if ( srat_addr )
+        xsdt->table_offset_entry[j++] = srat_addr;
 
     /* Copy the addresses of the rest of the allowed tables. */
-    for( i = 0, j = 1; i < acpi_gbl_root_table_list.count; i++ )
+    for( i = 0; i < acpi_gbl_root_table_list.count; i++ )
     {
         if ( pvh_acpi_xsdt_table_allowed(tables[i].signature.ascii,
                                          tables[i].address, tables[i].length) )
@@ -1193,7 +1322,7 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
 static int __init pvh_setup_acpi(struct domain *d, paddr_t start_info)
 {
     unsigned long pfn, nr_pages;
-    paddr_t madt_paddr, xsdt_paddr, rsdp_paddr;
+    paddr_t madt_paddr, srat_paddr, xsdt_paddr, rsdp_paddr;
     unsigned int i;
     int rc;
     struct acpi_table_rsdp *native_rsdp, rsdp = {
@@ -1256,7 +1385,11 @@ static int __init pvh_setup_acpi(struct domain *d, paddr_t start_info)
     if ( rc )
         return rc;
 
-    rc = pvh_setup_acpi_xsdt(d, madt_paddr, &xsdt_paddr);
+    rc = pvh_setup_acpi_srat(d, &srat_paddr);
+    if ( rc )
+        return rc;
+
+    rc = pvh_setup_acpi_xsdt(d, madt_paddr, srat_paddr, &xsdt_paddr);
     if ( rc )
         return rc;
 
