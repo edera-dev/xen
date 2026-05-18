@@ -194,9 +194,19 @@ struct vnuma_info {
 
 #ifndef CONFIG_PV_SHIM_EXCLUSIVE
 void vnuma_destroy(struct vnuma_info *vnuma);
+struct vnuma_info *vnuma_alloc(unsigned int nr_vnodes,
+                               unsigned int nr_ranges,
+                               unsigned int nr_vcpus);
 #else
 static inline void vnuma_destroy(struct vnuma_info *vnuma) { ASSERT(!vnuma); }
 #endif
+
+/*
+ * Notify the architecture layer that the domain's vNUMA topology has
+ * changed.  On x86 this recalculates CPUID topology leaves that depend
+ * on vNUMA configuration.  Weak no-op default in common/domctl.c.
+ */
+void arch_domain_update_vnuma(struct domain *d);
 
 #ifdef CONFIG_VMTRACE
 extern bool vmtrace_available;
