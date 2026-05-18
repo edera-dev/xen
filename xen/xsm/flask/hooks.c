@@ -750,6 +750,7 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETVCPUCONTEXT);
 
     case XEN_DOMCTL_get_ext_vcpucontext:
+    case XEN_DOMCTL_get_vcpu_apicids:
     case XEN_DOMCTL_get_vcpu_msrs:
     case XEN_DOMCTL_getvcpucontext:
     case XEN_DOMCTL_getvcpuextstate:

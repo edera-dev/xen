@@ -1359,6 +1359,62 @@ long arch_do_domctl(
             copyback = true;
         break;
 
+    case XEN_DOMCTL_get_vcpu_apicids:
+    {
+        /*
+         * Return the per-vCPU x2APIC identifiers currently assigned by Xen.
+         * Toolstacks generating ACPI MADT processor entries must source
+         * APIC IDs from here so the MADT agrees with the values the guest
+         * reads from CPUID 0xB and the vlapic register state.  This matters
+         * for vNUMA layouts with non-power-of-two or unbalanced per-vnode
+         * vCPU counts, where the APIC ID encoding is non-trivial; for
+         * legacy / single-vnode layouts each ID is simply (vcpu_id * 2).
+         *
+         * Buffer sizing follows the XEN_DOMCTL_get_vcpu_msrs convention:
+         * a NULL apicid_array (or nr_vcpus == 0) is a capacity query that
+         * returns d->max_vcpus in nr_filled.  An insufficient buffer
+         * returns -ENOBUFS, also with nr_filled = d->max_vcpus.
+         */
+        struct xen_domctl_get_vcpu_apicids *cmd = &domctl->u.get_vcpu_apicids;
+        unsigned int max = d->max_vcpus;
+        uint32_t *buf;
+
+        ret = 0;
+        copyback = true;
+
+        /* Capacity query: NULL handle or zero count. */
+        if ( guest_handle_is_null(cmd->apicid_array) || cmd->nr_vcpus == 0 )
+        {
+            cmd->nr_filled = max;
+            break;
+        }
+
+        if ( cmd->nr_vcpus < max )
+        {
+            cmd->nr_filled = max;
+            ret = -ENOBUFS;
+            break;
+        }
+
+        buf = xmalloc_array(uint32_t, max);
+        if ( !buf )
+        {
+            ret = -ENOMEM;
+            break;
+        }
+
+        for ( i = 0; i < max; i++ )
+            buf[i] = guest_vcpu_x2apic_id(d, i);
+
+        if ( copy_to_guest(cmd->apicid_array, buf, max) )
+            ret = -EFAULT;
+        else
+            cmd->nr_filled = max;
+
+        xfree(buf);
+        break;
+    }
+
     default:
         ret = -ENOSYS;
         break;
