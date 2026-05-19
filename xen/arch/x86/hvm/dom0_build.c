@@ -398,74 +398,134 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
 {
     struct e820entry *entry, *entry_guest;
     unsigned int i;
-    unsigned long pages, cur_pages = 0;
+    unsigned long total_ram_pages = 0, cur_pages = 0, seen_pages = 0;
     uint64_t start, end;
 
     /*
-     * Craft the e820 memory map for Dom0 based on the hardware e820 map.
-     * Add an extra entry in case we have to split a RAM entry into a RAM and a
-     * UNUSABLE one in order to truncate it.
+     * Pass 1: sum the host's E820_RAM (page-aligned, the same way pass 2
+     * computes per-region size).  Used in pass 2 to distribute nr_pages
+     * across RAM regions proportionally to each region's size.
+     *
+     * Without this, the old "fill regions in address order until nr_pages
+     * is reached, mark the rest UNUSABLE" logic piled all of dom0's RAM
+     * onto whichever physical NUMA nodes own the lowest physical addresses.
+     * On a multi-socket host that meant dom0 ran with 0 bytes of memory on
+     * most of its nodes -- the per-node MEMF_node bindings in
+     * pvh_populate_memory_range() worked correctly but had no high-address
+     * RAM regions to populate, since pvh_setup_e820() had already turned
+     * them into UNUSABLE.
      */
-    d->arch.e820 = xzalloc_array(struct e820entry, e820.nr_map + 1);
-    if ( !d->arch.e820 )
-        panic("Unable to allocate memory for Dom0 e820 map\n");
-    entry_guest = d->arch.e820;
-
-    /* Clamp e820 memory map to match the memory assigned to Dom0 */
     for ( i = 0, entry = e820.map; i < e820.nr_map; i++, entry++ )
     {
-        *entry_guest = *entry;
-
         if ( entry->type != E820_RAM )
-            goto next;
+            continue;
 
-        if ( nr_pages == cur_pages )
-        {
-            /*
-             * We already have all the requested memory, turn this RAM region
-             * into a UNUSABLE region in order to prevent Dom0 from placing
-             * BARs in this area.
-             */
-            entry_guest->type = E820_UNUSABLE;
-            goto next;
-        }
-
-        /*
-         * Make sure the start and length are aligned to PAGE_SIZE, because
-         * that's the minimum granularity of the 2nd stage translation. Since
-         * the p2m code uses PAGE_ORDER_4K internally, also use it here in
-         * order to prevent this code from getting out of sync.
-         */
         start = ROUNDUP(entry->addr, PAGE_SIZE << PAGE_ORDER_4K);
         end = (entry->addr + entry->size) &
               ~((PAGE_SIZE << PAGE_ORDER_4K) - 1);
         if ( start >= end )
             continue;
 
-        entry_guest->type = E820_RAM;
+        total_ram_pages += PFN_DOWN(end - start);
+    }
+
+    if ( total_ram_pages == 0 )
+        panic("Host E820 has no usable RAM\n");
+
+    if ( nr_pages > total_ram_pages )
+        nr_pages = total_ram_pages;
+
+    /*
+     * Worst case each RAM region splits into RAM + UNUSABLE; non-RAM
+     * entries pass through unchanged.  Bound the allocation accordingly.
+     */
+    d->arch.e820 = xzalloc_array(struct e820entry, e820.nr_map * 2);
+    if ( !d->arch.e820 )
+        panic("Unable to allocate memory for Dom0 e820 map\n");
+    entry_guest = d->arch.e820;
+
+    /*
+     * Pass 2: copy each E820 entry.  For RAM entries, compute the
+     * proportional keep amount via Bresenham-style remainder accumulation
+     * (target_for_this_and_all_prior - already_kept) so per-region
+     * rounding never drifts -- the final RAM region's keep absorbs any
+     * leftover so cur_pages == nr_pages at the end.
+     */
+    for ( i = 0, entry = e820.map; i < e820.nr_map; i++, entry++ )
+    {
+        unsigned long region_pages, target, keep;
+
+        *entry_guest = *entry;
+
+        if ( entry->type != E820_RAM )
+            goto next;
+
+        start = ROUNDUP(entry->addr, PAGE_SIZE << PAGE_ORDER_4K);
+        end = (entry->addr + entry->size) &
+              ~((PAGE_SIZE << PAGE_ORDER_4K) - 1);
+        if ( start >= end )
+        {
+            /*
+             * Sub-page RAM entry: cannot be granted as RAM (the p2m works
+             * at PAGE_ORDER_4K).  Mark UNUSABLE rather than RAM so dom0
+             * doesn't try to use it, while still preserving the address
+             * layout of the original e820.
+             */
+            entry_guest->type = E820_UNUSABLE;
+            goto next;
+        }
+
         entry_guest->addr = start;
         entry_guest->size = end - start;
-        pages = PFN_DOWN(entry_guest->size);
-        if ( (cur_pages + pages) > nr_pages )
+        region_pages = PFN_DOWN(end - start);
+        seen_pages += region_pages;
+
+        /*
+         * Proportional target: by the end of this region, we should have
+         * kept floor(seen_pages * nr_pages / total_ram_pages) RAM pages
+         * total.  Subtract what we've already kept to get this region's
+         * share.  Use a 128-bit-style mulhi via uint64_t to avoid overflow
+         * on hosts with terabytes of RAM (seen_pages * nr_pages can
+         * exceed 2^64 in 32-bit math).
+         */
+        target = (uint64_t)seen_pages * nr_pages / total_ram_pages;
+        keep = target - cur_pages;
+        cur_pages = target;
+
+        if ( keep > region_pages )
+            keep = region_pages;  /* defensive clamp; shouldn't trip */
+
+        if ( keep == 0 )
         {
-            /* Truncate region */
-            entry_guest->size = (nr_pages - cur_pages) << PAGE_SHIFT;
-            /* Add the remaining of the RAM region as UNUSABLE. */
+            /*
+             * This whole region is trimmed away.  Mark UNUSABLE so dom0
+             * doesn't place BARs here.
+             */
+            entry_guest->type = E820_UNUSABLE;
+            goto next;
+        }
+
+        entry_guest->type = E820_RAM;
+        entry_guest->size = (uint64_t)keep << PAGE_SHIFT;
+
+        if ( keep < region_pages )
+        {
+            /*
+             * Region split: emit the kept RAM prefix and follow it with
+             * an UNUSABLE remainder so the address layout is unchanged
+             * but dom0 won't try to use those pages as RAM.
+             */
             entry_guest++;
             d->arch.nr_e820++;
             entry_guest->type = E820_UNUSABLE;
-            entry_guest->addr = start + ((nr_pages - cur_pages) << PAGE_SHIFT);
+            entry_guest->addr = start + ((uint64_t)keep << PAGE_SHIFT);
             entry_guest->size = end - entry_guest->addr;
-            cur_pages = nr_pages;
         }
-        else
-        {
-            cur_pages += pages;
-        }
+
  next:
         d->arch.nr_e820++;
         entry_guest++;
-        ASSERT(d->arch.nr_e820 <= e820.nr_map + 1);
+        ASSERT(d->arch.nr_e820 <= e820.nr_map * 2);
     }
     ASSERT(cur_pages == nr_pages);
 }
