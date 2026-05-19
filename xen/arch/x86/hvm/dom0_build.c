@@ -1701,15 +1701,41 @@ static int __init dom0_setup_vnuma(struct domain *d)
     for_each_node_mask ( node, used_nodes )
         pnodes[i++] = node;
 
-    /* One vmemrange per (E820 RAM region, vnode) pair. */
-    for ( i = 0; i < d->arch.nr_e820; i++ )
-        if ( d->arch.e820[i].type == E820_RAM )
-            nr_vmemranges += nr_vnodes;
+    /*
+     * Count vmemranges = number of physical NUMA memblks owned by nodes
+     * dom0 spans.  We emit one vmemrange per memblk, covering the full
+     * host physical range owned by that node.  This is critical because
+     * PVH dom0's guest E820 mirrors the host layout (Linux sees all host
+     * RAM regions even though only ~dom0_mem worth are actually populated),
+     * and Linux's NUMA validator (numa_register_memblks) compares its e820
+     * RAM view against SRAT memory affinity coverage.  Anything less than
+     * full coverage triggers the "no nodes coverage" rejection and falls
+     * back to a faked single-node layout.
+     *
+     * Per-memblk ownership is also the source of truth for our per-page
+     * MEMF_node binding (via dom0_gpa_to_pnode), so using memblks here
+     * keeps SRAT and memory placement consistent.
+     */
+    {
+        unsigned int k, nr_memblks = numa_get_nr_memblks();
+        paddr_t mstart, mend;
+        nodeid_t mnid;
+
+        for ( k = 0; k < nr_memblks; k++ )
+        {
+            if ( !numa_get_memblk(k, &mstart, &mend, &mnid) )
+                break;
+            if ( !nodemask_test(mnid, &used_nodes) )
+                continue;
+            nr_vmemranges++;
+        }
+    }
 
     if ( nr_vmemranges == 0 )
     {
         printk(XENLOG_WARNING
-               "%pd: no E820 RAM regions; skipping vNUMA setup\n", d);
+               "%pd: no NUMA memblks for vnode nodes; "
+               "skipping vNUMA setup\n", d);
         return 0;
     }
 
@@ -1744,37 +1770,36 @@ static int __init dom0_setup_vnuma(struct domain *d)
                 __node_distance(pnodes[i], pnodes[j]);
 
     /*
-     * vmemranges: split each E820 RAM region equally across vnodes.  Each
-     * vnode has the same proportional share of the host's physical CPUs
-     * (1:1 vCPU/pCPU pinning, dom0 vCPU count == pCPU count), so equal
-     * memory share is the natural choice.
-     *
-     * The last vnode's chunk absorbs any rounding remainder so the union
-     * of vmemrange entries exactly covers the original E820 RAM region.
+     * Build vmemranges from physical NUMA memblks, second pass.  Each
+     * emitted vmemrange covers one host node's contiguous physical range;
+     * nid is the dense vnode index that maps to that pnode.  Iteration
+     * order matches the counting pass above so range_idx ends at
+     * nr_vmemranges.
      */
     range_idx = 0;
-    for ( i = 0; i < d->arch.nr_e820; i++ )
     {
-        uint64_t base, size, chunk;
+        unsigned int k, nr_memblks = numa_get_nr_memblks();
+        paddr_t mstart, mend;
+        nodeid_t mnid;
 
-        if ( d->arch.e820[i].type != E820_RAM )
-            continue;
-
-        base = d->arch.e820[i].addr;
-        size = d->arch.e820[i].size;
-        /* Page-align per-vnode chunk to keep vmemrange boundaries clean. */
-        chunk = (size / nr_vnodes) & ~(PAGE_SIZE - 1);
-
-        for ( j = 0; j < nr_vnodes; j++ )
+        for ( k = 0; k < nr_memblks; k++ )
         {
-            uint64_t start = base + j * chunk;
-            uint64_t end = (j == nr_vnodes - 1) ? base + size
-                                                : start + chunk;
+            unsigned int vnode;
 
-            vnuma->vmemrange[range_idx].start = start;
-            vnuma->vmemrange[range_idx].end = end;
+            if ( !numa_get_memblk(k, &mstart, &mend, &mnid) )
+                break;
+            if ( !nodemask_test(mnid, &used_nodes) )
+                continue;
+
+            for ( vnode = 0; vnode < nr_vnodes; vnode++ )
+                if ( pnodes[vnode] == mnid )
+                    break;
+            ASSERT(vnode < nr_vnodes);
+
+            vnuma->vmemrange[range_idx].start = mstart;
+            vnuma->vmemrange[range_idx].end = mend;
             vnuma->vmemrange[range_idx].flags = 0;
-            vnuma->vmemrange[range_idx].nid = j;
+            vnuma->vmemrange[range_idx].nid = vnode;
             range_idx++;
         }
     }
