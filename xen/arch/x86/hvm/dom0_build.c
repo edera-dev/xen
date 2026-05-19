@@ -1668,7 +1668,7 @@ static int __init dom0_setup_vnuma(struct domain *d)
     struct vnuma_info *vnuma;
     nodeid_t pnodes[MAX_NUMNODES];
     nodemask_t used_nodes;
-    unsigned int nr_vnodes, nr_vmemranges = 0, range_idx, i, j;
+    unsigned int nr_vnodes, nr_vmemranges = 0, range_idx, i, j, max_pxm = 0;
     nodeid_t node;
 
     if ( !(d->options & XEN_DOMCTL_CDF_vnuma_apic_topology) )
@@ -1691,18 +1691,46 @@ static int __init dom0_setup_vnuma(struct domain *d)
             node_set(node, used_nodes);
     }
 
-    nr_vnodes = nodes_weight(used_nodes);
-    if ( nr_vnodes <= 1 )
+    if ( nodes_weight(used_nodes) <= 1 )
         return 0;  /* Single-node host or all CPUs on one node — no vNUMA. */
 
     /*
-     * Build dense vnode index → physical node ID mapping.  Iteration over
-     * used_nodes yields nodes in ascending order, so vnode 0 corresponds
-     * to the lowest-numbered physical node dom0 spans, and so on.
+     * Build pnodes[] indexed by host PXM (ACPI proximity domain), not by
+     * a dense Xen-internal vnode id.  Xen renumbers PXMs in SRAT memory-
+     * table order during boot (PXM 1 may become Xen node 3, etc.), so a
+     * dense-vnode SRAT would advertise socket numbers that are a permutation
+     * of the host's firmware-assigned proximity numbering -- "numactl -N 1"
+     * in dom0 would land on the wrong physical socket, "lscpu" would
+     * disagree with the host, and any tooling that compares dom0's view
+     * with the host's would be confused.
+     *
+     * Using PXM as the vnode index makes vcpu_to_vnode/vmemrange.nid
+     * directly meaningful to anything reading /proc/cpuinfo or SRAT, with
+     * no further translation needed in cpuid.c or pvh_setup_acpi_srat.
+     * vnode_to_pnode[PXM] still stores the Xen internal node id (needed
+     * for SLIT __node_distance and MEMF_node), so the internal allocation
+     * path is unchanged.  Unused PXM slots (gaps in firmware numbering)
+     * stay NUMA_NO_NODE and represent empty vnodes -- Linux treats those
+     * as offline proximity domains, which is the correct behaviour.
      */
-    i = 0;
+    for ( i = 0; i < ARRAY_SIZE(pnodes); i++ )
+        pnodes[i] = NUMA_NO_NODE;
     for_each_node_mask ( node, used_nodes )
-        pnodes[i++] = node;
+    {
+        unsigned int pxm = numa_node_to_arch_nid(node);
+
+        if ( pxm >= ARRAY_SIZE(pnodes) )
+        {
+            printk(XENLOG_WARNING
+                   "%pd: PXM %u >= MAX_NUMNODES; skipping vNUMA setup\n",
+                   d, pxm);
+            return 0;
+        }
+        pnodes[pxm] = node;
+        if ( pxm > max_pxm )
+            max_pxm = pxm;
+    }
+    nr_vnodes = max_pxm + 1;
 
     /*
      * Count vmemranges = number of physical NUMA memblks owned by nodes
@@ -1749,35 +1777,36 @@ static int __init dom0_setup_vnuma(struct domain *d)
     vnuma->nr_vnodes = nr_vnodes;
     vnuma->nr_vmemranges = nr_vmemranges;
 
-    /* vnode → pnode mapping. */
+    /* vnode (= host PXM) → pnode (= Xen internal node id) mapping. */
     for ( i = 0; i < nr_vnodes; i++ )
         vnuma->vnode_to_pnode[i] = pnodes[i];
 
-    /* vCPU → vnode mapping via cpu_to_node. */
+    /* vCPU → vnode (= host PXM of the vCPU's pinned pCPU). */
     for ( i = 0; i < d->max_vcpus; i++ )
-    {
-        nodeid_t cpu_node = cpu_to_node(i);
-
-        for ( j = 0; j < nr_vnodes; j++ )
-            if ( pnodes[j] == cpu_node )
-            {
-                vnuma->vcpu_to_vnode[i] = j;
-                break;
-            }
-    }
-
-    /* SLIT: mirror the host SLIT for the nodes we use. */
-    for ( i = 0; i < nr_vnodes; i++ )
-        for ( j = 0; j < nr_vnodes; j++ )
-            vnuma->vdistance[i * nr_vnodes + j] =
-                __node_distance(pnodes[i], pnodes[j]);
+        vnuma->vcpu_to_vnode[i] = numa_node_to_arch_nid(cpu_to_node(i));
 
     /*
-     * Build vmemranges from physical NUMA memblks, second pass.  Each
-     * emitted vmemrange covers one host node's contiguous physical range;
-     * nid is the dense vnode index that maps to that pnode.  Iteration
-     * order matches the counting pass above so range_idx ends at
-     * nr_vmemranges.
+     * SLIT: distances between vnodes are distances between the host pnodes
+     * each PXM names.  Empty PXM slots (firmware-numbering gaps) get the
+     * standard {10 on diagonal, 20 off-diagonal} placeholder so Linux
+     * doesn't see suspicious zeros for offline proximity domains.
+     */
+    for ( i = 0; i < nr_vnodes; i++ )
+        for ( j = 0; j < nr_vnodes; j++ )
+        {
+            if ( pnodes[i] == NUMA_NO_NODE || pnodes[j] == NUMA_NO_NODE )
+                vnuma->vdistance[i * nr_vnodes + j] = (i == j) ? 10 : 20;
+            else
+                vnuma->vdistance[i * nr_vnodes + j] =
+                    __node_distance(pnodes[i], pnodes[j]);
+        }
+
+    /*
+     * Build vmemranges from physical NUMA memblks (second pass; iteration
+     * matches the counting pass so range_idx ends at nr_vmemranges).  nid
+     * is the host PXM that physically owns the range, used both as the
+     * proximity_domain in our SRAT emission and as the index for the
+     * MEMF_node lookup in dom0_gpa_to_pnode -> vnode_to_pnode[nid].
      */
     range_idx = 0;
     {
@@ -1787,22 +1816,15 @@ static int __init dom0_setup_vnuma(struct domain *d)
 
         for ( k = 0; k < nr_memblks; k++ )
         {
-            unsigned int vnode;
-
             if ( !numa_get_memblk(k, &mstart, &mend, &mnid) )
                 break;
             if ( !nodemask_test(mnid, &used_nodes) )
                 continue;
 
-            for ( vnode = 0; vnode < nr_vnodes; vnode++ )
-                if ( pnodes[vnode] == mnid )
-                    break;
-            ASSERT(vnode < nr_vnodes);
-
             vnuma->vmemrange[range_idx].start = mstart;
             vnuma->vmemrange[range_idx].end = mend;
             vnuma->vmemrange[range_idx].flags = 0;
-            vnuma->vmemrange[range_idx].nid = vnode;
+            vnuma->vmemrange[range_idx].nid = numa_node_to_arch_nid(mnid);
             range_idx++;
         }
     }
@@ -1824,10 +1846,13 @@ static int __init dom0_setup_vnuma(struct domain *d)
 
     if ( opt_dom0_verbose )
     {
-        printk(XENLOG_INFO "%pd vNUMA: %u vnodes\n", d, nr_vnodes);
+        printk(XENLOG_INFO
+               "%pd vNUMA: %u vnodes (indexed by host PXM)\n",
+               d, nr_vnodes);
         for ( i = 0; i < nr_vnodes; i++ )
-            printk(XENLOG_INFO "  vnode %u -> pnode %u\n",
-                   i, vnuma->vnode_to_pnode[i]);
+            if ( pnodes[i] != NUMA_NO_NODE )
+                printk(XENLOG_INFO "  PXM %u -> Xen node %u\n",
+                       i, vnuma->vnode_to_pnode[i]);
     }
 
     return 0;
