@@ -123,6 +123,18 @@ static inline nodeid_t mfn_to_nid(mfn_t mfn)
 extern int arch_get_ram_range(unsigned int idx,
                               paddr_t *start, paddr_t *end);
 extern bool valid_numa_range(paddr_t start, paddr_t end, nodeid_t node);
+
+/*
+ * Iterators over the host's physical NUMA memory blocks (the [start, end)
+ * ranges fed in via SRAT / device tree, one per arch-node).  numa_get_memblk
+ * returns false once idx >= numa_get_nr_memblks().  Intended for callers
+ * that need to synthesise per-node memory affinity for guest-visible
+ * tables (e.g. dom0 vNUMA SRAT generation).
+ */
+extern unsigned int numa_get_nr_memblks(void);
+extern bool numa_get_memblk(unsigned int idx, paddr_t *start, paddr_t *end,
+                            nodeid_t *nid);
+
 extern bool numa_memblks_available(void);
 extern bool numa_update_node_memblks(nodeid_t node, unsigned int arch_nid,
                                      paddr_t start, paddr_t size, bool hotplug);

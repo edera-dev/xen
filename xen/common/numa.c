@@ -77,6 +77,32 @@ bool valid_numa_range(paddr_t start, paddr_t end, nodeid_t node)
     return false;
 }
 
+/*
+ * Iterate the (start, end, nid) triples that describe the host's physical
+ * NUMA memory layout.  Used by callers that need to synthesise per-node
+ * memory information for a domain -- e.g. dom0 vNUMA needs to know which
+ * physical node owns each region of its host-shaped guest E820 so the
+ * derived SRAT entries match reality.  Returns false once idx is past the
+ * last memblk.
+ */
+unsigned int numa_get_nr_memblks(void)
+{
+    return num_node_memblks;
+}
+
+bool numa_get_memblk(unsigned int idx, paddr_t *start, paddr_t *end,
+                     nodeid_t *nid)
+{
+    if ( idx >= num_node_memblks )
+        return false;
+
+    *start = node_memblk_range[idx].start;
+    *end = node_memblk_range[idx].end;
+    *nid = memblk_nodeid[idx];
+
+    return true;
+}
+
 static enum conflicts __init conflicting_memblks(
     nodeid_t nid, paddr_t start, paddr_t end, paddr_t nd_start,
     paddr_t nd_end, unsigned int *mblkid)
