@@ -740,7 +740,57 @@ struct xen_vnuma_topology_info {
 typedef struct xen_vnuma_topology_info xen_vnuma_topology_info_t;
 DEFINE_XEN_GUEST_HANDLE(xen_vnuma_topology_info_t);
 
-/* Next available subop number is 29 */
+/* Next available upstream subop number is 29.  Edera-custom subops
+ * start at 40 to leave headroom for upstream additions. */
+
+/*
+ * XENMEM_get_mfn_pxms: hardware-domain query that resolves an array of
+ * host MFNs into the host firmware proximity-domain identifier (PXM on
+ * x86 ACPI, the device-tree numa-node-id on systems that use one) of
+ * the node each MFN lives on.
+ *
+ * The result is the firmware-canonical identifier, not Xen's internal
+ * node id.  Three identifier namespaces exist around NUMA:
+ *
+ *   - host PXM         (firmware-supplied, stable, what dom0's SRAT
+ *                       contains and what dom0 Linux maps to its own
+ *                       node ids via pxm_to_node())
+ *   - Xen-internal nid (assigned in SRAT memory-table order; an
+ *                       implementation detail)
+ *   - dom0 Linux node  (Linux-side node id after pxm_to_node())
+ *
+ * Returning PXM lets callers translate to whichever space they need
+ * with a single lookup, and matches what dom0's own SRAT already uses.
+ *
+ * Each output slot is either a valid PXM or XEN_INVALID_NUMA_ID for
+ * MFNs Xen does not have node information for (out of range or
+ * otherwise without a valid frame-table entry).  Hypervisors built
+ * without NUMA support fail the call with -ENOSYS; callers are
+ * expected to treat that as "no NUMA info available" and fall back
+ * to NUMA-oblivious behaviour.
+ *
+ * Callers must be the hardware domain.  nr_mfns is bounded by Xen to
+ * keep the hypercall cost predictable; callers needing more should
+ * batch.
+ */
+#define XENMEM_get_mfn_pxms                 40
+
+#define XEN_INVALID_NUMA_ID                 (~(uint32_t)0)
+
+struct xen_get_mfn_pxms {
+    /* IN: array of host MFNs to look up. */
+    XEN_GUEST_HANDLE(xen_pfn_t) mfns;
+    /* OUT: PXM per MFN, or XEN_INVALID_NUMA_ID. */
+    XEN_GUEST_HANDLE(uint32) pxms;
+    /* IN: length of both arrays. */
+    uint32_t nr_mfns;
+    /* IN: must be zero. */
+    uint32_t flags;
+};
+typedef struct xen_get_mfn_pxms xen_get_mfn_pxms_t;
+DEFINE_XEN_GUEST_HANDLE(xen_get_mfn_pxms_t);
+
+/* Next available Edera-custom subop number is 41 */
 
 #endif /* __XEN_PUBLIC_MEMORY_H__ */
 
