@@ -103,6 +103,7 @@
 #include <xen/lib.h>
 #include <xen/livepatch.h>
 #include <xen/mm.h>
+#include <xen/numa.h>
 #include <xen/param.h>
 #include <xen/perfc.h>
 #include <xen/pfn.h>
@@ -4908,6 +4909,90 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
     }
 #endif
+
+#ifdef CONFIG_NUMA
+    case XENMEM_get_mfn_pxms:
+    {
+        /*
+         * Resolve a batch of host MFNs to their firmware PXM ids.
+         *
+         * Returned value space is host PXM (matches dom0's SRAT), not
+         * Xen-internal nid.  See xen/include/public/memory.h for the
+         * rationale and the namespace boundary.
+         *
+         * Hardware-domain-only: dom0 backends use this to learn the
+         * physical node hosting a grant-mapped page so they can place
+         * service threads and IRQs accordingly.  No other domain has a
+         * legitimate need for host MFN -> PXM mapping.
+         *
+         * Compiled out without CONFIG_NUMA: a non-NUMA hypervisor has
+         * no meaningful answer, and the dom0-side caller treats the
+         * resulting -ENOSYS as "feature unavailable" and falls back to
+         * the legacy NUMA-oblivious behaviour.
+         */
+        struct xen_get_mfn_pxms req;
+        xen_pfn_t *mfns;
+        uint32_t *pxms;
+        unsigned int i;
+        /*
+         * Cap chosen to bound the kmalloc and the per-call work.  Ring
+         * mappings are typically a handful of pages; 1024 leaves plenty
+         * of headroom and keeps the temporary buffers under 16 KiB.
+         */
+        const unsigned int max_nr = 1024;
+
+        if ( !is_hardware_domain(current->domain) )
+            return -EPERM;
+
+        if ( copy_from_guest(&req, arg, 1) )
+            return -EFAULT;
+
+        if ( req.flags != 0 )
+            return -EINVAL;
+
+        if ( req.nr_mfns == 0 || req.nr_mfns > max_nr )
+            return -EINVAL;
+
+        if ( !guest_handle_okay(req.mfns, req.nr_mfns) ||
+             !guest_handle_okay(req.pxms, req.nr_mfns) )
+            return -EFAULT;
+
+        mfns = xmalloc_array(xen_pfn_t, req.nr_mfns);
+        pxms = xmalloc_array(uint32_t, req.nr_mfns);
+        if ( !mfns || !pxms )
+        {
+            xfree(mfns);
+            xfree(pxms);
+            return -ENOMEM;
+        }
+
+        if ( copy_from_guest(mfns, req.mfns, req.nr_mfns) )
+        {
+            xfree(mfns);
+            xfree(pxms);
+            return -EFAULT;
+        }
+
+        for ( i = 0; i < req.nr_mfns; i++ )
+        {
+            mfn_t mfn = _mfn(mfns[i]);
+
+            if ( mfn_valid(mfn) )
+                pxms[i] = numa_node_to_arch_nid(mfn_to_nid(mfn));
+            else
+                pxms[i] = XEN_INVALID_NUMA_ID;
+        }
+
+        if ( copy_to_guest(req.pxms, pxms, req.nr_mfns) )
+            rc = -EFAULT;
+        else
+            rc = 0;
+
+        xfree(mfns);
+        xfree(pxms);
+        break;
+    }
+#endif /* CONFIG_NUMA */
 
     default:
         return subarch_memory_op(cmd, arg);
