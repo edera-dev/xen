@@ -95,26 +95,40 @@ static int __init modify_identity_mmio(struct domain *d, unsigned long pfn,
 /*
  * Look up the physical NUMA node that should back a given guest physical
  * address, based on dom0's vNUMA layout.  Returns NUMA_NO_NODE when there
- * is no vNUMA topology installed, when node binding has been disabled
- * after a per-node allocation failure, or when no vmemrange covers the
- * GPA (shouldn't happen in practice but we don't want to lie).
+ * is no vNUMA topology installed, when no vmemrange covers the GPA (shouldn't
+ * happen in practice but we don't want to lie), or when the owning pnode has
+ * been marked as having exhausted its allocation budget during dom0 build.
+ *
+ * Per-pnode failure tracking (vs. one global "binding disabled" flag) keeps a
+ * transient failure on one node from spilling later populates targeted at
+ * other, still-healthy nodes onto whichever node the default allocator picks.
+ * The SRAT entries for the failed node will diverge from physical placement,
+ * but the rest of the topology still matches.
  */
-static bool __initdata dom0_vnuma_binding_disabled;
+static nodemask_t __initdata dom0_vnuma_failed_nodes;
 
 static nodeid_t __init dom0_gpa_to_pnode(const struct domain *d, paddr_t gpa)
 {
     const struct vnuma_info *vnuma = d->vnuma;
     unsigned int i;
 
-    if ( dom0_vnuma_binding_disabled || !vnuma )
+    if ( !vnuma )
         return NUMA_NO_NODE;
 
     for ( i = 0; i < vnuma->nr_vmemranges; i++ )
     {
         const struct xen_vmemrange *r = &vnuma->vmemrange[i];
+        nodeid_t pnode;
 
-        if ( gpa >= r->start && gpa < r->end )
-            return vnuma->vnode_to_pnode[r->nid];
+        if ( gpa < r->start || gpa >= r->end )
+            continue;
+
+        pnode = vnuma->vnode_to_pnode[r->nid];
+        if ( pnode == NUMA_NO_NODE )
+            return NUMA_NO_NODE;
+        if ( nodemask_test(pnode, &dom0_vnuma_failed_nodes) )
+            return NUMA_NO_NODE;
+        return pnode;
     }
 
     return NUMA_NO_NODE;
@@ -201,18 +215,19 @@ static int __init pvh_populate_memory_range(struct domain *d,
             if ( order == 0 && node_memflags )
             {
                 /*
-                 * Per-node allocation failed.  Disable node binding for
-                 * the remainder of dom0 construction and retry.  This
-                 * means dom0's SRAT may end up advertising a memory
-                 * layout that doesn't match physical placement, which is
-                 * a real degradation, but the alternative (refusing to
-                 * boot dom0 at all) is worse.
+                 * Strict bind to pnode failed even at order 0.  Disable
+                 * node binding for this pnode only -- other pnodes may
+                 * still have free pages, and downgrading their bindings
+                 * too would silently scatter memory that the SRAT says
+                 * lives elsewhere.  The SRAT entries for pnode will
+                 * diverge from physical placement, which is a real
+                 * degradation, but the rest of the topology still holds.
                  */
                 printk(XENLOG_WARNING
-                       "dom0 vNUMA: per-node allocation failed, "
-                       "disabling node binding (SRAT may diverge from "
-                       "actual memory placement)\n");
-                dom0_vnuma_binding_disabled = true;
+                       "dom0 vNUMA: strict allocation on pnode %u failed, "
+                       "disabling node binding for that node (SRAT may "
+                       "diverge from actual memory placement)\n", pnode);
+                node_set(pnode, dom0_vnuma_failed_nodes);
                 max_order = MAX_ORDER;
                 continue;
             }
