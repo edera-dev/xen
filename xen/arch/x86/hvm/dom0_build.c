@@ -394,26 +394,106 @@ static int __init pvh_setup_vmx_realmode_helpers(struct domain *d)
     return 0;
 }
 
+/*
+ * Proportional-trim state shared across the slices that pvh_setup_e820()
+ * carves out of host E820 RAM entries.  cur_pages and seen_pages drive the
+ * Bresenham-style remainder accumulation so per-slice rounding never drifts:
+ * the keep amount for slice N is (floor(seen_after_N * nr_pages /
+ * total_ram_pages) - already_kept), and the final slice's keep absorbs any
+ * leftover so cur_pages == nr_pages at the end.
+ */
+struct e820_trim_state {
+    struct e820entry *out;          /* next entry to write in d->arch.e820 */
+    unsigned int *nr_out;           /* &d->arch.nr_e820 */
+    unsigned long nr_pages;
+    unsigned long total_ram_pages;
+    unsigned long cur_pages;
+    unsigned long seen_pages;
+};
+
+/*
+ * Trim one page-aligned host RAM slice [start, end) and append the resulting
+ * entries (RAM prefix + UNUSABLE suffix) to the output e820.  Splitting at
+ * sub-region granularity is what lets pvh_setup_e820() distribute dom0_mem
+ * proportionally across NUMA memblks even when the host BIOS emits one big
+ * E820 RAM entry spanning multiple nodes.
+ */
+static void __init trim_emit_ram_slice(struct e820_trim_state *st,
+                                       paddr_t start, paddr_t end)
+{
+    unsigned long region_pages, target, keep;
+
+    if ( start >= end )
+        return;
+
+    region_pages = PFN_DOWN(end - start);
+    if ( region_pages == 0 )
+        return;
+
+    st->seen_pages += region_pages;
+
+    /*
+     * Use uint64_t for the multiply to avoid overflow on hosts with
+     * terabytes of RAM (seen_pages * nr_pages can exceed 2^32).
+     */
+    target = (uint64_t)st->seen_pages * st->nr_pages / st->total_ram_pages;
+    keep = target - st->cur_pages;
+    st->cur_pages = target;
+
+    if ( keep > region_pages )
+        keep = region_pages;  /* defensive clamp; rounding can't drift past */
+
+    if ( keep == 0 )
+    {
+        /*
+         * Whole slice trimmed away.  Mark UNUSABLE rather than dropping
+         * the address range so dom0 doesn't try to place BARs here.
+         */
+        st->out->addr = start;
+        st->out->size = end - start;
+        st->out->type = E820_UNUSABLE;
+        st->out++;
+        (*st->nr_out)++;
+        return;
+    }
+
+    st->out->addr = start;
+    st->out->size = (uint64_t)keep << PAGE_SHIFT;
+    st->out->type = E820_RAM;
+    st->out++;
+    (*st->nr_out)++;
+
+    if ( keep < region_pages )
+    {
+        /*
+         * Trimmed suffix: emit as UNUSABLE so the address layout is
+         * preserved but dom0 won't treat it as RAM.
+         */
+        st->out->addr = start + ((uint64_t)keep << PAGE_SHIFT);
+        st->out->size = end - st->out->addr;
+        st->out->type = E820_UNUSABLE;
+        st->out++;
+        (*st->nr_out)++;
+    }
+}
+
 static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
 {
-    struct e820entry *entry, *entry_guest;
-    unsigned int i;
-    unsigned long total_ram_pages = 0, cur_pages = 0, seen_pages = 0;
+    struct e820entry *entry;
+    struct e820_trim_state st = {};
+    unsigned int i, nr_memblks = numa_get_nr_memblks();
     uint64_t start, end;
 
     /*
-     * Pass 1: sum the host's E820_RAM (page-aligned, the same way pass 2
-     * computes per-region size).  Used in pass 2 to distribute nr_pages
-     * across RAM regions proportionally to each region's size.
+     * Pass 1: sum the host's E820_RAM, page-aligned the same way pass 2
+     * counts per-slice size.  Used in pass 2 to distribute nr_pages across
+     * slices proportionally to each slice's size.
      *
-     * Without this, the old "fill regions in address order until nr_pages
-     * is reached, mark the rest UNUSABLE" logic piled all of dom0's RAM
-     * onto whichever physical NUMA nodes own the lowest physical addresses.
-     * On a multi-socket host that meant dom0 ran with 0 bytes of memory on
-     * most of its nodes -- the per-node MEMF_node bindings in
-     * pvh_populate_memory_range() worked correctly but had no high-address
-     * RAM regions to populate, since pvh_setup_e820() had already turned
-     * them into UNUSABLE.
+     * Without proportional trim the old "fill regions in address order
+     * until nr_pages is reached, mark the rest UNUSABLE" logic piled all
+     * of dom0's RAM onto whichever physical NUMA nodes own the lowest
+     * physical addresses, leaving the higher-address nodes with 0 bytes
+     * of E820 RAM and starving their per-node allocations.
      */
     for ( i = 0, entry = e820.map; i < e820.nr_map; i++, entry++ )
     {
@@ -426,39 +506,56 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
         if ( start >= end )
             continue;
 
-        total_ram_pages += PFN_DOWN(end - start);
+        st.total_ram_pages += PFN_DOWN(end - start);
     }
 
-    if ( total_ram_pages == 0 )
+    if ( st.total_ram_pages == 0 )
         panic("Host E820 has no usable RAM\n");
 
-    if ( nr_pages > total_ram_pages )
-        nr_pages = total_ram_pages;
+    if ( nr_pages > st.total_ram_pages )
+        nr_pages = st.total_ram_pages;
+    st.nr_pages = nr_pages;
 
     /*
-     * Worst case each RAM region splits into RAM + UNUSABLE; non-RAM
-     * entries pass through unchanged.  Bound the allocation accordingly.
+     * Worst case: each host RAM entry splits into one slice per intersecting
+     * memblk plus head/tail/inter-memblk gaps, and each slice yields up to
+     * two output entries (RAM + UNUSABLE).  Non-RAM entries pass through.
+     * 3*nr_map + 4*nr_memblks bounds that with room to spare.
      */
-    d->arch.e820 = xzalloc_array(struct e820entry, e820.nr_map * 2);
+    d->arch.e820 = xzalloc_array(struct e820entry,
+                                 3 * e820.nr_map + 4 * nr_memblks);
     if ( !d->arch.e820 )
         panic("Unable to allocate memory for Dom0 e820 map\n");
-    entry_guest = d->arch.e820;
+    st.out = d->arch.e820;
+    st.nr_out = &d->arch.nr_e820;
 
     /*
-     * Pass 2: copy each E820 entry.  For RAM entries, compute the
-     * proportional keep amount via Bresenham-style remainder accumulation
-     * (target_for_this_and_all_prior - already_kept) so per-region
-     * rounding never drifts -- the final RAM region's keep absorbs any
-     * leftover so cur_pages == nr_pages at the end.
+     * Pass 2: walk the host E820 in address order.  Non-RAM entries pass
+     * through unchanged.  RAM entries are split at NUMA memblk boundaries
+     * so the proportional trim operates on (E820 RAM ∩ memblk) slices
+     * rather than raw E820 entries.
+     *
+     * On hosts where the BIOS reports a single contiguous high-RAM E820
+     * entry covering multiple NUMA nodes (typical on single-socket sub-
+     * NUMA layouts), per-entry trimming concentrated all kept RAM at the
+     * prefix end and turned the higher-address nodes' share into UNUSABLE.
+     * Linux then intersected SRAT (which still claimed those nodes owned
+     * the untrimmed range) against the trimmed E820 RAM and reported
+     * nearly zero memory on the higher-address nodes.  Splitting at
+     * memblk boundaries gives each node-owned slice its own proportional
+     * keep amount, matching what SRAT will advertise.
      */
     for ( i = 0, entry = e820.map; i < e820.nr_map; i++, entry++ )
     {
-        unsigned long region_pages, target, keep;
-
-        *entry_guest = *entry;
+        unsigned int k;
+        paddr_t slice_start;
 
         if ( entry->type != E820_RAM )
-            goto next;
+        {
+            *st.out++ = *entry;
+            (*st.nr_out)++;
+            continue;
+        }
 
         start = ROUNDUP(entry->addr, PAGE_SIZE << PAGE_ORDER_4K);
         end = (entry->addr + entry->size) &
@@ -466,68 +563,61 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
         if ( start >= end )
         {
             /*
-             * Sub-page RAM entry: cannot be granted as RAM (the p2m works
-             * at PAGE_ORDER_4K).  Mark UNUSABLE rather than RAM so dom0
-             * doesn't try to use it, while still preserving the address
-             * layout of the original e820.
+             * Sub-page RAM entry: the p2m works at PAGE_ORDER_4K so this
+             * can't be granted as RAM.  Preserve the original addr/size as
+             * UNUSABLE so the address layout doesn't shift.
              */
-            entry_guest->type = E820_UNUSABLE;
-            goto next;
+            *st.out = *entry;
+            st.out->type = E820_UNUSABLE;
+            st.out++;
+            (*st.nr_out)++;
+            continue;
         }
-
-        entry_guest->addr = start;
-        entry_guest->size = end - start;
-        region_pages = PFN_DOWN(end - start);
-        seen_pages += region_pages;
 
         /*
-         * Proportional target: by the end of this region, we should have
-         * kept floor(seen_pages * nr_pages / total_ram_pages) RAM pages
-         * total.  Subtract what we've already kept to get this region's
-         * share.  Use a 128-bit-style mulhi via uint64_t to avoid overflow
-         * on hosts with terabytes of RAM (seen_pages * nr_pages can
-         * exceed 2^64 in 32-bit math).
+         * Walk memblks (stored sorted by address) that intersect
+         * [start, end).  Emit one slice per intersection plus one per
+         * uncovered gap (head, inter-memblk, tail); each slice goes
+         * through trim_emit_ram_slice() with the shared Bresenham state.
          */
-        target = (uint64_t)seen_pages * nr_pages / total_ram_pages;
-        keep = target - cur_pages;
-        cur_pages = target;
-
-        if ( keep > region_pages )
-            keep = region_pages;  /* defensive clamp; shouldn't trip */
-
-        if ( keep == 0 )
+        slice_start = start;
+        for ( k = 0; k < nr_memblks && slice_start < end; k++ )
         {
-            /*
-             * This whole region is trimmed away.  Mark UNUSABLE so dom0
-             * doesn't place BARs here.
-             */
-            entry_guest->type = E820_UNUSABLE;
-            goto next;
+            paddr_t mb_start, mb_end, slice_end;
+            nodeid_t mb_nid;
+
+            if ( !numa_get_memblk(k, &mb_start, &mb_end, &mb_nid) )
+                break;
+
+            /* Page-align memblk edges defensively. */
+            mb_start = ROUNDUP(mb_start, PAGE_SIZE);
+            mb_end &= ~((paddr_t)PAGE_SIZE - 1);
+            if ( mb_start >= mb_end || mb_end <= slice_start )
+                continue;
+            if ( mb_start >= end )
+                break;
+
+            /* Uncovered gap before this memblk. */
+            if ( mb_start > slice_start )
+            {
+                slice_end = min(mb_start, end);
+                trim_emit_ram_slice(&st, slice_start, slice_end);
+                slice_start = slice_end;
+                if ( slice_start >= end )
+                    break;
+            }
+
+            slice_end = min(mb_end, end);
+            trim_emit_ram_slice(&st, slice_start, slice_end);
+            slice_start = slice_end;
         }
 
-        entry_guest->type = E820_RAM;
-        entry_guest->size = (uint64_t)keep << PAGE_SHIFT;
-
-        if ( keep < region_pages )
-        {
-            /*
-             * Region split: emit the kept RAM prefix and follow it with
-             * an UNUSABLE remainder so the address layout is unchanged
-             * but dom0 won't try to use those pages as RAM.
-             */
-            entry_guest++;
-            d->arch.nr_e820++;
-            entry_guest->type = E820_UNUSABLE;
-            entry_guest->addr = start + ((uint64_t)keep << PAGE_SHIFT);
-            entry_guest->size = end - entry_guest->addr;
-        }
-
- next:
-        d->arch.nr_e820++;
-        entry_guest++;
-        ASSERT(d->arch.nr_e820 <= e820.nr_map * 2);
+        /* Tail not covered by any memblk. */
+        if ( slice_start < end )
+            trim_emit_ram_slice(&st, slice_start, end);
     }
-    ASSERT(cur_pages == nr_pages);
+
+    ASSERT(st.cur_pages == nr_pages);
 }
 
 static void __init pvh_init_p2m(struct domain *d)
