@@ -90,6 +90,10 @@ struct hvm_vcpu_nonreg_state {
             uint64_t pending_dbg;
             uint64_t interrupt_status;
         } vmx;
+        struct {
+            bool     intr_shadow;
+            uint64_t vintr;
+        } svm;
     };
 };
 

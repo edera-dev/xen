@@ -2447,6 +2447,28 @@ static void cf_check svm_set_reg(struct vcpu *v, unsigned int reg, uint64_t val)
     }
 }
 
+static void cf_check svm_get_nonreg_state(struct vcpu *v,
+    struct hvm_vcpu_nonreg_state *nrs)
+{
+    const struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
+
+    nrs->svm.intr_shadow = vmcb->int_stat.intr_shadow;
+    nrs->svm.vintr = vmcb_get_vintr(vmcb).bytes;
+}
+
+static void cf_check svm_set_nonreg_state(struct vcpu *v,
+    struct hvm_vcpu_nonreg_state *nrs)
+{
+    struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
+    vintr_t intr;
+
+    vmcb->int_stat.intr_shadow = nrs->svm.intr_shadow;
+
+    /* vmcb_set_vintr() clears the vintr clean bit for us. */
+    intr.bytes = nrs->svm.vintr;
+    vmcb_set_vintr(vmcb, intr);
+}
+
 static struct hvm_function_table __initdata_cf_clobber svm_function_table = {
     .name                 = "SVM",
     .cpu_up_prepare       = svm_cpu_up_prepare,
@@ -2498,6 +2520,9 @@ static struct hvm_function_table __initdata_cf_clobber svm_function_table = {
 
     .get_reg = svm_get_reg,
     .set_reg = svm_set_reg,
+
+    .get_nonreg_state = svm_get_nonreg_state,
+    .set_nonreg_state = svm_set_nonreg_state,
 
     .tsc_scaling = {
         .max_ratio = ~TSC_RATIO_RSVD_BITS,
