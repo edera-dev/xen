@@ -2015,6 +2015,7 @@ int mem_sharing_fork_complete(struct domain *d)
     struct domain *pd = d->parent;
     struct mem_sharing_domain *msd = &d->arch.hvm.mem_sharing;
     unsigned long gfn, max_pfn, count = 0;
+    struct vcpu *v;
 
     if ( !mem_sharing_is_fork(d) )
         return -EINVAL;
@@ -2046,6 +2047,23 @@ int mem_sharing_fork_complete(struct domain *d)
             }
             count = 0;
         }
+    }
+
+    /*
+     * The child inherited the parent's registered vcpu_info and runstate
+     * areas (copied by the fork). When the child resumes through the guest's
+     * restore path it re-registers both, but VCPUOP_register_vcpu_info rejects
+     * an already-mapped area with -EBUSY, panicking the guest. Unmap them here
+     * -- exactly as domain_soft_reset() does before a guest restart -- so the
+     * areas revert to the shared_info default and the guest's re-registration
+     * succeeds. The child is paused throughout, satisfying unmap_guest_area()'s
+     * pause precondition.
+     */
+    for_each_vcpu ( d, v )
+    {
+        set_xen_guest_handle(runstate_guest(v), NULL);
+        unmap_guest_area(v, &v->vcpu_info_area);
+        unmap_guest_area(v, &v->runstate_guest_area);
     }
 
     /*
