@@ -77,6 +77,14 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
                            bool reset_memory);
 
 /*
+ * Detach a fork from its parent: materialize every outstanding parent page
+ * into the child as a shared (copy-on-write) entry, then drop the parent
+ * link so the parent can run again.  Preemptible. See the definition for the
+ * full rationale.
+ */
+int mem_sharing_fork_complete(struct domain *d);
+
+/*
  * If called by a foreign domain, possible errors are
  *   -EBUSY -> ring full
  *   -ENOSYS -> no ring to begin with
@@ -141,6 +149,11 @@ static inline int mem_sharing_fork_page(struct domain *d, gfn_t gfn, bool lock)
 
 static inline int mem_sharing_fork_reset(struct domain *d, bool reset_state,
                                          bool reset_memory)
+{
+    return -EOPNOTSUPP;
+}
+
+static inline int mem_sharing_fork_complete(struct domain *d)
 {
     return -EOPNOTSUPP;
 }
