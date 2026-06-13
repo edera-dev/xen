@@ -1986,6 +1986,86 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
     return rc;
 }
 
+/*
+ * Complete a fork, detaching the child from its parent so both can run as
+ * independent domains while their still-identical pages stay deduplicated
+ * copy-on-write.
+ *
+ * A plain fork leaves the parent paused for the fork's whole lifetime: it is
+ * the lazy copy-on-write backing store reached through d->parent, and sharing
+ * for any gfn the child has not yet touched is only established on demand (see
+ * mem_sharing_fork_page()).  This walks the parent's entire physmap and forks
+ * each outstanding page into the child as a shared, read-only entry, so the
+ * child's p2m fully covers the parent's and nothing is left to resolve through
+ * d->parent.  The parent link is then dropped and the pause + reference the
+ * fork took on the parent are released (mirroring the fork teardown in
+ * domain_relinquish_resources()), making the parent schedulable again.
+ *
+ * Crucially this preserves sharing: the shared pages are owned by dom_cow and
+ * reference-counted by their rmap independently of d->parent, so dropping the
+ * link leaves them shared.  A later write by either domain still copy-on-write
+ * unshares just that page.
+ *
+ * Preemptible: the caller re-issues the hypercall until it stops returning
+ * -ERESTART.  Both domains are expected to be paused for the operation (the
+ * fork already holds the parent paused; the child has not yet been resumed).
+ */
+int mem_sharing_fork_complete(struct domain *d)
+{
+    struct domain *pd = d->parent;
+    struct mem_sharing_domain *msd = &d->arch.hvm.mem_sharing;
+    unsigned long gfn, max_pfn, count = 0;
+
+    if ( !mem_sharing_is_fork(d) )
+        return -EINVAL;
+
+    max_pfn = p2m_get_hostp2m(pd)->max_mapped_pfn;
+
+    for ( gfn = msd->next_gfn_to_materialize; gfn <= max_pfn; gfn++ )
+    {
+        p2m_type_t t;
+
+        /*
+         * P2M_ALLOC (without P2M_UNSHARE) routes a hole through
+         * mem_sharing_fork_page()'s read path: it nominates the parent's page
+         * -- flipping it to p2m_ram_shared -- and inserts a shared entry into
+         * the child.  Pages the child already holds (shared, or private after
+         * an earlier copy-on-write) are returned as-is and left untouched, as
+         * are gfn's the parent itself does not populate (-ENOENT, a no-op).
+         */
+        (void)get_gfn(d, gfn, &t);
+        put_gfn(d, gfn);
+
+        /* Preempt periodically; the cursor lets us resume where we stopped. */
+        if ( ++count >= 0x2000 )
+        {
+            if ( hypercall_preempt_check() )
+            {
+                msd->next_gfn_to_materialize = gfn + 1;
+                return -ERESTART;
+            }
+            count = 0;
+        }
+    }
+
+    /*
+     * The child is now self-contained.  Drop the parent link and release the
+     * pause + reference the fork took, so the parent can be scheduled again.
+     * Clearing d->parent also stops this domain from counting as a fork, so
+     * the teardown in domain_relinquish_resources() will not unpause the
+     * parent a second time.  Re-enable interrupt injection, which only made
+     * sense to block for a short-lived fork.
+     */
+    d->parent = NULL;
+    msd->next_gfn_to_materialize = 0;
+    msd->block_interrupts = false;
+
+    domain_unpause(pd);
+    put_domain(pd);
+
+    return 0;
+}
+
 int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
 {
     int rc;
@@ -2303,6 +2383,21 @@ int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
         rc = mem_sharing_fork_reset(d, reset_state, reset_memory);
         break;
     }
+
+    case XENMEM_sharing_op_fork_complete:
+        rc = -EINVAL;
+        if ( mso.u.fork.pad || mso.u.fork.flags )
+            goto out;
+
+        rc = -ENOSYS;
+        if ( !mem_sharing_is_fork(d) )
+            goto out;
+
+        rc = mem_sharing_fork_complete(d);
+        if ( rc == -ERESTART )
+            rc = hypercall_create_continuation(__HYPERVISOR_memory_op,
+                                               "lh", XENMEM_sharing_op, arg);
+        break;
 
     default:
         rc = -ENOSYS;
