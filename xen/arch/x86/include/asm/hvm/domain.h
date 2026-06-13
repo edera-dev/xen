@@ -27,6 +27,12 @@ struct mem_sharing_domain
      * to resume the search.
      */
     unsigned long next_shared_gfn_to_relinquish;
+
+    /*
+     * When completing a fork in a preemptible manner -- detaching the child
+     * from its parent -- recall which gfn to resume materializing from.
+     */
+    unsigned long next_gfn_to_materialize;
 };
 #endif
 
