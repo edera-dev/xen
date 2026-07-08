@@ -44,7 +44,7 @@ void irq_end_none(struct irq_desc *irq)
      * Still allow a CPU to end an interrupt if we receive a spurious
      * interrupt. This will prevent the CPU to lose interrupt forever.
      */
-    gic_hw_ops->gic_host_irq_type->end(irq);
+    intc_hw_ops->host_irq_type->end(irq);
 }
 
 static irq_desc_t irq_desc[NR_IRQS - NR_LOCAL_IRQS];
