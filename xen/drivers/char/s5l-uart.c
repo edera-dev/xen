@@ -11,13 +11,13 @@
  *   - m1n1/iBoot has already initialised, clocked and set the baud rate of the
  *     UART before Xen runs, so init_preirq deliberately does NOT reconfigure
  *     it (that would risk breaking console output).
- *   - Transmit works immediately in polled mode (the serial core busy-waits on
+ *   - Transmit works in polled mode (the serial core busy-waits on
  *     ->tx_ready), so this is usable as the Xen "dtuart" console right away.
- *   - Receive is interrupt-driven and therefore deferred: the UART interrupt is
- *     an AIC line, and the AIC is not yet registered as Xen's interrupt
- *     controller (see plans/asahi/03).  ->irq returns -1 until then, so the
- *     port operates polled.  The Apple RX interrupt is signalled/acked via
- *     UTRSTAT threshold/timeout bits, unlike the Exynos UINTP/UINTM model.
+ *   - Receive is interrupt-driven: the UART interrupt is an AIC line (routed
+ *     through the AIC driver, see plans/asahi/03).  The Apple variant signals
+ *     and acks its interrupts via UTRSTAT threshold/timeout bits -- unlike the
+ *     Exynos UINTP/UINTM model -- with write-1-to-clear semantics.  If the
+ *     IRQ cannot be resolved or set up, the port stays polled (TX-only).
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@
 #include <xen/console.h>
 #include <xen/errno.h>
 #include <xen/init.h>
+#include <xen/irq.h>
 #include <xen/mm.h>
 #include <xen/serial.h>
 #include <asm/device.h>
@@ -47,19 +48,50 @@
 #define UTXH        0x20
 #define URXH        0x24
 
+/* Apple-variant interrupt enables, in UCON (serial_s3c.h APPLE_S5L_UCON_*). */
+#define UCON_RXTO_ENA       (1U << 9)   /* Rx timeout interrupt        */
+#define UCON_RXTHRESH_ENA   (1U << 12)  /* Rx FIFO threshold interrupt */
+#define UCON_TXTHRESH_ENA   (1U << 13)  /* Tx FIFO threshold interrupt */
+
 #define UTRSTAT_TXFE    (1U << 1)   /* Tx buffer/FIFO empty        */
 #define UTRSTAT_TXE     (1U << 2)   /* Transmitter empty           */
+/* Apple-variant interrupt status, in UTRSTAT; write 1 to clear. */
+#define UTRSTAT_RXTHRESH (1U << 4)  /* Rx FIFO threshold reached   */
+#define UTRSTAT_TXTHRESH (1U << 5)  /* Tx FIFO below threshold     */
+#define UTRSTAT_RXTO    (1U << 9)   /* Rx timeout                  */
 #define UFSTAT_RX_MASK  0xfU        /* Rx FIFO count               */
 #define UFSTAT_RX_FULL  (1U << 8)   /* Rx FIFO full                */
 #define UFSTAT_TX_FULL  (1U << 9)   /* Tx FIFO full                */
 
 static struct s5l_uart {
     void __iomem *regs;
+    int irq;
+    struct irqaction irqaction;
     struct vuart_info vuart;
 } s5l_com = { 0 };
 
 #define s5l_read(uart, off)         readl((uart)->regs + (off))
 #define s5l_write(uart, off, val)   writel((val), (uart)->regs + (off))
+
+static void s5l_uart_interrupt(int irq, void *data)
+{
+    struct serial_port *port = data;
+    struct s5l_uart *uart = port->uart;
+    uint32_t status = s5l_read(uart, UTRSTAT);
+
+    if ( status & (UTRSTAT_RXTHRESH | UTRSTAT_RXTO) )
+    {
+        /* Ack first (write-1-to-clear); new bytes re-assert the source. */
+        s5l_write(uart, UTRSTAT, UTRSTAT_RXTHRESH | UTRSTAT_RXTO);
+        serial_rx_interrupt(port);
+    }
+
+    if ( status & UTRSTAT_TXTHRESH )
+    {
+        s5l_write(uart, UTRSTAT, UTRSTAT_TXTHRESH);
+        serial_tx_interrupt(port);
+    }
+}
 
 static void __init s5l_uart_init_preirq(struct serial_port *port)
 {
@@ -69,6 +101,38 @@ static void __init s5l_uart_init_preirq(struct serial_port *port)
      * losing the console, and we have no reliable clock/divisor to recompute
      * the baud rate from.  See the file header.
      */
+}
+
+static void __init s5l_uart_init_postirq(struct serial_port *port)
+{
+    struct s5l_uart *uart = port->uart;
+    uint32_t ucon;
+    int rc;
+
+    if ( uart->irq < 0 )
+        return;         /* No usable interrupt: stay polled (TX-only). */
+
+    uart->irqaction.handler = s5l_uart_interrupt;
+    uart->irqaction.name    = "s5l_uart";
+    uart->irqaction.dev_id  = port;
+
+    rc = setup_irq(uart->irq, 0, &uart->irqaction);
+    if ( rc )
+    {
+        printk("s5l: IRQ %d setup failed (%d); running polled\n",
+               uart->irq, rc);
+        uart->irq = -1;
+        return;
+    }
+
+    /* Ack anything stale, then enable the Rx threshold+timeout sources. */
+    s5l_write(uart, UTRSTAT,
+              UTRSTAT_RXTHRESH | UTRSTAT_RXTO | UTRSTAT_TXTHRESH);
+    ucon = s5l_read(uart, UCON);
+    /* Xen transmits polled: make sure the bootloader's Tx source is off. */
+    ucon &= ~UCON_TXTHRESH_ENA;
+    ucon |= UCON_RXTO_ENA | UCON_RXTHRESH_ENA;
+    s5l_write(uart, UCON, ucon);
 }
 
 static int s5l_uart_tx_ready(struct serial_port *port)
@@ -99,11 +163,9 @@ static int s5l_uart_getc(struct serial_port *port, char *pc)
 
 static int __init s5l_uart_irq(struct serial_port *port)
 {
-    /*
-     * No serviceable interrupt until the AIC is registered as Xen's interrupt
-     * controller (plans/asahi/03); run polled (transmit only) until then.
-     */
-    return -1;
+    struct s5l_uart *uart = port->uart;
+
+    return uart->irq;
 }
 
 static const struct vuart_info *s5l_vuart_info(struct serial_port *port)
@@ -114,12 +176,13 @@ static const struct vuart_info *s5l_vuart_info(struct serial_port *port)
 }
 
 static struct uart_driver __read_mostly s5l_uart_driver = {
-    .init_preirq = s5l_uart_init_preirq,
-    .tx_ready    = s5l_uart_tx_ready,
-    .putc        = s5l_uart_putc,
-    .getc        = s5l_uart_getc,
-    .irq         = s5l_uart_irq,
-    .vuart_info  = s5l_vuart_info,
+    .init_preirq  = s5l_uart_init_preirq,
+    .init_postirq = s5l_uart_init_postirq,
+    .tx_ready     = s5l_uart_tx_ready,
+    .putc         = s5l_uart_putc,
+    .getc         = s5l_uart_getc,
+    .irq          = s5l_uart_irq,
+    .vuart_info   = s5l_vuart_info,
 };
 
 static int __init s5l_uart_init(struct dt_device_node *dev, const void *data)
@@ -138,6 +201,15 @@ static int __init s5l_uart_init(struct dt_device_node *dev, const void *data)
         printk("s5l: Unable to retrieve the base address of the UART\n");
         return res;
     }
+
+    /*
+     * A missing/untranslatable interrupt is not fatal: the console works
+     * polled (TX-only) and init_postirq skips the RX setup.
+     */
+    res = platform_get_irq(dev, 0);
+    if ( res < 0 )
+        printk("s5l: Unable to retrieve the IRQ; running polled\n");
+    uart->irq = res < 0 ? -1 : res;
 
     /*
      * NOTE: on real Apple hardware this mapping must be Device-nGnRnE; the
