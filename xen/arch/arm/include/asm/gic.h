@@ -356,51 +356,68 @@ static inline bool gic_is_spi(unsigned int irq)
 int gic_irq_xlate(const u32 *intspec, unsigned int intsize,
                   unsigned int *out_hwirq, unsigned int *out_type);
 
+/*
+ * HW information about the virtual (guest-facing) interrupt-controller
+ * interface: the GIC virtual CPU interface and its List Registers.  This is
+ * deliberately separate from struct intc_info below: on Apple Silicon the
+ * physical controller is the AIC, but the CPUs still implement the GICv3
+ * virtual CPU interface, so the two halves can come from different drivers.
+ */
 struct gic_info {
-    /* GIC version */
+    /* Version of the GIC virtual CPU interface */
     enum gic_version hw_version;
-    /* Number of GIC lines supported */
-    unsigned int nr_lines;
-#ifdef CONFIG_GICV3_ESPI
-    /* Number of GIC eSPI supported */
-    unsigned int nr_espi;
-#endif
     /* Number of LR registers */
     uint8_t nr_lrs;
     /* Maintenance irq number */
     unsigned int maintenance_irq;
+};
+
+/* HW information about the physical interrupt controller. */
+struct intc_info {
+    /* Number of interrupt lines supported */
+    unsigned int nr_lines;
+#ifdef CONFIG_GICV3_ESPI
+    /* Number of eSPI supported */
+    unsigned int nr_espi;
+#endif
     /* Pointer to the device tree node representing the interrupt controller */
     const struct dt_device_node *node;
 };
 
-struct gic_hw_operations {
-    /* Hold GIC HW information */
-    const struct gic_info *info;
-    /* Initialize the GIC and the boot CPU */
+/*
+ * Operations on the physical interrupt controller: acknowledging, masking
+ * and routing physical interrupts, sending IPIs, and describing the
+ * controller to the hardware domain.  Every physical interrupt-controller
+ * driver (GICv2, GICv3, Apple AIC) implements these.
+ */
+struct intc_hw_operations {
+    /* Hold physical interrupt controller HW information */
+    const struct intc_info *info;
+    /* Initialize the interrupt controller and the boot CPU */
     int (*init)(void);
-    /* Save GIC registers */
-    void (*save_state)(struct vcpu *v);
-    /* Restore GIC registers */
-    void (*restore_state)(const struct vcpu *v);
-    /* Dump GIC LR register information */
-    void (*dump_state)(const struct vcpu *v);
+    /* Secondary CPU init */
+    int (*secondary_init)(void);
+    /* Disable CPU physical (and, where combined, virtual) interfaces */
+    void (*disable_interface)(void);
 
     /* hw_irq_controller to enable/disable/eoi host irq */
-    hw_irq_controller *gic_host_irq_type;
+    hw_irq_controller *host_irq_type;
 
     /* hw_irq_controller to enable/disable/eoi guest irq */
-    hw_irq_controller *gic_guest_irq_type;
+    hw_irq_controller *guest_irq_type;
 
+    /* Read IRQ id and Ack */
+    unsigned int (*read_irq)(void);
     /* End of Interrupt */
     void (*eoi_irq)(struct irq_desc *irqd);
     /* Deactivate/reduce priority of irq */
     void (*deactivate_irq)(struct irq_desc *irqd);
-    /* Read IRQ id and Ack */
-    unsigned int (*read_irq)(void);
     /* Force the active state of an IRQ by accessing the distributor */
     void (*set_active_state)(struct irq_desc *irqd, bool state);
     /* Force the pending state of an IRQ by accessing the distributor */
     void (*set_pending_state)(struct irq_desc *irqd, bool state);
+    /* Query the pending state of an interrupt at the distributor level. */
+    bool (*read_pending_state)(struct irq_desc *irqd);
     /* Set IRQ type */
     void (*set_irq_type)(struct irq_desc *desc, unsigned int type);
     /* Set IRQ priority */
@@ -408,8 +425,41 @@ struct gic_hw_operations {
     /* Send SGI */
     void (*send_SGI)(enum gic_sgi sgi, enum gic_sgi_mode irqmode,
                      const cpumask_t *online_mask);
-    /* Disable CPU physical and virtual interfaces */
-    void (*disable_interface)(void);
+    /* Handle LPIs, which require special handling */
+    void (*do_LPI)(unsigned int lpi);
+    /* Create the interrupt controller node for the hardware domain */
+    int (*make_hwdom_dt_node)(const struct domain *d,
+                              const struct dt_device_node *gic, void *fdt);
+#ifdef CONFIG_ACPI
+    /* Create MADT table for the hardware domain */
+    int (*make_hwdom_madt)(const struct domain *d, u32 offset);
+    /* Query the size of hardware domain madt table */
+    unsigned long (*get_hwdom_extra_madt_size)(const struct domain *d);
+#endif
+    /* Map extra MMIO, irqs and other hw stuffs to the hardware domain. */
+    int (*map_hwdom_extra_mappings)(struct domain *d);
+    /* Deny access to interrupt controller regions */
+    int (*iomem_deny_access)(struct domain *d);
+};
+
+/*
+ * Operations on the virtual (guest-facing) interrupt-controller interface:
+ * the GIC virtual CPU interface, its List Registers and the related
+ * save/restore on vCPU context switch.  On GICv2/GICv3 hardware these are
+ * implemented by the same driver as struct intc_hw_operations; on Apple
+ * Silicon the physical controller (AIC) cannot implement them and they come
+ * from the GICv3 virtual CPU interface the cores implement.
+ */
+struct gic_hw_operations {
+    /* Hold GIC virtual CPU interface information */
+    const struct gic_info *info;
+    /* Save GIC registers */
+    void (*save_state)(struct vcpu *v);
+    /* Restore GIC registers */
+    void (*restore_state)(const struct vcpu *v);
+    /* Dump GIC LR register information */
+    void (*dump_state)(const struct vcpu *v);
+
     /* Update LR register with state and priority */
     void (*update_lr)(int lr, unsigned int virq, uint8_t priority,
                       unsigned int hw_irq, unsigned int state);
@@ -425,28 +475,10 @@ struct gic_hw_operations {
     unsigned int (*read_vmcr_priority)(void);
     /* Read APRn register */
     unsigned int (*read_apr)(int apr_reg);
-    /* Query the pending state of an interrupt at the distributor level. */
-    bool (*read_pending_state)(struct irq_desc *irqd);
-    /* Secondary CPU init */
-    int (*secondary_init)(void);
-    /* Create GIC node for the hardware domain */
-    int (*make_hwdom_dt_node)(const struct domain *d,
-                              const struct dt_device_node *gic, void *fdt);
-#ifdef CONFIG_ACPI
-    /* Create MADT table for the hardware domain */
-    int (*make_hwdom_madt)(const struct domain *d, u32 offset);
-    /* Query the size of hardware domain madt table */
-    unsigned long (*get_hwdom_extra_madt_size)(const struct domain *d);
-#endif
-    /* Map extra GIC MMIO, irqs and other hw stuffs to the hardware domain. */
-    int (*map_hwdom_extra_mappings)(struct domain *d);
-    /* Deny access to GIC regions */
-    int (*iomem_deny_access)(struct domain *d);
-    /* Handle LPIs, which require special handling */
-    void (*do_LPI)(unsigned int lpi);
 };
 
 extern const struct gic_hw_operations *gic_hw_ops;
+extern const struct intc_hw_operations *intc_hw_ops;
 
 static inline unsigned int gic_get_nr_lrs(void)
 {
@@ -465,7 +497,7 @@ static inline unsigned int gic_get_nr_lrs(void)
 static inline void gic_set_active_state(struct irq_desc *irqd, bool state)
 {
     ASSERT(test_bit(_IRQ_GUEST, &irqd->status));
-    gic_hw_ops->set_active_state(irqd, state);
+    intc_hw_ops->set_active_state(irqd, state);
 }
 
 /*
@@ -475,7 +507,7 @@ static inline void gic_set_active_state(struct irq_desc *irqd, bool state)
  */
 static inline void gic_set_pending_state(struct irq_desc *irqd, bool state)
 {
-    gic_hw_ops->set_pending_state(irqd, state);
+    intc_hw_ops->set_pending_state(irqd, state);
 }
 
 /*
@@ -484,10 +516,11 @@ static inline void gic_set_pending_state(struct irq_desc *irqd, bool state)
  */
 static inline bool gic_read_pending_state(struct irq_desc *irqd)
 {
-    return gic_hw_ops->read_pending_state(irqd);
+    return intc_hw_ops->read_pending_state(irqd);
 }
 
 void register_gic_ops(const struct gic_hw_operations *ops);
+void register_intc_ops(const struct intc_hw_operations *ops);
 int gic_make_hwdom_dt_node(const struct domain *d,
                            const struct dt_device_node *gic,
                            void *fdt);

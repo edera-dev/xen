@@ -34,6 +34,7 @@ DEFINE_PER_CPU(uint64_t, lr_mask);
 #undef GIC_DEBUG
 
 const struct gic_hw_operations *gic_hw_ops;
+const struct intc_hw_operations *intc_hw_ops;
 
 static void __init __maybe_unused build_assertions(void)
 {
@@ -44,6 +45,11 @@ static void __init __maybe_unused build_assertions(void)
 void register_gic_ops(const struct gic_hw_operations *ops)
 {
     gic_hw_ops = ops;
+}
+
+void register_intc_ops(const struct intc_hw_operations *ops)
+{
+    intc_hw_ops = ops;
 }
 
 static void clear_cpu_lr_mask(void)
@@ -58,7 +64,7 @@ enum gic_version gic_hw_version(void)
 
 unsigned int gic_number_lines(void)
 {
-    return gic_hw_ops->info->nr_lines;
+    return intc_hw_ops->info->nr_lines;
 }
 
 void gic_save_state(struct vcpu *v)
@@ -97,12 +103,12 @@ void gic_set_irq_type(struct irq_desc *desc, unsigned int type)
     ASSERT(spin_is_locked(&desc->lock));
     ASSERT(type != IRQ_TYPE_INVALID);
 
-    gic_hw_ops->set_irq_type(desc, type);
+    intc_hw_ops->set_irq_type(desc, type);
 }
 
 static void gic_set_irq_priority(struct irq_desc *desc, unsigned int priority)
 {
-    gic_hw_ops->set_irq_priority(desc, priority);
+    intc_hw_ops->set_irq_priority(desc, priority);
 }
 
 /* Program the GIC to route an interrupt to the host (i.e. Xen)
@@ -116,7 +122,7 @@ void gic_route_irq_to_xen(struct irq_desc *desc, unsigned int priority)
     ASSERT(test_bit(_IRQ_DISABLED, &desc->status));
     ASSERT(spin_is_locked(&desc->lock));
 
-    desc->handler = gic_hw_ops->gic_host_irq_type;
+    desc->handler = intc_hw_ops->host_irq_type;
 
     /* SGIs are always edge-triggered, so there is need to set it */
     if ( desc->irq >= NR_GIC_SGI)
@@ -141,7 +147,7 @@ int gic_route_irq_to_guest(struct domain *d, unsigned int virq,
     if ( ret )
         return ret;
 
-    desc->handler = gic_hw_ops->gic_guest_irq_type;
+    desc->handler = intc_hw_ops->guest_irq_type;
     set_bit(_IRQ_GUEST, &desc->status);
 
     if ( !irq_type_set_by_domain(d) )
@@ -172,7 +178,7 @@ int gic_remove_irq_from_guest(struct domain *d, unsigned int virq,
 
     /* EOI the IRQ if it has not been done by the guest */
     if ( test_bit(_IRQ_INPROGRESS, &desc->status) )
-        gic_hw_ops->deactivate_irq(desc);
+        intc_hw_ops->deactivate_irq(desc);
     clear_bit(_IRQ_INPROGRESS, &desc->status);
 
     ret = vgic_connect_hw_irq(d, NULL, virq, desc, false);
@@ -208,8 +214,8 @@ int gic_irq_xlate(const u32 *intspec, unsigned int intsize,
 /* Map extra GIC MMIO, irqs and other hw stuffs to the hardware domain. */
 int gic_map_hwdom_extra_mappings(struct domain *d)
 {
-    if ( gic_hw_ops->map_hwdom_extra_mappings )
-        return gic_hw_ops->map_hwdom_extra_mappings(d);
+    if ( intc_hw_ops->map_hwdom_extra_mappings )
+        return intc_hw_ops->map_hwdom_extra_mappings(d);
 
     return 0;
 }
@@ -247,7 +253,7 @@ void __init gic_preinit(void)
 /* Set up the GIC */
 void __init gic_init(void)
 {
-    if ( gic_hw_ops->init() )
+    if ( intc_hw_ops->init() )
         panic("Failed to initialize the GIC drivers\n");
     /* Clear LR mask for cpu0 */
     clear_cpu_lr_mask();
@@ -258,7 +264,7 @@ void __init gic_init(void)
 
 void send_SGI_mask(const cpumask_t *cpumask, enum gic_sgi sgi)
 {
-    gic_hw_ops->send_SGI(sgi, SGI_TARGET_LIST, cpumask);
+    intc_hw_ops->send_SGI(sgi, SGI_TARGET_LIST, cpumask);
 }
 
 void send_SGI_one(unsigned int cpu, enum gic_sgi sgi)
@@ -268,12 +274,12 @@ void send_SGI_one(unsigned int cpu, enum gic_sgi sgi)
 
 void send_SGI_self(enum gic_sgi sgi)
 {
-    gic_hw_ops->send_SGI(sgi, SGI_TARGET_SELF, NULL);
+    intc_hw_ops->send_SGI(sgi, SGI_TARGET_SELF, NULL);
 }
 
 void send_SGI_allbutself(enum gic_sgi sgi)
 {
-   gic_hw_ops->send_SGI(sgi, SGI_TARGET_OTHERS, NULL);
+   intc_hw_ops->send_SGI(sgi, SGI_TARGET_OTHERS, NULL);
 }
 
 void smp_send_state_dump(unsigned int cpu)
@@ -284,7 +290,7 @@ void smp_send_state_dump(unsigned int cpu)
 /* Set up the per-CPU parts of the GIC for a secondary CPU */
 void gic_init_secondary_cpu(void)
 {
-    gic_hw_ops->secondary_init();
+    intc_hw_ops->secondary_init();
     /* Clear LR mask for secondary cpus */
     clear_cpu_lr_mask();
 }
@@ -294,7 +300,7 @@ void gic_disable_cpu(void)
 {
     ASSERT(!local_irq_is_enabled());
 
-    gic_hw_ops->disable_interface();
+    intc_hw_ops->disable_interface();
 }
 
 static void do_static_sgi(struct cpu_user_regs *regs, enum gic_sgi sgi)
@@ -304,7 +310,7 @@ static void do_static_sgi(struct cpu_user_regs *regs, enum gic_sgi sgi)
     perfc_incr(ipis);
 
     /* Lower the priority */
-    gic_hw_ops->eoi_irq(desc);
+    intc_hw_ops->eoi_irq(desc);
 
     /*
      * Ensure any shared data written by the CPU sending
@@ -330,7 +336,7 @@ static void do_static_sgi(struct cpu_user_regs *regs, enum gic_sgi sgi)
     }
 
     /* Deactivate */
-    gic_hw_ops->deactivate_irq(desc);
+    intc_hw_ops->deactivate_irq(desc);
 }
 
 /* Accept an interrupt from the GIC and dispatch its handler */
@@ -340,7 +346,7 @@ void gic_interrupt(struct cpu_user_regs *regs, int is_fiq)
 
     do  {
         /* Reading IRQ will ACK it */
-        irq = gic_hw_ops->read_irq();
+        irq = intc_hw_ops->read_irq();
 
         if ( likely(irq >= GIC_SGI_STATIC_MAX && irq < 1020) || is_espi(irq) )
         {
@@ -350,7 +356,7 @@ void gic_interrupt(struct cpu_user_regs *regs, int is_fiq)
         else if ( is_lpi(irq) )
         {
             isb();
-            gic_hw_ops->do_LPI(irq);
+            intc_hw_ops->do_LPI(irq);
         }
         else if ( unlikely(irq < 16) )
         {
@@ -405,13 +411,13 @@ int gic_make_hwdom_dt_node(const struct domain *d,
 {
     ASSERT(gic == dt_interrupt_controller);
 
-    return gic_hw_ops->make_hwdom_dt_node(d, gic, fdt);
+    return intc_hw_ops->make_hwdom_dt_node(d, gic, fdt);
 }
 
 #ifdef CONFIG_ACPI
 int gic_make_hwdom_madt(const struct domain *d, u32 offset)
 {
-    return gic_hw_ops->make_hwdom_madt(d, offset);
+    return intc_hw_ops->make_hwdom_madt(d, offset);
 }
 
 unsigned long gic_get_hwdom_madt_size(const struct domain *d)
@@ -421,7 +427,7 @@ unsigned long gic_get_hwdom_madt_size(const struct domain *d)
     madt_size = sizeof(struct acpi_table_madt)
                 + ACPI_MADT_GICC_LENGTH * d->max_vcpus
                 + sizeof(struct acpi_madt_generic_distributor)
-                + gic_hw_ops->get_hwdom_extra_madt_size(d);
+                + intc_hw_ops->get_hwdom_extra_madt_size(d);
 
     return madt_size;
 }
@@ -429,7 +435,7 @@ unsigned long gic_get_hwdom_madt_size(const struct domain *d)
 
 int gic_iomem_deny_access(struct domain *d)
 {
-    return gic_hw_ops->iomem_deny_access(d);
+    return intc_hw_ops->iomem_deny_access(d);
 }
 
 static int cpu_gic_callback(struct notifier_block *nfb,

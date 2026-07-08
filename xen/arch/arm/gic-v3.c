@@ -45,6 +45,7 @@ static struct {
 } gicv3;
 
 static struct gic_info gicv3_info;
+static struct intc_info gicv3_intc_info;
 
 /* per-cpu re-distributor base */
 static DEFINE_PER_CPU(void __iomem*, rbase);
@@ -701,7 +702,7 @@ static void gicv3_set_irq_priority(struct irq_desc *desc,
 #ifdef CONFIG_GICV3_ESPI
 unsigned int gic_number_espis(void)
 {
-    return gic_hw_ops->info->nr_espi;
+    return intc_hw_ops->info->nr_espi;
 }
 
 static void __init gicv3_dist_espi_common_init(uint32_t type)
@@ -709,12 +710,12 @@ static void __init gicv3_dist_espi_common_init(uint32_t type)
     unsigned int espi_nr, i;
 
     espi_nr = min(1024U, GICD_TYPER_ESPIS_NUM(type));
-    gicv3_info.nr_espi = espi_nr;
+    gicv3_intc_info.nr_espi = espi_nr;
     /* The GIC HW doesn't support eSPI, so we can leave from here */
-    if ( gicv3_info.nr_espi == 0 )
+    if ( gicv3_intc_info.nr_espi == 0 )
         return;
 
-    printk("GICv3: %u eSPI lines\n", gicv3_info.nr_espi);
+    printk("GICv3: %u eSPI lines\n", gicv3_intc_info.nr_espi);
 
     /* The configuration for eSPIs is similar to that for regular SPIs */
     for ( i = 0; i < espi_nr; i += 16 )
@@ -738,7 +739,7 @@ static void __init gicv3_dist_espi_init_aff(uint64_t affinity)
 {
     unsigned int i;
 
-    for ( i = 0; i < gicv3_info.nr_espi; i++ )
+    for ( i = 0; i < gicv3_intc_info.nr_espi; i++ )
         writeq_relaxed_non_atomic(affinity, GICD + GICD_IROUTERnE + i * 8);
 }
 #else
@@ -767,7 +768,7 @@ static void __init gicv3_dist_init(void)
 
     /* Only 1020 interrupts are supported */
     nr_lines = min(1020U, nr_lines);
-    gicv3_info.nr_lines = nr_lines;
+    gicv3_intc_info.nr_lines = nr_lines;
 
     printk("GICv3: %d lines, (IID %8.8x).\n",
            nr_lines, readl_relaxed(GICD + GICD_IIDR));
@@ -1556,7 +1557,7 @@ static void __init gicv3_dt_init(void)
 {
     struct rdist_region *rdist_regs;
     int res, i;
-    const struct dt_device_node *node = gicv3_info.node;
+    const struct dt_device_node *node = gicv3_intc_info.node;
 
     res = dt_device_get_paddr(node, 0, &dbase, NULL);
     if ( res )
@@ -2016,23 +2017,36 @@ out:
     return res;
 }
 
-static const struct gic_hw_operations gicv3_ops = {
-    .info                = &gicv3_info,
+static const struct intc_hw_operations gicv3_intc_ops = {
+    .info                = &gicv3_intc_info,
     .init                = gicv3_init,
-    .save_state          = gicv3_save_state,
-    .restore_state       = gicv3_restore_state,
-    .dump_state          = gicv3_dump_state,
-    .gic_host_irq_type   = &gicv3_host_irq_type,
-    .gic_guest_irq_type  = &gicv3_guest_irq_type,
+    .secondary_init      = gicv3_secondary_cpu_init,
+    .disable_interface   = gicv3_disable_interface,
+    .host_irq_type       = &gicv3_host_irq_type,
+    .guest_irq_type      = &gicv3_guest_irq_type,
+    .read_irq            = gicv3_read_irq,
     .eoi_irq             = gicv3_eoi_irq,
     .deactivate_irq      = gicv3_dir_irq,
-    .read_irq            = gicv3_read_irq,
     .set_active_state    = gicv3_set_active_state,
     .set_pending_state   = gicv3_set_pending_state,
+    .read_pending_state  = gicv3_read_pending_state,
     .set_irq_type        = gicv3_set_irq_type,
     .set_irq_priority    = gicv3_set_irq_priority,
     .send_SGI            = gicv3_send_sgi,
-    .disable_interface   = gicv3_disable_interface,
+    .do_LPI              = gicv3_do_LPI,
+    .make_hwdom_dt_node  = gicv3_make_hwdom_dt_node,
+#ifdef CONFIG_ACPI
+    .make_hwdom_madt     = gicv3_make_hwdom_madt,
+    .get_hwdom_extra_madt_size = gicv3_get_hwdom_extra_madt_size,
+#endif
+    .iomem_deny_access   = gicv3_iomem_deny_access,
+};
+
+static const struct gic_hw_operations gicv3_ops = {
+    .info                = &gicv3_info,
+    .save_state          = gicv3_save_state,
+    .restore_state       = gicv3_restore_state,
+    .dump_state          = gicv3_dump_state,
     .update_lr           = gicv3_update_lr,
     .update_hcr_status   = gicv3_hcr_status,
     .clear_lr            = gicv3_clear_lr,
@@ -2040,22 +2054,14 @@ static const struct gic_hw_operations gicv3_ops = {
     .write_lr            = gicv3_write_lr,
     .read_vmcr_priority  = gicv3_read_vmcr_priority,
     .read_apr            = gicv3_read_apr,
-    .read_pending_state  = gicv3_read_pending_state,
-    .secondary_init      = gicv3_secondary_cpu_init,
-    .make_hwdom_dt_node  = gicv3_make_hwdom_dt_node,
-#ifdef CONFIG_ACPI
-    .make_hwdom_madt     = gicv3_make_hwdom_madt,
-    .get_hwdom_extra_madt_size = gicv3_get_hwdom_extra_madt_size,
-#endif
-    .iomem_deny_access   = gicv3_iomem_deny_access,
-    .do_LPI              = gicv3_do_LPI,
 };
 
 static int __init gicv3_dt_preinit(struct dt_device_node *node, const void *data)
 {
     gicv3_info.hw_version = GIC_V3;
-    gicv3_info.node = node;
+    gicv3_intc_info.node = node;
     register_gic_ops(&gicv3_ops);
+    register_intc_ops(&gicv3_intc_ops);
     dt_irq_xlate = gic_irq_xlate;
 
     return 0;
@@ -2078,6 +2084,7 @@ static int __init gicv3_acpi_preinit(const void *data)
 {
     gicv3_info.hw_version = GIC_V3;
     register_gic_ops(&gicv3_ops);
+    register_intc_ops(&gicv3_intc_ops);
 
     return 0;
 }

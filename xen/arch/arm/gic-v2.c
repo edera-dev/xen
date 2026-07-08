@@ -103,6 +103,7 @@ static struct {
 } gicv2;
 
 static struct gic_info gicv2_info;
+static struct intc_info gicv2_intc_info;
 
 /* The GIC mapping of CPU interfaces does not necessarily match the
  * logical CPU numbering. Let's use mapping as returned by the GIC
@@ -345,7 +346,7 @@ static void __init gicv2_dist_init(void)
     nr_lines = 32 * ((type & GICD_TYPE_LINES) + 1);
     /* Only 1020 interrupts are supported */
     nr_lines = min(1020U, nr_lines);
-    gicv2_info.nr_lines = nr_lines;
+    gicv2_intc_info.nr_lines = nr_lines;
 
     gic_cpus = 1 + ((type & GICD_TYPE_CPUS) >> 5);
     printk("GICv2: %d lines, %d cpu%s%s (IID %8.8x).\n",
@@ -1025,7 +1026,7 @@ static void __init gicv2_dt_init(void)
 {
     int res;
     paddr_t vsize;
-    const struct dt_device_node *node = gicv2_info.node;
+    const struct dt_device_node *node = gicv2_intc_info.node;
 
     res = dt_device_get_paddr(node, 0, &dbase, NULL);
     if ( res )
@@ -1321,32 +1322,23 @@ static void gicv2_do_LPI(unsigned int lpi)
     BUG();
 }
 
-static const struct gic_hw_operations gicv2_ops = {
-    .info                = &gicv2_info,
+static const struct intc_hw_operations gicv2_intc_ops = {
+    .info                = &gicv2_intc_info,
     .init                = gicv2_init,
     .secondary_init      = gicv2_secondary_cpu_init,
-    .save_state          = gicv2_save_state,
-    .restore_state       = gicv2_restore_state,
-    .dump_state          = gicv2_dump_state,
-    .gic_host_irq_type   = &gicv2_host_irq_type,
-    .gic_guest_irq_type  = &gicv2_guest_irq_type,
+    .disable_interface   = gicv2_disable_interface,
+    .host_irq_type       = &gicv2_host_irq_type,
+    .guest_irq_type      = &gicv2_guest_irq_type,
+    .read_irq            = gicv2_read_irq,
     .eoi_irq             = gicv2_eoi_irq,
     .deactivate_irq      = gicv2_dir_irq,
-    .read_irq            = gicv2_read_irq,
     .set_active_state    = gicv2_set_active_state,
     .set_pending_state   = gicv2_set_pending_state,
+    .read_pending_state  = gicv2_read_pending_state,
     .set_irq_type        = gicv2_set_irq_type,
     .set_irq_priority    = gicv2_set_irq_priority,
     .send_SGI            = gicv2_send_SGI,
-    .disable_interface   = gicv2_disable_interface,
-    .update_lr           = gicv2_update_lr,
-    .update_hcr_status   = gicv2_hcr_status,
-    .clear_lr            = gicv2_clear_lr,
-    .read_lr             = gicv2_read_lr,
-    .write_lr            = gicv2_write_lr,
-    .read_vmcr_priority  = gicv2_read_vmcr_priority,
-    .read_apr            = gicv2_read_apr,
-    .read_pending_state  = gicv2_read_pending_state,
+    .do_LPI              = gicv2_do_LPI,
     .make_hwdom_dt_node  = gicv2_make_hwdom_dt_node,
 #ifdef CONFIG_ACPI
     .make_hwdom_madt     = gicv2_make_hwdom_madt,
@@ -1354,7 +1346,20 @@ static const struct gic_hw_operations gicv2_ops = {
 #endif
     .map_hwdom_extra_mappings = gicv2_map_hwdom_extra_mappings,
     .iomem_deny_access   = gicv2_iomem_deny_access,
-    .do_LPI              = gicv2_do_LPI,
+};
+
+static const struct gic_hw_operations gicv2_ops = {
+    .info                = &gicv2_info,
+    .save_state          = gicv2_save_state,
+    .restore_state       = gicv2_restore_state,
+    .dump_state          = gicv2_dump_state,
+    .update_lr           = gicv2_update_lr,
+    .update_hcr_status   = gicv2_hcr_status,
+    .clear_lr            = gicv2_clear_lr,
+    .read_lr             = gicv2_read_lr,
+    .write_lr            = gicv2_write_lr,
+    .read_vmcr_priority  = gicv2_read_vmcr_priority,
+    .read_apr            = gicv2_read_apr,
 };
 
 /* Set up the GIC */
@@ -1362,8 +1367,9 @@ static int __init gicv2_dt_preinit(struct dt_device_node *node,
                                    const void *data)
 {
     gicv2_info.hw_version = GIC_V2;
-    gicv2_info.node = node;
+    gicv2_intc_info.node = node;
     register_gic_ops(&gicv2_ops);
+    register_intc_ops(&gicv2_intc_ops);
     dt_irq_xlate = gic_irq_xlate;
 
     return 0;
@@ -1386,6 +1392,7 @@ static int __init gicv2_acpi_preinit(const void *data)
 {
     gicv2_info.hw_version = GIC_V2;
     register_gic_ops(&gicv2_ops);
+    register_intc_ops(&gicv2_intc_ops);
 
     return 0;
 }
