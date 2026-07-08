@@ -11,6 +11,7 @@ obj-y += firmware/
 obj-$(CONFIG_TEE) += tee/
 obj-$(CONFIG_HAS_VPCI) += vpci.o
 
+obj-$(CONFIG_APPLE_AIC) += aic.o
 obj-$(CONFIG_HAS_ALTERNATIVE) += alternative.o
 obj-y += cpuerrata.o
 obj-y += cpufeature.o

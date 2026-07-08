@@ -73,6 +73,9 @@
 #ifndef ID_MMFR4_EL1
 #define ID_MMFR4_EL1                S3_0_C0_C2_6
 #endif
+#ifndef ID_AA64MMFR4_EL1
+#define ID_AA64MMFR4_EL1            S3_0_C0_C7_4
+#endif
 #ifndef ID_MMFR5_EL1
 #define ID_MMFR5_EL1                S3_0_C0_C3_6
 #endif
@@ -258,6 +261,14 @@
 
 #define ID_AA64MMFR0_ASID_8          0x0
 #define ID_AA64MMFR0_ASID_16         0x2
+
+/*
+ * ID_AA64MMFR4_EL1.E2H0 is a SIGNED 4-bit field [27:24].  A negative value
+ * (sign-extended < 0) means HCR_EL2.E2H is RES1, i.e. the CPU is VHE-only.
+ * See plans/asahi/06-el2-vhe-and-cpu-bringup.md.
+ */
+#define ID_AA64MMFR4_E2H0_SHIFT      24
+#define ID_AA64MMFR4_E2H0_WIDTH      4
 
 #define ID_AA64MMFR0_TGRAN4_NI             0xf
 #define ID_AA64MMFR0_TGRAN4_SUPPORTED_MIN  0x0

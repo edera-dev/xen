@@ -36,6 +36,15 @@ choice
 		  Say Y here if you wish the early printk to direct their
 		  output to a Exynos 4210 UART.
 
+	config EARLY_UART_CHOICE_S5L
+		select EARLY_UART_S5L
+		depends on ARM_64
+		bool "Early printk via Apple s5l UART"
+		help
+		  Say Y here if you wish the early printk to direct their
+		  output to an Apple "s5l" UART (compatible "apple,s5l-uart"),
+		  as found on Apple Silicon (M1/M2/M3).
+
 	config EARLY_UART_CHOICE_IMX_LPUART
 		select EARLY_UART_IMX_LPUART
 		depends on ARM_64
@@ -107,6 +116,9 @@ config EARLY_UART_MVEBU
 	select EARLY_PRINTK
 	bool
 config EARLY_UART_PL011
+	select EARLY_PRINTK
+	bool
+config EARLY_UART_S5L
 	select EARLY_PRINTK
 	bool
 config EARLY_UART_SCIF
@@ -189,6 +201,7 @@ config EARLY_PRINTK_INC
 	default "debug-meson.inc" if EARLY_UART_MESON
 	default "debug-mvebu.inc" if EARLY_UART_MVEBU
 	default "debug-pl011.inc" if EARLY_UART_PL011
+	default "debug-s5l.inc" if EARLY_UART_S5L
 	default "debug-scif.inc" if EARLY_UART_SCIF
 
 config PCI_DEVICE_DEBUG
