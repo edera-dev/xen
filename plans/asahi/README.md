@@ -54,6 +54,22 @@ pages", "interrupt injection must be software‑only") turned out to be **false*
 
 ## Status
 
-Planning artifact only — no Xen source is modified by these documents. Line
-references are against the tree state at the time of writing (Xen `edera/4.21`
-lineage; Asahi kernel in the sibling checkout).
+Implementation has started on the `asahi` branch; these documents are the
+design reference for it. Landed so far (compile-verified, QEMU-regression-
+tested; Apple hardware still needed to validate):
+
+- `platforms/apple.c`, s5l early-printk + runtime console driver with
+  interrupt-driven RX, Kconfig plumbing (doc 07).
+- AIC v1/v2/v3 physical driver: probe, event decode, mask/unmask/EOI,
+  fast-IPI send/receive with the SW IPI mux, FIQ root dispatcher, per-CPU
+  init, 3/4-cell DT translation (doc 03 §3-5, §7-9).
+- The `gic_hw_operations` physical/virtual split (doc 03 §6), landed as a
+  no-op on GICv2/GICv3, and the AIC registered as the system interrupt
+  controller through the physical half; EL2h FIQ vector wired to the
+  dispatcher (doc 03 §7).
+
+Not started: forced-VHE EL2 execution (doc 06 — the critical path), vGICv3
+reuse for guest injection (doc 04), dom0 integration (doc 08), DART (doc 05).
+
+Line references are against the tree state at the time of writing (Xen
+`edera/4.21` lineage; Asahi kernel in the sibling checkout).
