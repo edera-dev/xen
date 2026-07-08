@@ -373,6 +373,27 @@ FUNC_LOCAL(hyp_irq)
         exit    hyp=1
 END(hyp_irq)
 
+/*
+ * Physical FIQ taken while in Xen.  Only reachable on hardware whose
+ * interrupt controller delivers sources as FIQs (Apple AIC: timers, fast
+ * IPIs, PMU); the dispatcher polls each source, so keep both I and F masked
+ * while it runs to avoid re-entering it.
+ */
+FUNC_LOCAL(hyp_fiq)
+        entry   hyp=1
+
+        /* Inherit D, A interrupts and keep I, F masked */
+        mrs     x0, SPSR_el2
+        mov     x1, #(PSR_DBG_MASK | PSR_ABT_MASK)
+        and     x0, x0, x1
+        orr     x0, x0, #(PSR_IRQ_MASK | PSR_FIQ_MASK)
+        msr     daif, x0
+
+        mov     x0, sp
+        bl      do_trap_fiq
+        exit    hyp=1
+END(hyp_fiq)
+
 FUNC_LOCAL(guest_sync)
         /*
          * Save x0, x1 in advance
@@ -625,7 +646,7 @@ FUNC(hyp_traps_vector)
 
         ventry  hyp_sync                    /* Synchronous EL2h */
         ventry  hyp_irq                     /* IRQ EL2h */
-        ventry  hyp_fiq_invalid             /* FIQ EL2h */
+        ventry  hyp_fiq                     /* FIQ EL2h */
         ventry  hyp_error                   /* Error EL2h */
 
         ventry  guest_sync                  /* Synchronous 64-bit EL0/EL1 */

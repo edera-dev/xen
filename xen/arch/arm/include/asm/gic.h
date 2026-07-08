@@ -183,6 +183,8 @@
 #include <xen/device_tree.h>
 #include <xen/irq.h>
 
+struct cpu_user_regs;
+
 #define DT_COMPAT_GIC_CORTEX_A15 "arm,cortex-a15-gic"
 
 #define DT_MATCH_GIC_V2                                             \
@@ -427,6 +429,12 @@ struct intc_hw_operations {
                      const cpumask_t *online_mask);
     /* Handle LPIs, which require special handling */
     void (*do_LPI)(unsigned int lpi);
+    /*
+     * Handle a physical FIQ.  Only implemented by controllers that deliver
+     * some interrupt sources as FIQs with no acknowledge register (Apple
+     * AIC); NULL on GIC hardware, where Group-0 interrupts go to EL3.
+     */
+    void (*handle_fiq)(struct cpu_user_regs *regs);
     /* Create the interrupt controller node for the hardware domain */
     int (*make_hwdom_dt_node)(const struct domain *d,
                               const struct dt_device_node *gic, void *fdt);

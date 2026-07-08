@@ -2225,7 +2225,15 @@ void asmlinkage do_trap_irq(struct cpu_user_regs *regs)
 
 void asmlinkage do_trap_fiq(struct cpu_user_regs *regs)
 {
-    gic_interrupt(regs, 1);
+    /*
+     * On controllers with FIQ-delivered sources (Apple AIC), an FIQ has no
+     * acknowledge register and must be dispatched by polling every source;
+     * on a GIC, fall through to the normal acknowledge loop.
+     */
+    if ( intc_hw_ops->handle_fiq )
+        intc_hw_ops->handle_fiq(regs);
+    else
+        gic_interrupt(regs, 1);
 }
 
 static void check_for_pcpu_work(void)

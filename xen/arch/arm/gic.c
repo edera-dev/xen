@@ -59,6 +59,13 @@ static void clear_cpu_lr_mask(void)
 
 enum gic_version gic_hw_version(void)
 {
+   /*
+    * No virtual-interface driver yet (Apple AIC bring-up): there is no GIC,
+    * so no version to report and guests cannot be created.
+    */
+   if ( !gic_hw_ops )
+       return GIC_INVALID;
+
    return gic_hw_ops->info->hw_version;
 }
 
@@ -389,7 +396,8 @@ static void maintenance_interrupt(int irq, void *dev_id)
 void gic_dump_info(struct vcpu *v)
 {
     printk("GICH_LRs (vcpu %d) mask=%"PRIx64"\n", v->vcpu_id, v->arch.lr_mask);
-    gic_hw_ops->dump_state(v);
+    if ( gic_hw_ops )
+        gic_hw_ops->dump_state(v);
 }
 
 static DEFINE_PER_CPU_READ_MOSTLY(struct irqaction, irq_maintenance);
@@ -397,6 +405,14 @@ static DEFINE_PER_CPU_READ_MOSTLY(struct irqaction, irq_maintenance);
 void init_maintenance_interrupt(void)
 {
     struct irqaction *maintenance = &this_cpu(irq_maintenance);
+
+    /*
+     * Without a virtual-interface driver (Apple AIC bring-up) there is no
+     * maintenance interrupt to set up; on Apple hardware it eventually
+     * arrives as an FIQ source instead (plans/asahi/04).
+     */
+    if ( !gic_hw_ops )
+        return;
 
     maintenance->name = "irq-maintenance";
     maintenance->handler = maintenance_interrupt;
@@ -446,7 +462,8 @@ static int cpu_gic_callback(struct notifier_block *nfb,
     {
     case CPU_DYING:
         /* This is reverting the work done in init_maintenance_interrupt */
-        release_irq(gic_hw_ops->info->maintenance_irq, NULL);
+        if ( gic_hw_ops )
+            release_irq(gic_hw_ops->info->maintenance_irq, NULL);
         break;
     default:
         break;
