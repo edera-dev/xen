@@ -41,10 +41,14 @@
 #include <xen/errno.h>
 #include <xen/lib.h>
 #include <xen/mm.h>
+#include <xen/softirq.h>
 #include <xen/types.h>
 #include <xen/device_tree.h>
 #include <asm/device.h>
 #include <asm/io.h>
+#include <asm/processor.h>
+#include <asm/sysregs.h>
+#include <asm/system.h>
 
 /*
  * AIC v1 registers (MMIO), single MMIO window, "this CPU" view by default.
@@ -99,6 +103,43 @@
  */
 #define AIC_MASK_REG(irq)       (4 * ((irq) >> 5))
 #define AIC_MASK_BIT(irq)       (1U << ((irq) & 0x1f))
+
+/*
+ * Apple IMP-DEF system registers used for "fast IPIs", the guest-timer FIQ
+ * enable, and the core/uncore PMU.  These are the sys_reg(op0,op1,crn,crm,op2)
+ * encodings from the Asahi driver, written as the S<op0>_<op1>_C<crn>_C<crm>_<op2>
+ * tokens the assembler accepts.
+ */
+#define SYS_IMP_APL_IPI_RR_LOCAL_EL1    S3_5_C15_C0_0
+#define SYS_IMP_APL_IPI_RR_GLOBAL_EL1   S3_5_C15_C0_1
+#define SYS_IMP_APL_IPI_SR_EL1          S3_5_C15_C1_1
+#define SYS_IMP_APL_IPI_CR_EL1          S3_5_C15_C3_1
+#define SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2  S3_5_C15_C1_3
+#define SYS_IMP_APL_PMCR0_EL1           S3_1_C15_C0_0
+#define SYS_IMP_APL_UPMCR0_EL1          S3_7_C15_C0_4
+#define SYS_IMP_APL_UPMSR_EL1           S3_7_C15_C6_4
+
+#define IPI_RR_CPU_MASK         0xffU           /* target CPU in cluster [7:0] */
+#define IPI_RR_CLUSTER_SHIFT    16              /* target cluster [23:16]      */
+#define IPI_SR_PENDING          (1U << 0)
+
+#define VM_TMR_FIQ_ENABLE_V     (1U << 0)
+#define VM_TMR_FIQ_ENABLE_P     (1U << 1)
+
+#define PMCR0_IMODE_MASK        (0x7U << 16)
+#define PMCR0_IMODE_OFF         (0U << 16)
+#define PMCR0_IACT              (1U << 0)
+
+#define UPMCR0_IMODE_MASK       (0x7U << 16)
+#define UPMCR0_IMODE_OFF        (0U << 16)
+
+/* ARM generic-timer control bits (CNT{P,V}_CTL_EL0). */
+#define TMR_CTL_ENABLE          (1U << 0)
+#define TMR_CTL_IMASK           (1U << 1)
+#define TMR_CTL_ISTATUS         (1U << 2)
+#define TMR_FIRING(ctl)         (((ctl) & (TMR_CTL_ENABLE | TMR_CTL_IMASK | \
+                                           TMR_CTL_ISTATUS)) == \
+                                 (TMR_CTL_ENABLE | TMR_CTL_ISTATUS))
 
 struct aic {
     void __iomem *base;         /* config / main MMIO window            */
@@ -192,6 +233,92 @@ static void __maybe_unused aic_sw_clr_irq(unsigned int die, unsigned int irq)
     unsigned int off = die * aic.die_stride;
 
     aic_write(aic.sw_clr + off + AIC_MASK_REG(irq), AIC_MASK_BIT(irq));
+}
+
+/*
+ * Fast IPI: deliver an IPI to another physical CPU via the IMP-DEF IPI request
+ * registers.  Same-cluster targets use the LOCAL register, cross-cluster the
+ * GLOBAL register.  The IPI arrives on the target as an FIQ.
+ */
+static void __maybe_unused aic_send_ipi(unsigned int cpu)
+{
+    register_t mpidr = cpu_logical_map(cpu);
+    unsigned int tcpu = mpidr & IPI_RR_CPU_MASK;
+    unsigned int tcluster = (mpidr >> 8) & 0xff;
+    unsigned int scluster = (READ_SYSREG(MPIDR_EL1) >> 8) & 0xff;
+
+    if ( tcluster == scluster )
+        WRITE_SYSREG(tcpu, SYS_IMP_APL_IPI_RR_LOCAL_EL1);
+    else
+        WRITE_SYSREG(tcpu | (tcluster << IPI_RR_CLUSTER_SHIFT),
+                     SYS_IMP_APL_IPI_RR_GLOBAL_EL1);
+    isb();
+}
+
+static void __maybe_unused aic_ack_ipi(void)
+{
+    WRITE_SYSREG(IPI_SR_PENDING, SYS_IMP_APL_IPI_SR_EL1);
+    isb();
+}
+
+/*
+ * FIQ root dispatcher.  Unlike a GIC IRQ, an FIQ carries no source id, so we
+ * poll every possible source (matching the Asahi driver): the fast IPI, the
+ * EL0 physical/virtual architected timers, the core/uncore PMU, and the vGIC
+ * maintenance interrupt.  This is the handler the EL2 FIQ vector must call once
+ * the exception path is wired (plans/asahi/03 section 7); it is not yet
+ * referenced, hence __maybe_unused.
+ */
+static void __maybe_unused aic_handle_fiq(void)
+{
+    if ( READ_SYSREG(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING )
+    {
+        aic_ack_ipi();
+        /* TODO: demux and dispatch the logical IPI (needs the SW IPI mux). */
+    }
+
+    if ( TMR_FIRING(READ_SYSREG(CNTP_CTL_EL0)) )
+    {
+        /* Mask the source and let the core timer code run via softirq. */
+        WRITE_SYSREG(READ_SYSREG(CNTP_CTL_EL0) | TMR_CTL_IMASK, CNTP_CTL_EL0);
+        raise_softirq(TIMER_SOFTIRQ);
+    }
+
+    if ( TMR_FIRING(READ_SYSREG(CNTV_CTL_EL0)) )
+    {
+        WRITE_SYSREG(READ_SYSREG(CNTV_CTL_EL0) | TMR_CTL_IMASK, CNTV_CTL_EL0);
+        /* TODO: inject the guest virtual timer via the vGIC. */
+    }
+
+    /*
+     * TODO: core PMU (SYS_IMP_APL_PMCR0_EL1 IMODE==FIQ && IACT), uncore PMU
+     * (SYS_IMP_APL_UPMCR0_EL1 / UPMSR), and the vGIC maintenance interrupt
+     * (is_hyp && ICH_HCR_EL2.En && ICH_MISR_EL2 != 0).
+     */
+}
+
+/*
+ * Per-CPU init (boot CPU and each secondary), mirroring aic_init_cpu() in the
+ * Asahi driver: quiesce every per-CPU FIQ source so nothing fires until a Xen
+ * consumer explicitly enables it.
+ */
+static void __maybe_unused aic_init_cpu(void)
+{
+    /* Ack any pending fast IPI. */
+    WRITE_SYSREG(IPI_SR_PENDING, SYS_IMP_APL_IPI_SR_EL1);
+
+    /* Mask the per-CPU timer FIQs; the timer code re-enables what it uses. */
+    WRITE_SYSREG(READ_SYSREG(CNTP_CTL_EL0) | TMR_CTL_IMASK, CNTP_CTL_EL0);
+    WRITE_SYSREG(READ_SYSREG(CNTV_CTL_EL0) | TMR_CTL_IMASK, CNTV_CTL_EL0);
+
+    /* Disable guest-timer FIQs (EL2 register) until a guest wants them. */
+    WRITE_SYSREG(0, SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2);
+
+    /* Turn off the core PMU FIQ. */
+    WRITE_SYSREG((READ_SYSREG(SYS_IMP_APL_PMCR0_EL1) & ~(register_t)PMCR0_IMODE_MASK) |
+                 PMCR0_IMODE_OFF, SYS_IMP_APL_PMCR0_EL1);
+
+    isb();
 }
 
 /*
