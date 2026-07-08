@@ -108,6 +108,22 @@
 #define ARM_CPU_PART_C1_ULTRA       0xD8C
 #define ARM_CPU_PART_C1_PREMIUM     0xD90
 
+#define ARM_CPU_IMP_APPLE           0x61
+
+/* Apple Silicon CPU part numbers (E-core / P-core per generation). */
+#define APPLE_CPU_PART_M1_ICESTORM      0x022
+#define APPLE_CPU_PART_M1_FIRESTORM     0x023
+#define APPLE_CPU_PART_M1_ICESTORM_PRO  0x024
+#define APPLE_CPU_PART_M1_FIRESTORM_PRO 0x025
+#define APPLE_CPU_PART_M1_ICESTORM_MAX  0x028
+#define APPLE_CPU_PART_M1_FIRESTORM_MAX 0x029
+#define APPLE_CPU_PART_M2_BLIZZARD      0x032
+#define APPLE_CPU_PART_M2_AVALANCHE     0x033
+#define APPLE_CPU_PART_M2_BLIZZARD_PRO  0x034
+#define APPLE_CPU_PART_M2_AVALANCHE_PRO 0x035
+#define APPLE_CPU_PART_M2_BLIZZARD_MAX  0x038
+#define APPLE_CPU_PART_M2_AVALANCHE_MAX 0x039
+
 #define MIDR_CORTEX_A12 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A12)
 #define MIDR_CORTEX_A17 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A17)
 #define MIDR_CORTEX_A15 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A15)
@@ -269,6 +285,7 @@
 #endif
 
 /* HCR Hyp Configuration Register */
+#define HCR_E2H         (_AC(1,UL)<<34) /* EL2 Host (VHE); RES1 on Apple Silicon */
 #define HCR_RW          (_AC(1,UL)<<31) /* Register Width, ARM64 only */
 #define HCR_TGE         (_AC(1,UL)<<27) /* Trap General Exceptions */
 #define HCR_TVM         (_AC(1,UL)<<26) /* Trap Virtual Memory Controls */

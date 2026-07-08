@@ -12,6 +12,24 @@ config ALL_PLAT
 	  Enable support for all available hardware platforms. It doesn't
 	  automatically select any of the related drivers.
 
+config APPLE
+	bool "Apple Silicon (M1/M2/M3) support"
+	depends on ARM_64
+	select GICV3
+	help
+	  Enable support for running Xen natively on Apple Silicon (M1/M2/M3)
+	  with an Asahi Linux dom0.
+
+	  This is work in progress: it currently provides the platform stub and
+	  s5l early-console plumbing.  The Apple Interrupt Controller (AIC),
+	  timer-over-FIQ, VHE (E2H=1) execution, spin-table SMP bring-up and DART
+	  handling are not yet implemented.  See plans/asahi/ for the design.
+
+	  GICV3 is selected because guests (including dom0) are presented with a
+	  virtual GICv3 backed by the GICv3 CPU system-register interface that
+	  Apple cores implement, even though the physical interrupt controller is
+	  the AIC.
+
 config QEMU
 	bool "QEMU aarch virt machine support"
 	depends on ARM_64
@@ -71,6 +89,18 @@ config ALL64_PLAT
 config ALL32_PLAT
 	bool
 	default (ALL_PLAT && ARM_32)
+
+config APPLE_PLATFORM
+	bool
+	default (ALL64_PLAT || APPLE)
+
+config APPLE_AIC
+	bool "Apple Interrupt Controller (AIC) driver"
+	default APPLE_PLATFORM
+	depends on ARM_64
+	help
+	  Physical-layer driver for the Apple Interrupt Controller (AIC v1/v2/v3)
+	  found on Apple Silicon.  Work in progress; see plans/asahi/.
 
 config MPSOC_PLATFORM
 	bool
