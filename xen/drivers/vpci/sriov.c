@@ -17,6 +17,8 @@
  * License along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "private.h"
+
 #include <xen/iocap.h>
 #include <xen/sched.h>
 #include <xen/vpci.h>
@@ -30,7 +32,7 @@ static int vf_init_bars(const struct pci_dev *vf_pdev)
     struct vpci_bar *bars = vf_pdev->vpci->header.bars;
     struct vpci_bar *physfn_vf_bars = pf_pdev->vpci->sriov->vf_bars;
 
-    sriov_pos = pci_find_ext_capability(pf_pdev->sbdf, PCI_EXT_CAP_ID_SRIOV);
+    sriov_pos = pci_find_ext_capability(pf_pdev, PCI_EXT_CAP_ID_SRIOV);
     offset = pci_conf_read16(pf_pdev->sbdf, sriov_pos + PCI_SRIOV_VF_OFFSET);
     stride = pci_conf_read16(pf_pdev->sbdf, sriov_pos + PCI_SRIOV_VF_STRIDE);
 
@@ -239,7 +241,7 @@ int vf_init_header(struct pci_dev *vf_pdev)
     if ( !pf_pdev->vpci )
         return -EOPNOTSUPP;
 
-    sriov_pos = pci_find_ext_capability(pf_pdev->sbdf, PCI_EXT_CAP_ID_SRIOV);
+    sriov_pos = pci_find_ext_capability(pf_pdev, PCI_EXT_CAP_ID_SRIOV);
     ctrl = pci_conf_read16(pf_pdev->sbdf, sriov_pos + PCI_SRIOV_CTRL);
 
     if ( !pf_pdev->vpci->sriov )
@@ -355,7 +357,7 @@ static int cf_check init_sriov(struct pci_dev *pdev)
     if ( pdev->info.is_virtfn )
         return vf_init_header(pdev);
 
-    pos = pci_find_ext_capability(pdev->sbdf, PCI_EXT_CAP_ID_SRIOV);
+    pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_SRIOV);
 
     if ( !pos )
         return 0;
