@@ -10,6 +10,7 @@
 /* We assume the PL011 default of "1/2 way" for the FIFO trigger level. */
 #define SBSA_UART_FIFO_LEVEL (SBSA_UART_FIFO_SIZE / 2)
 
+#include <xen/domain-layout.h>
 #include <xen/errno.h>
 #include <xen/event.h>
 #include <xen/guest_access.h>
