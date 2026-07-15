@@ -26,7 +26,6 @@
 #include <public/event_channel.h>
 #include <public/io/xs_wire.h>
 
-#include <asm/dom0less-build.h>
 #include <asm/domain_build.h>
 #include <asm/setup.h>
 
