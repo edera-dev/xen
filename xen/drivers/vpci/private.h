@@ -91,54 +91,6 @@ void cf_check vpci_hw_write16(
 /* Make sure there's a hole in the p2m for the MSIX mmio areas. */
 int vpci_make_msix_hole(const struct pci_dev *pdev);
 
-/*
- * Helper functions to fetch MSIX related data. They are used by both the
- * emulated MSIX code and the BAR handlers.
- */
-static inline paddr_t vmsix_table_host_base(const struct vpci *vpci,
-                                            unsigned int nr)
-{
-    return vpci->header.bars[vpci->msix->tables[nr] & PCI_MSIX_BIRMASK].addr;
-}
-
-static inline paddr_t vmsix_table_host_addr(const struct vpci *vpci,
-                                            unsigned int nr)
-{
-    return vmsix_table_host_base(vpci, nr) +
-           (vpci->msix->tables[nr] & ~PCI_MSIX_BIRMASK);
-}
-
-static inline paddr_t vmsix_table_base(const struct vpci *vpci, unsigned int nr)
-{
-    return vpci->header.bars[vpci->msix->tables[nr] &
-                             PCI_MSIX_BIRMASK].guest_addr;
-}
-
-static inline paddr_t vmsix_table_addr(const struct vpci *vpci, unsigned int nr)
-{
-    return vmsix_table_base(vpci, nr) +
-           (vpci->msix->tables[nr] & ~PCI_MSIX_BIRMASK);
-}
-
-static inline bool vmsix_table_bar_valid(const struct vpci *vpci,
-                                         unsigned int nr)
-{
-    return vpci->header.bars[vpci->msix->tables[nr] & PCI_MSIX_BIRMASK].enabled;
-}
-
-/*
- * Note regarding the size calculation of the PBA: the spec mentions "The last
- * QWORD will not necessarily be fully populated", so it implies that the PBA
- * size is 64-bit aligned.
- */
-static inline size_t vmsix_table_size(const struct vpci *vpci, unsigned int nr)
-{
-    return
-        (nr == VPCI_MSIX_TABLE) ? vpci->msix->max_entries * PCI_MSIX_ENTRY_SIZE
-                                : ROUNDUP(DIV_ROUND_UP(vpci->msix->max_entries,
-                                                       8), 8);
-}
-
 #endif /* __XEN__ */
 
 #endif /* VPCI_PRIVATE_H */
