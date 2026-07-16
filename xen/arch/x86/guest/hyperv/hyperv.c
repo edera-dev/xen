@@ -99,10 +99,18 @@ static void __init setup_hypercall_page(void)
     rdmsrl(HV_X64_MSR_HYPERCALL, hypercall_msr.as_uint64);
     if ( !hypercall_msr.enable )
     {
-        mfn = HV_HCALL_MFN;
+        void *hcall_page = alloc_xenheap_page();
+
+        if ( !hcall_page )
+            panic("Hyper-V: Failed to allocate hypercall trampoline page\n");
+
+        mfn = virt_to_mfn(hcall_page);
         hypercall_msr.enable = 1;
         hypercall_msr.guest_physical_address = mfn;
         wrmsrl(HV_X64_MSR_HYPERCALL, hypercall_msr.as_uint64);
+
+        dprintk(XENLOG_INFO,
+                "Hyper-V: Allocated hypercall page at MFN %lx\n", mfn);
     }
     else
         mfn = hypercall_msr.guest_physical_address;
@@ -188,14 +196,6 @@ static int cf_check ap_setup(void)
     return setup_vp_assist();
 }
 
-static void __init cf_check e820_fixup(void)
-{
-    uint64_t s = HV_HCALL_MFN << PAGE_SHIFT;
-
-    if ( !e820_add_range(s, s + PAGE_SIZE, E820_RESERVED) )
-        panic("Unable to reserve Hyper-V hypercall range\n");
-}
-
 static int cf_check flush_tlb(
     const cpumask_t *mask, const void *va, unsigned int flags)
 {
@@ -212,7 +212,6 @@ static const struct hypervisor_ops __initconst_cf_clobber ops = {
     .name = "Hyper-V",
     .setup = setup,
     .ap_setup = ap_setup,
-    .e820_fixup = e820_fixup,
     .flush_tlb = flush_tlb,
 };
 
