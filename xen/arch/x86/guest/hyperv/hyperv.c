@@ -14,6 +14,7 @@
 #include <asm/guest/hyperv-tlfs.h>
 #include <asm/msr.h>
 #include <asm/processor.h>
+#include <asm/setup.h>
 
 #include "private.h"
 
@@ -175,6 +176,15 @@ static int setup_vp_assist(void)
 static void __init cf_check setup(void)
 {
     ASM_CONSTANT(HV_HCALL_PAGE, __fix_x_to_virt(FIX_X_HYPERV_HCALL));
+
+    /*
+     * Hyper-V VMs (in particular UEFI "Generation 2" ones) may lack a legacy
+     * i8254 PIT / i8259 PIC entirely, so the legacy timer (IRQ0) validation in
+     * check_timer() would fail all of its fallbacks and panic.  Xen relies on
+     * the local APIC timer plus the Hyper-V reference TSC page instead, so tell
+     * the IO-APIC code to skip that check.
+     */
+    no_timer_check = true;
 
     setup_hypercall_page();
 
