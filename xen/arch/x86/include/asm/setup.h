@@ -55,6 +55,14 @@ extern unsigned long highmem_start;
 extern unsigned int i8259A_alias_mask;
 extern unsigned int pit_alias_mask;
 
+/*
+ * 1 to skip the legacy timer (IRQ0) validation in check_timer().  Set when
+ * running as a guest under a hypervisor that provides no legacy i8254 PIT /
+ * i8259 PIC (e.g. a UEFI "Generation 2" Hyper-V VM), where none of the legacy
+ * timer routing fallbacks can ever work and Xen uses another platform timer.
+ */
+extern bool no_timer_check;
+
 extern int8_t opt_smt;
 extern int8_t opt_probe_port_aliases;
 
