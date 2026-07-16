@@ -52,6 +52,7 @@ static struct { int pin, apic; } ioapic_i8259 = { -1, -1 };
 static DEFINE_SPINLOCK(ioapic_lock);
 
 bool __read_mostly skip_ioapic_setup;
+bool __initdata no_timer_check;
 bool __initdata ioapic_ack_new = true;
 bool __initdata ioapic_ack_forced;
 
@@ -1845,6 +1846,19 @@ static void __init check_timer(void)
     int apic1, pin1, apic2, pin2;
     int vector, ret;
     unsigned long flags;
+
+    /*
+     * Some environments (e.g. UEFI "Generation 2" Hyper-V VMs) provide no
+     * legacy i8254 PIT or i8259 PIC, so none of the legacy IRQ0 routing
+     * fallbacks below can ever work.  Xen does not need the legacy timer
+     * interrupt there - it uses the local APIC timer together with another
+     * platform timesource - so skip the check rather than panicking.
+     */
+    if ( no_timer_check )
+    {
+        printk(KERN_INFO "..TIMER: skipping legacy timer check\n");
+        return;
+    }
 
     local_irq_save(flags);
 
