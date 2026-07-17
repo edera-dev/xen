@@ -864,9 +864,17 @@ static int64_t __init cf_check init_hyperv_timer(
     tsc_msr |= maddr | 1 /* enabled */;
     wrmsrl(HV_X64_MSR_REFERENCE_TSC, tsc_msr);
 
-    /* Get TSC frequency from Hyper-V */
+    /*
+     * read_hyperv_timer() returns the partition reference time, which counts
+     * in 100ns units (10 MHz) regardless of the raw TSC frequency.  That is
+     * the rate the platform timer must be scaled by - not the TSC frequency,
+     * which would overstate it by ~200x and, e.g., make calibrate_apic_timer()
+     * busy-wait for seconds.
+     */
+    pts->frequency = HV_REFERENCE_TSC_HZ;
+
+    /* The return value is used by the caller to derive cpu_khz. */
     rdmsrl(HV_X64_MSR_TSC_FREQUENCY, freq);
-    pts->frequency = freq;
 
     return freq;
 }
@@ -909,8 +917,14 @@ static struct platform_timesource __initdata_cf_clobber plt_hyperv_timer =
     .name = "HYPER-V REFERENCE TSC",
     .read_counter = read_hyperv_timer,
     .init = init_hyperv_timer,
-    /* See TSC time source for why counter_bits is set to 63 */
-    .counter_bits = 63,
+    /*
+     * The reference counter ticks at only 10 MHz, so - unlike the TSC - a
+     * full 63-bit width would make plt_overflow_period (scale_delta() of
+     * 1 << (counter_bits - 1)) overflow s_time_t.  32 bits matches the
+     * other sub-GHz platform timers and wraps every ~429s, comfortably
+     * longer than the resulting ~215s overflow period.
+     */
+    .counter_bits = 32,
 };
 #endif
 
