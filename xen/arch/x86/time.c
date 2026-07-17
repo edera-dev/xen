@@ -2531,7 +2531,19 @@ static int __init cf_check verify_tsc_reliability(void)
             printk("TSC warp detected, disabling TSC_RELIABLE\n");
             setup_clear_cpu_cap(X86_FEATURE_TSC_RELIABLE);
         }
-        else if ( !strcmp(opt_clocksource, "tsc") &&
+        /*
+         * A Hyper-V guest defaults to the Hyper-V reference TSC platform
+         * timer, which leaves clocksource_is_tsc() false.  PV guests then
+         * never get XEN_PVCLOCK_TSC_STABLE_BIT (see collect_time_info()) and
+         * their pvclock interpolation stalls, hanging the guest.  As the TSC
+         * has just been shown to be reliable, prefer it directly when the
+         * admin hasn't chosen a clocksource: this fixes guest timekeeping and
+         * drops the reference-TSC indirection.  An explicit clocksource= is
+         * always honoured.
+         */
+        else if ( (!strcmp(opt_clocksource, "tsc") ||
+                   (opt_clocksource[0] == '\0' &&
+                    !strcmp(plt_src.id, "hyperv"))) &&
                   (try_platform_timer(&plt_tsc) > 0) )
         {
             /*
