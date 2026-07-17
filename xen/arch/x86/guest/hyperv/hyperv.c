@@ -19,6 +19,7 @@
 #include "private.h"
 
 struct ms_hyperv_info __read_mostly ms_hyperv;
+bool __ro_after_init hyperv_guest;
 DEFINE_PER_CPU_READ_MOSTLY(void *, hv_input_page);
 DEFINE_PER_CPU_READ_MOSTLY(void *, hv_vp_assist);
 DEFINE_PER_CPU_READ_MOSTLY(unsigned int, hv_vp_index);
@@ -78,6 +79,8 @@ const struct hypervisor_ops *__init hyperv_probe(void)
         memset(&ms_hyperv, 0, sizeof(ms_hyperv));
         return NULL;
     }
+
+    hyperv_guest = true;
 
     return &ops;
 }
