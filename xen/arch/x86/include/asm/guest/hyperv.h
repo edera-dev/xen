@@ -52,9 +52,14 @@ struct ms_hyperv_info {
 };
 extern struct ms_hyperv_info ms_hyperv;
 
+/* True when Xen has detected that it is running as a Hyper-V guest. */
+extern bool hyperv_guest;
+
 const struct hypervisor_ops *hyperv_probe(void);
 
 #else
+
+#define hyperv_guest 0
 
 static inline const struct hypervisor_ops *hyperv_probe(void) { return NULL; }
 
