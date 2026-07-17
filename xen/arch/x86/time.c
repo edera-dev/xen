@@ -1613,6 +1613,19 @@ static void __init probe_wallclock(void)
         wallclock_source = WALLCLOCK_XEN;
         return;
     }
+
+    /*
+     * Under Hyper-V a CMOS RTC read spends up to a second polling the RTC
+     * update-in-progress bit.  EFI runtime services (always present on a
+     * UEFI "Generation 2" VM) return the time immediately, so prefer them
+     * when available to avoid that per-boot stall.
+     */
+    if ( hyperv_guest && efi_enabled(EFI_RS) && efi_get_time() )
+    {
+        wallclock_source = WALLCLOCK_EFI;
+        return;
+    }
+
     if ( cmos_rtc_probe() )
     {
         wallclock_source = WALLCLOCK_CMOS;
