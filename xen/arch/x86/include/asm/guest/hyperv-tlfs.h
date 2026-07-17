@@ -213,6 +213,13 @@
 /* MSR used to read the per-partition time reference counter */
 #define HV_X64_MSR_TIME_REF_COUNT		0x40000020
 
+/*
+ * The partition reference counter and reference TSC page both count in
+ * 100ns units, i.e. at a fixed 10 MHz rate, independent of the raw TSC
+ * frequency.
+ */
+#define HV_REFERENCE_TSC_HZ			10000000UL
+
 /* A partition's reference time stamp counter (TSC) page */
 #define HV_X64_MSR_REFERENCE_TSC		0x40000021
 
