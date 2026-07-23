@@ -7,6 +7,7 @@
  * Modifications to Linux original are copyright (c) 2002-2004, K A Fraser
  */
 
+#include <asm/guest/hyperv.h>
 #include <asm/pv/trace.h>
 #include <asm/pv/traps.h>
 
@@ -66,9 +67,42 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
     return EXCRET_fault_fixed;
 }
 
+/*
+ * A passthrough (Hyper-V-on-Xen) dom0 makes Hyper-V hypercalls by CALLing its
+ * hypercall page, which Xen filled with "ud2; \"hvc\"; ret".  Recognise that
+ * signature here, forward the call (rcx=control, rdx=input, r8=output) to the
+ * L0 host, and skip to the trailing ret so the guest returns with the status
+ * in rax.
+ */
+static int emulate_hyperv_hypercall(struct cpu_user_regs *regs)
+{
+    struct vcpu *curr = current;
+    char sig[5];
+    unsigned long eip = regs->rip, rc;
+
+    if ( !is_hyperv_passthrough_domain(curr->domain) ||
+         !hyperv_pt_hypercall_ready(curr->domain) )
+        return 0;
+
+    if ( (rc = copy_from_guest_pv(sig, (char __user *)eip, sizeof(sig))) != 0 )
+    {
+        pv_inject_page_fault(0, eip + sizeof(sig) - rc);
+        return EXCRET_fault_fixed;
+    }
+    if ( memcmp(sig, "\xf\xb" "hvc", sizeof(sig)) )
+        return 0;
+
+    regs->rax = hyperv_pt_do_hypercall(curr, regs->rcx, regs->rdx, regs->r8);
+
+    /* Skip ud2 + signature; the guest's trailing ret returns to the caller. */
+    pv_emul_instruction_done(regs, eip + sizeof(sig));
+
+    return EXCRET_fault_fixed;
+}
+
 bool pv_emulate_invalid_op(struct cpu_user_regs *regs)
 {
-    return !emulate_forced_invalid_op(regs);
+    return !(emulate_forced_invalid_op(regs) || emulate_hyperv_hypercall(regs));
 }
 
 /*
