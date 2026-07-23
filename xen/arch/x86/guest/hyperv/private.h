@@ -26,6 +26,23 @@ static inline unsigned int hv_vp_index(unsigned int cpu)
 int hyperv_flush_tlb(const cpumask_t *mask, const void *va,
                      unsigned int flags);
 
+/* SINT index Linux/Hyper-V use for VMBus messages. */
+#define VMBUS_MESSAGE_SINT 2
+
+/* L0-facing SynIC (synic.c), gated behind the "hyperv-vmbus" boot option. */
+extern bool opt_hyperv_vmbus;
+void hyperv_synic_vector_init(void);
+int hyperv_synic_setup(void);
+
+/*
+ * Relay an L0 SynIC message to the passthrough dom0 vcpu @v: copy it into the
+ * vcpu's registered SIMP page and raise VIRQ_HYPERV_VMBUS.  (passthrough.c)
+ */
+struct hv_message;
+void hyperv_pt_relay_message(struct vcpu *v, const struct hv_message *msg);
+void hyperv_pt_relay_event_flags(struct vcpu *v, const unsigned long *flags,
+                                 unsigned int nlongs);
+
 /* Returns number of banks, -ev if error */
 int cpumask_to_vpset(struct hv_vpset *vpset, const cpumask_t *mask);
 
