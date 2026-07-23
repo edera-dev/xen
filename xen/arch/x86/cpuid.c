@@ -8,6 +8,7 @@
 #include <asm/cpu-policy.h>
 #include <asm/cpuid.h>
 #include <asm/guest-msr.h>
+#include <asm/guest/hyperv.h>
 #include <asm/hvm/viridian.h>
 #include <asm/xstate.h>
 
@@ -40,9 +41,15 @@ static void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
 {
     const struct domain *d = v->domain;
     const struct cpu_policy *p = d->arch.cpu_policy;
-    uint32_t base = is_viridian_domain(d) ? 0x40000100 : 0x40000000;
+    /*
+     * Shift Xen's own leaves out of the way of the Hyper-V block at
+     * 0x40000000 when we present a Hyper-V interface to the domain (either
+     * emulated via Viridian, or passed through from an underlying L0 host).
+     */
+    bool hv_shift = is_viridian_domain(d) || is_hyperv_passthrough_domain(d);
+    uint32_t base = hv_shift ? 0x40000100 : 0x40000000;
     uint32_t idx  = leaf - base;
-    unsigned int limit = is_viridian_domain(d) ? p->hv2_limit : p->hv_limit;
+    unsigned int limit = hv_shift ? p->hv2_limit : p->hv_limit;
 
     if ( limit == 0 )
         /* Default number of leaves */
@@ -70,7 +77,7 @@ static void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
     case 2:
         res->a = 1;            /* Number of hypercall-transfer pages */
                                /* MSR base address */
-        res->b = is_viridian_domain(d) ? 0x40000200 : 0x40000000;
+        res->b = hv_shift ? 0x40000200 : 0x40000000;
         if ( is_pv_domain(d) ) /* Features */
             res->c |= XEN_CPUID_FEAT1_MMU_PT_UPDATE_PRESERVE_AD;
         break;
@@ -271,6 +278,9 @@ void guest_cpuid(const struct vcpu *v, uint32_t leaf,
     case 0x40000000U ... 0x400000ffU:
         if ( is_viridian_domain(d) )
             return cpuid_viridian_leaves(v, leaf, subleaf, res);
+
+        if ( is_hyperv_passthrough_domain(d) )
+            return cpuid_hyperv_passthrough_leaves(v, leaf, subleaf, res);
 
         fallthrough;
         /*
