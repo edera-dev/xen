@@ -40,9 +40,18 @@ static inline void local_event_delivery_enable(void)
     vcpu_info(current, evtchn_upcall_mask) = 0;
 }
 
-/* Only global arch specific virq definitions. */
 static inline enum virq_type arch_get_virq_type(unsigned int virq)
 {
+    switch ( virq )
+    {
+    case VIRQ_HYPERV_VMBUS:
+        /*
+         * Per-vcpu: the relayed VMBus interrupt targets the specific dom0 vcpu
+         * whose VP received the L0 SynIC message, so dom0 binds it per-cpu.
+         */
+        return VIRQ_VCPU;
+    }
+
     return VIRQ_GLOBAL;
 }
 
