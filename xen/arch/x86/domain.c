@@ -46,6 +46,7 @@
 #include <asm/desc.h>
 #include <asm/fsgsbase.h>
 #include <asm/guest-msr.h>
+#include <asm/guest/hyperv.h>
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/nestedhvm.h>
 #include <asm/hvm/svm.h>
@@ -970,6 +971,9 @@ void arch_domain_destroy(struct domain *d)
 {
     if ( is_hvm_domain(d) )
         hvm_domain_destroy(d);
+
+    if ( is_hyperv_passthrough_domain(d) )
+        hyperv_pt_domain_destroy(d);
 
     xfree(d->arch.e820);
     XFREE(d->arch.cpu_policy);
