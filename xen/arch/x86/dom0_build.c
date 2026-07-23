@@ -678,6 +678,19 @@ int __init construct_dom0(const struct boot_domain *bd)
     BUG_ON(d->vcpu[0] == NULL);
     BUG_ON(d->vcpu[0]->is_initialised);
 
+    /*
+     * When Xen is running nested under Hyper-V, expose the host's Hyper-V
+     * enlightenments to a PV dom0 so it can drive the host's synthetic (VMBus)
+     * devices.  A PVH dom0 uses the Viridian path instead and cannot boot on
+     * hosts without an IOMMU anyway, so restrict this to PV.
+     */
+    if ( hyperv_guest && is_pv_domain(d) )
+    {
+        bd->d->arch.hyperv_passthrough = true;
+        if ( hyperv_pt_domain_init(bd->d) )
+            panic("Failed to init Hyper-V passthrough state for dom0\n");
+    }
+
     process_pending_softirqs();
 
     if ( is_hvm_domain(d) )
