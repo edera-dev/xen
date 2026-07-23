@@ -10,6 +10,9 @@
 
 #include <xen/types.h>
 
+struct vcpu;
+struct cpuid_leaf;
+
 /*
  * The specification says: "The partition reference time is computed
  * by the following formula:
@@ -64,6 +67,46 @@ const struct hypervisor_ops *hyperv_probe(void);
 static inline const struct hypervisor_ops *hyperv_probe(void) { return NULL; }
 
 #endif /* CONFIG_HYPERV_GUEST */
+
+/*
+ * Synthesize the Hyper-V ("Microsoft Hv") CPUID leaves at 0x40000000 for a
+ * domain configured for Hyper-V passthrough, reflecting the enlightenments the
+ * Xen proxy actually forwards to the underlying L0 host.  Only ever called for
+ * a Hyper-V-passthrough domain, which requires CONFIG_HYPERV_GUEST.
+ */
+void cpuid_hyperv_passthrough_leaves(const struct vcpu *v, uint32_t leaf,
+                                     uint32_t subleaf, struct cpuid_leaf *res);
+
+/*
+ * Per-domain Hyper-V passthrough state lifecycle, and the synthetic-MSR
+ * interception hooks (dispatched from guest_{rd,wr}msr() for a passthrough
+ * domain).  Only ever reached for a passthrough domain, which requires
+ * CONFIG_HYPERV_GUEST.
+ */
+struct domain;
+int hyperv_pt_domain_init(struct domain *d);
+void hyperv_pt_domain_destroy(struct domain *d);
+int guest_rdmsr_hyperv_pt(const struct vcpu *v, uint32_t idx, uint64_t *val);
+int guest_wrmsr_hyperv_pt(struct vcpu *v, uint32_t idx, uint64_t val);
+
+/* True once the guest has enabled its (Xen-trapped) hypercall page. */
+bool hyperv_pt_hypercall_ready(const struct domain *d);
+
+/*
+ * Forward a Hyper-V hypercall from a passthrough guest to the L0 host.
+ * @control/@input/@output follow the Hyper-V hypercall register ABI; returns
+ * an HV_STATUS_* value.
+ */
+uint64_t hyperv_pt_do_hypercall(struct vcpu *v, uint64_t control,
+                                uint64_t input, uint64_t output);
+
+/*
+ * True when Xen forwards the L0 Hyper-V enlightenments to this domain.  A
+ * compile-time false without CONFIG_HYPERV_GUEST, so callers' passthrough
+ * paths are dead-code eliminated.
+ */
+#define is_hyperv_passthrough_domain(d) \
+    (IS_ENABLED(CONFIG_HYPERV_GUEST) && (d)->arch.hyperv_passthrough)
 #endif /* __X86_GUEST_HYPERV_H__ */
 
 /*

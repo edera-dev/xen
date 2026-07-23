@@ -16,6 +16,7 @@
 #include <asm/cpu-policy.h>
 #include <asm/debugreg.h>
 #include <asm/guest-msr.h>
+#include <asm/guest/hyperv.h>
 #include <asm/hvm/nestedhvm.h>
 #include <asm/hvm/viridian.h>
 #include <asm/msr.h>
@@ -45,8 +46,9 @@ int init_vcpu_msr_policy(struct vcpu *v)
 static int guest_rdmsr_xen(const struct vcpu *v, uint32_t idx, uint64_t *val)
 {
     const struct domain *d = v->domain;
-    /* Optionally shift out of the way of Viridian architectural MSRs. */
-    uint32_t base = is_viridian_domain(d) ? 0x40000200 : 0x40000000;
+    /* Optionally shift out of the way of the Hyper-V architectural MSRs. */
+    uint32_t base = (is_viridian_domain(d) || is_hyperv_passthrough_domain(d))
+                    ? 0x40000200 : 0x40000000;
 
     switch ( idx - base )
     {
@@ -61,8 +63,9 @@ static int guest_rdmsr_xen(const struct vcpu *v, uint32_t idx, uint64_t *val)
 static int guest_wrmsr_xen(struct vcpu *v, uint32_t idx, uint64_t val)
 {
     struct domain *d = v->domain;
-    /* Optionally shift out of the way of Viridian architectural MSRs. */
-    uint32_t base = is_viridian_domain(d) ? 0x40000200 : 0x40000000;
+    /* Optionally shift out of the way of the Hyper-V architectural MSRs. */
+    uint32_t base = (is_viridian_domain(d) || is_hyperv_passthrough_domain(d))
+                    ? 0x40000200 : 0x40000000;
 
     switch ( idx - base )
     {
@@ -276,6 +279,12 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
         if ( is_viridian_domain(d) )
         {
             ret = guest_rdmsr_viridian(v, msr, val);
+            break;
+        }
+
+        if ( is_hyperv_passthrough_domain(d) )
+        {
+            ret = guest_rdmsr_hyperv_pt(v, msr, val);
             break;
         }
 
@@ -613,6 +622,12 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         if ( is_viridian_domain(d) )
         {
             ret = guest_wrmsr_viridian(v, msr, val);
+            break;
+        }
+
+        if ( is_hyperv_passthrough_domain(d) )
+        {
+            ret = guest_wrmsr_hyperv_pt(v, msr, val);
             break;
         }
 

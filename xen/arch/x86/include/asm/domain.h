@@ -473,6 +473,17 @@ struct arch_domain
     /* Don't unconditionally inject #GP for unhandled MSRs. */
     bool msr_relaxed;
 
+    /*
+     * Expose the underlying Hyper-V host's enlightenments (CPUID leaves,
+     * synthetic MSRs, ...) to this domain rather than Xen's own.  Set for a PV
+     * dom0 when Xen itself is running nested under Hyper-V, so dom0 can drive
+     * the host's synthetic (VMBus) devices.
+     */
+    bool hyperv_passthrough;
+
+    /* Hyper-V passthrough enlightenment state (when hyperv_passthrough). */
+    struct hyperv_pt_domain *hyperv_pt;
+
     /* Emulated devices enabled bitmap. */
     uint32_t emulation_flags;
 } __cacheline_aligned;

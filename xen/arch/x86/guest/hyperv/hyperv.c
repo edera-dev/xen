@@ -9,6 +9,7 @@
 #include <xen/init.h>
 #include <xen/version.h>
 
+#include <asm/cpuid.h>
 #include <asm/fixmap.h>
 #include <asm/guest.h>
 #include <asm/guest/hyperv-tlfs.h>
@@ -83,6 +84,45 @@ const struct hypervisor_ops *__init hyperv_probe(void)
     hyperv_guest = true;
 
     return &ops;
+}
+
+void cpuid_hyperv_passthrough_leaves(const struct vcpu *v, uint32_t leaf,
+                                     uint32_t subleaf, struct cpuid_leaf *res)
+{
+    switch ( leaf - 0x40000000 )
+    {
+    case 0: /* Vendor ID and maximum supported leaf. */
+        res->a = 0x40000005;    /* Highest leaf we synthesize. */
+        res->b = 0x7263694d;    /* "Micr" */
+        res->c = 0x666f736f;    /* "osof" */
+        res->d = 0x76482074;    /* "t Hv" */
+        break;
+
+    case 1: /* Interface signature. */
+        res->a = 0x31237648;    /* "Hv#1" */
+        break;
+
+    case 2: /* Hypervisor version -- report the underlying L0 host's. */
+        cpuid(HYPERV_CPUID_VERSION, &res->a, &res->b, &res->c, &res->d);
+        break;
+
+    case 3: /* Feature identification. */
+        /*
+         * Advertise only what the Xen proxy currently forwards.  With just
+         * CPUID exposure in place that is the hypercall interface and the VP
+         * index MSR -- enough for the guest to detect Hyper-V.  SynIC,
+         * PostMessage/SignalEvent and the rest are advertised as their proxy
+         * support lands (see the VMBus enablement milestones).
+         */
+        res->a = HV_X64_MSR_HYPERCALL_AVAILABLE |
+                 HV_X64_MSR_VP_INDEX_AVAILABLE;
+        break;
+
+    case 5: /* Implementation limits -- report the underlying L0 host's. */
+        res->a = ms_hyperv.max_vp_index;
+        res->b = ms_hyperv.max_lp_index;
+        break;
+    }
 }
 
 static void __init setup_hypercall_page(void)
@@ -196,6 +236,18 @@ static void __init cf_check setup(void)
 
     if ( setup_vp_assist() )
         panic("VP assist page setup failed\n");
+
+    /*
+     * Optional: bring up Xen's own SynIC to receive the host's VMBus
+     * synthetic interrupts on behalf of a passthrough dom0.  Off by default
+     * (see synic.c) until the dom0 relay + Linux side are brought up.
+     */
+    if ( opt_hyperv_vmbus )
+    {
+        hyperv_synic_vector_init();
+        if ( hyperv_synic_setup() )
+            panic("Hyper-V SynIC setup failed\n");
+    }
 }
 
 static int cf_check ap_setup(void)
@@ -206,7 +258,14 @@ static int cf_check ap_setup(void)
     if ( rc )
         return rc;
 
-    return setup_vp_assist();
+    rc = setup_vp_assist();
+    if ( rc )
+        return rc;
+
+    if ( opt_hyperv_vmbus )
+        rc = hyperv_synic_setup();
+
+    return rc;
 }
 
 static int cf_check flush_tlb(
