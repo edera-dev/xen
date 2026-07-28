@@ -285,9 +285,10 @@ static void hyperv_pt_fill_hypercall_page(struct domain *d, uint64_t gpa)
 
 /*
  * Forward a Hyper-V hypercall issued by the passthrough domain to the
- * underlying L0 host.  Only the VMBus messaging primitives are forwarded; the
- * guest's input parameter block (a guest-physical address) is marshalled into
- * Xen's per-cpu input page so L0 sees a machine address it owns.
+ * underlying L0 host.  Only the VMBus messaging primitives and vPCI interrupt
+ * retargeting are forwarded; the guest's input parameter block (a guest-physical
+ * address) is marshalled into Xen's per-cpu input page so L0 sees a machine
+ * address it owns.
  */
 uint64_t hyperv_pt_do_hypercall(struct vcpu *v, uint64_t control,
                                 uint64_t input, uint64_t output)
@@ -304,6 +305,15 @@ uint64_t hyperv_pt_do_hypercall(struct vcpu *v, uint64_t control,
     {
     case HVCALL_POST_MESSAGE:
     case HVCALL_SIGNAL_EVENT:
+        break;
+
+    /*
+     * vPCI device interrupt affinity.  The guest names VP indices, which equal
+     * pcpu numbers because its vcpus are pinned 1:1, and a vector Xen owns (see
+     * hyperv_pt_vpci_vector()), so the parameter block needs no rewriting.  Its
+     * variable-size count lives in @control and is forwarded untouched.
+     */
+    case HVCALL_RETARGET_INTERRUPT:
         break;
 
     default:
