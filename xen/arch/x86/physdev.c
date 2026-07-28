@@ -11,6 +11,7 @@
 #include <xen/vpci.h>
 
 #include <asm/current.h>
+#include <asm/guest/hyperv.h>
 #include <asm/io_apic.h>
 #include <asm/msi.h>
 #include <asm/hvm/irq.h>
@@ -636,6 +637,23 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             ret = __copy_to_guest(arg, &out, 1) ? -EFAULT : 0;
         }
 
+        break;
+    }
+
+    case PHYSDEVOP_hyperv_vpci_vector: {
+        struct physdev_hyperv_vpci_vector out;
+
+        if ( !is_hyperv_passthrough_domain(currd) )
+        {
+            ret = -ENODEV;
+            break;
+        }
+
+        ret = hyperv_pt_vpci_vector(&out.vector);
+        if ( ret )
+            break;
+
+        ret = copy_to_guest(arg, &out, 1) ? -EFAULT : 0;
         break;
     }
 
