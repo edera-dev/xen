@@ -45,9 +45,11 @@ static inline enum virq_type arch_get_virq_type(unsigned int virq)
     switch ( virq )
     {
     case VIRQ_HYPERV_VMBUS:
+    case VIRQ_HYPERV_VPCI:
         /*
-         * Per-vcpu: the relayed VMBus interrupt targets the specific dom0 vcpu
-         * whose VP received the L0 SynIC message, so dom0 binds it per-cpu.
+         * Per-vcpu: the relayed VMBus and vPCI interrupts target the specific
+         * dom0 vcpu whose VP received them from the L0 host, so dom0 binds them
+         * per-cpu.
          */
         return VIRQ_VCPU;
     }
