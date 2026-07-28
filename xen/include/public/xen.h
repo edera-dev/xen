@@ -198,6 +198,14 @@ DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
  */
 #define VIRQ_HYPERV_VMBUS VIRQ_ARCH_1
 #define VIRQ_ARCH_2    18
+/*
+ * V. Relayed Hyper-V vPCI device interrupt, for a Xen dom0 running nested under
+ * Hyper-V: the host delivers MSIs of VMBus-assigned PCI devices to a vector Xen
+ * owns (see PHYSDEVOP_hyperv_vpci_vector), and Xen notifies the dom0 vcpu whose
+ * VP received it via this per-vcpu VIRQ.  dom0 demultiplexes among its own vPCI
+ * device interrupts.
+ */
+#define VIRQ_HYPERV_VPCI  VIRQ_ARCH_2
 #define VIRQ_ARCH_3    19
 #define VIRQ_ARCH_4    20
 #define VIRQ_ARCH_5    21
