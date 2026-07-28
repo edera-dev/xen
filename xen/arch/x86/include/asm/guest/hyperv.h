@@ -101,6 +101,14 @@ uint64_t hyperv_pt_do_hypercall(struct vcpu *v, uint64_t control,
                                 uint64_t input, uint64_t output);
 
 /*
+ * The vector a passthrough domain must compose its Hyper-V vPCI device MSIs
+ * with; the host then delivers them to Xen, which relays them to the target
+ * vcpu as VIRQ_HYPERV_VPCI.  Returns -ENODEV when the VMBus relay is not
+ * enabled.  Reported to the domain by PHYSDEVOP_hyperv_vpci_vector.
+ */
+int hyperv_pt_vpci_vector(uint32_t *vector);
+
+/*
  * True when Xen forwards the L0 Hyper-V enlightenments to this domain.  A
  * compile-time false without CONFIG_HYPERV_GUEST, so callers' passthrough
  * paths are dead-code eliminated.
