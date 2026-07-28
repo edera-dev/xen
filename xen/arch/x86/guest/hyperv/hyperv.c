@@ -238,13 +238,14 @@ static void __init cf_check setup(void)
         panic("VP assist page setup failed\n");
 
     /*
-     * Optional: bring up Xen's own SynIC to receive the host's VMBus
-     * synthetic interrupts on behalf of a passthrough dom0.  Off by default
-     * (see synic.c) until the dom0 relay + Linux side are brought up.
+     * Optional: bring up Xen's own SynIC to receive the host's VMBus synthetic
+     * interrupts, and claim a vector for vPCI device interrupts, on behalf of a
+     * passthrough dom0.  Off by default (see synic.c) until the dom0 relay +
+     * Linux side are brought up.
      */
     if ( opt_hyperv_vmbus )
     {
-        hyperv_synic_vector_init();
+        hyperv_relay_vector_init();
         if ( hyperv_synic_setup() )
             panic("Hyper-V SynIC setup failed\n");
     }

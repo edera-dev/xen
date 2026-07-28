@@ -29,9 +29,12 @@ int hyperv_flush_tlb(const cpumask_t *mask, const void *va,
 /* SINT index Linux/Hyper-V use for VMBus messages. */
 #define VMBUS_MESSAGE_SINT 2
 
-/* L0-facing SynIC (synic.c), gated behind the "hyperv-vmbus" boot option. */
+/*
+ * L0-facing SynIC and vPCI interrupt vectors (synic.c), gated behind the
+ * "hyperv-vmbus" boot option.
+ */
 extern bool opt_hyperv_vmbus;
-void hyperv_synic_vector_init(void);
+void hyperv_relay_vector_init(void);
 int hyperv_synic_setup(void);
 
 /*
