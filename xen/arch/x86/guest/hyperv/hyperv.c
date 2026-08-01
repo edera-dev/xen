@@ -115,7 +115,8 @@ void cpuid_hyperv_passthrough_leaves(const struct vcpu *v, uint32_t leaf,
          * support lands (see the VMBus enablement milestones).
          */
         res->a = HV_X64_MSR_HYPERCALL_AVAILABLE |
-                 HV_X64_MSR_VP_INDEX_AVAILABLE;
+                 HV_X64_MSR_VP_INDEX_AVAILABLE |
+                 (ms_hyperv.features & HV_MSR_TIME_REF_COUNT_AVAILABLE);
         break;
 
     case 5: /* Implementation limits -- report the underlying L0 host's. */
