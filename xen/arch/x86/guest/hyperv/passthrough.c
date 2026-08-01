@@ -299,6 +299,7 @@ uint64_t hyperv_pt_do_hypercall(struct vcpu *v, uint64_t control,
     struct page_info *pg;
     p2m_type_t t;
     void *map;
+    unsigned long irq_flags;
     uint64_t status;
 
     switch ( code )
@@ -348,14 +349,25 @@ uint64_t hyperv_pt_do_hypercall(struct vcpu *v, uint64_t control,
     /*
      * Copy the whole page and forward the machine address at the same offset;
      * the TLFS requires the input block not to cross a page boundary.
+     *
+     * The per-cpu input page is shared with the TLB flush enlightenment, which
+     * fills and consumes it with interrupts disabled (see hyperv_flush_tlb()).
+     * This path runs with them enabled - the #UD raised by the guest's
+     * hypercall stub is dispatched with the guest's IF restored - so an
+     * interrupt taken between the copy and the hypercall could flush the TLB
+     * and leave us handing L0 its parameter block in place of the guest's.
+     * Keep interrupts off across both.
      */
     map = __map_domain_page(pg);
-    memcpy(xen_in, map, PAGE_SIZE);
-    unmap_domain_page(map);
-    put_page(pg);
 
+    local_irq_save(irq_flags);
+    memcpy(xen_in, map, PAGE_SIZE);
     status = hv_do_hypercall(control,
                              virt_to_maddr(xen_in) + (input & ~PAGE_MASK), 0);
+    local_irq_restore(irq_flags);
+
+    unmap_domain_page(map);
+    put_page(pg);
 
  out:
     return status;
