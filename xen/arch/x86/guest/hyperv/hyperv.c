@@ -7,6 +7,7 @@
  * Copyright (c) 2019 Microsoft.
  */
 #include <xen/init.h>
+#include <xen/param.h>
 #include <xen/version.h>
 
 #include <asm/cpuid.h>
@@ -27,6 +28,14 @@ DEFINE_PER_CPU_READ_MOSTLY(unsigned int, hv_vp_index);
 
 unsigned int __read_mostly hv_max_vp_index;
 static bool __read_mostly hcall_page_ready;
+
+/*
+ * Use the host's remote TLB flush enlightenment when it recommends one.
+ * "hyperv-tlb-flush=0" falls back to Xen's native IPI-driven flush, which is
+ * slower but does not depend on the host honouring our flush requests.
+ */
+static bool __ro_after_init opt_hyperv_tlb_flush = true;
+boolean_param("hyperv-tlb-flush", opt_hyperv_tlb_flush);
 
 static uint64_t generate_guest_id(void)
 {
@@ -273,7 +282,8 @@ static int cf_check ap_setup(void)
 static int cf_check flush_tlb(
     const cpumask_t *mask, const void *va, unsigned int flags)
 {
-    if ( !(ms_hyperv.hints & HV_X64_REMOTE_TLB_FLUSH_RECOMMENDED) )
+    if ( !opt_hyperv_tlb_flush ||
+         !(ms_hyperv.hints & HV_X64_REMOTE_TLB_FLUSH_RECOMMENDED) )
         return -EOPNOTSUPP;
 
     if ( !hcall_page_ready || !this_cpu(hv_input_page) )
