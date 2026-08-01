@@ -386,6 +386,26 @@ int guest_rdmsr_hyperv_pt(const struct vcpu *v, uint32_t idx, uint64_t *val)
         *val = v->vcpu_id;
         break;
 
+    case HV_X64_MSR_TIME_REF_COUNT:
+        /*
+         * The partition reference counter is read-only L0 state counting in
+         * 100ns units, so simply forward the host's value.
+         *
+         * This matters even though the guest does not use the Hyper-V
+         * clocksource: a Xen PV dom0 never runs ms_hyperv_init_platform(), so
+         * hv_init_clocksource() does not either, and Linux keeps the default
+         * hv_read_reference_counter() -- which reads exactly this MSR.  The
+         * Hyper-V TimeSync driver interpolates the host's time samples
+         * against that counter, so failing the read leaves /dev/ptp_hyperv
+         * reporting a frozen host time and any NTP client that steps to it
+         * (chrony's default Azure configuration polls the PHC refclock every
+         * 8s with "makestep 1.0 -1") walks the wall clock backwards forever.
+         */
+        if ( !(ms_hyperv.features & HV_MSR_TIME_REF_COUNT_AVAILABLE) )
+            return X86EMUL_EXCEPTION;
+        rdmsrl(HV_X64_MSR_TIME_REF_COUNT, *val);
+        break;
+
     case HV_X64_MSR_VP_ASSIST_PAGE:
         *val = vp->vp_assist_msr;
         break;
