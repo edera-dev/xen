@@ -74,10 +74,9 @@ static uint64_t flush_tlb_ex(const cpumask_t *mask, const void *va,
     if ( !(ms_hyperv.hints & HV_X64_EX_PROCESSOR_MASKS_RECOMMENDED) )
         return ~0ULL;
 
+    /* See hyperv_flush_tlb() on why global mappings are never spared. */
     flush->address_space = 0;
     flush->flags = HV_FLUSH_ALL_VIRTUAL_ADDRESS_SPACES;
-    if ( !(flags & FLUSH_TLB_GLOBAL) )
-        flush->flags |= HV_FLUSH_NON_GLOBAL_MAPPINGS_ONLY;
 
     nr_banks = cpumask_to_vpset(&flush->hv_vp_set, mask);
     if ( nr_banks < 0 )
@@ -132,8 +131,22 @@ int hyperv_flush_tlb(const cpumask_t *mask, const void *va,
     flush->address_space = 0;
     flush->flags = HV_FLUSH_ALL_VIRTUAL_ADDRESS_SPACES;
     flush->processor_mask = 0;
-    if ( !(flags & FLUSH_TLB_GLOBAL) )
-        flush->flags |= HV_FLUSH_NON_GLOBAL_MAPPINGS_ONLY;
+
+    /*
+     * Global mappings are never spared, despite FLUSH_TLB_GLOBAL being
+     * absent.  Xen's own flush does not spare them either: do_tlb_flush()
+     * uses invpcid_flush_all(), or toggles CR4.PGE precisely in order to
+     * evict them, and only falls back to reloading CR3 - which does leave
+     * them alone - when PGE is clear and there are none.  FLUSH_TLB is
+     * therefore not a request to preserve global entries, and asking the
+     * host to preserve them under-invalidates.
+     *
+     * It matters because 64-bit PV domains run with CR4.PGE set unless XPTI
+     * or PCID is in use (see pv_make_cr4()), so their mappings really can be
+     * global.  Sparing them leaves stale translations on every processor
+     * other than the one issuing the flush, and flush_area_mask() sends no
+     * IPI once the hypercall has reported success.
+     */
 
     if ( cpumask_equal(mask, &cpu_online_map) )
         flush->flags |= HV_FLUSH_ALL_PROCESSORS;
