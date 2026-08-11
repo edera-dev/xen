@@ -497,6 +497,7 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
     struct e820entry *entry;
     struct e820_trim_state st = {};
     unsigned int i, nr_memblks = numa_get_nr_memblks();
+    unsigned long low_ram_pages = 0, low_grant;
     uint64_t start, end;
 
     /*
@@ -521,6 +522,8 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
         if ( start >= end )
             continue;
 
+        if ( start < MB(1) )
+            low_ram_pages += PFN_DOWN(min_t(uint64_t, end, MB(1)) - start);
         st.total_ram_pages += PFN_DOWN(end - start);
     }
 
@@ -529,16 +532,32 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
 
     if ( nr_pages > st.total_ram_pages )
         nr_pages = st.total_ram_pages;
-    st.nr_pages = nr_pages;
+
+    /*
+     * RAM below 1MB is granted in full rather than rationed by the
+     * proportional trim, and is therefore taken out of the pool the trim
+     * distributes.  It is at most 1MB, so it cannot meaningfully skew how
+     * dom0_mem is spread across nodes -- but Linux must place its real-mode
+     * trampoline there (arch/x86/realmode/init.c:reserve_real_mode() allocates
+     * with a 1MB ceiling), and giving the sub-1MB slice only dom0's share of
+     * host RAM starves it once that share is small.  A 640KB low slice at a
+     * 4% share leaves 24KB, and dom0 then dies in init_real_mode() with "Real
+     * mode trampoline was not allocated" before it has a console to say so.
+     */
+    low_grant = min(nr_pages, low_ram_pages);
+    st.total_ram_pages -= low_ram_pages;
+    st.nr_pages = nr_pages - low_grant;
 
     /*
      * Worst case: each host RAM entry splits into one slice per intersecting
      * memblk plus head/tail/inter-memblk gaps, and each slice yields up to
      * two output entries (RAM + UNUSABLE).  Non-RAM entries pass through.
-     * 3*nr_map + 4*nr_memblks bounds that with room to spare.
+     * The +2 covers the RAM/UNUSABLE pair the sub-1MB grant can emit for an
+     * entry straddling 1MB.  3*nr_map + 4*nr_memblks + 2 bounds that with
+     * room to spare.
      */
     d->arch.e820 = xzalloc_array(struct e820entry,
-                                 3 * e820.nr_map + 4 * nr_memblks);
+                                 3 * e820.nr_map + 4 * nr_memblks + 2);
     if ( !d->arch.e820 )
         panic("Unable to allocate memory for Dom0 e820 map\n");
     st.out = d->arch.e820;
@@ -590,6 +609,42 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
         }
 
         /*
+         * Hand dom0 the sub-1MB RAM in full before the proportional trim gets
+         * a say (see low_grant above), then continue from 1MB so the rest of
+         * this entry is distributed normally.
+         */
+        if ( start < MB(1) )
+        {
+            uint64_t low_end = min_t(uint64_t, end, MB(1));
+            unsigned long pages =
+                min_t(unsigned long, low_grant, PFN_DOWN(low_end - start));
+
+            if ( pages )
+            {
+                st.out->addr = start;
+                st.out->size = (uint64_t)pages << PAGE_SHIFT;
+                st.out->type = E820_RAM;
+                st.out++;
+                (*st.nr_out)++;
+                low_grant -= pages;
+            }
+
+            /* Keep the layout intact if dom0 is too small to take it all. */
+            if ( start + ((uint64_t)pages << PAGE_SHIFT) < low_end )
+            {
+                st.out->addr = start + ((uint64_t)pages << PAGE_SHIFT);
+                st.out->size = low_end - st.out->addr;
+                st.out->type = E820_UNUSABLE;
+                st.out++;
+                (*st.nr_out)++;
+            }
+
+            start = low_end;
+            if ( start >= end )
+                continue;
+        }
+
+        /*
          * Walk memblks (stored sorted by address) that intersect
          * [start, end).  Emit one slice per intersection plus one per
          * uncovered gap (head, inter-memblk, tail); each slice goes
@@ -632,7 +687,9 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
             trim_emit_ram_slice(&st, slice_start, end);
     }
 
-    ASSERT(st.cur_pages == nr_pages);
+    /* The sub-1MB grant is accounted separately from the trim's own total. */
+    ASSERT(low_grant == 0);
+    ASSERT(st.cur_pages == st.nr_pages);
 }
 
 static void __init pvh_init_p2m(struct domain *d)
