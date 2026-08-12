@@ -51,6 +51,15 @@
  */
 #define HVM_VM86_TSS_SIZE 265
 
+/*
+ * Ceiling for everything Xen places into dom0 at construction time: the kernel
+ * image, the VM86 TSS and identity page tables, and the ACPI tables.  The guest
+ * reaches these before it has full 64-bit page tables, so they must be 32-bit
+ * addressable.  pvh_setup_e820() exempts the RAM below this from the
+ * proportional trim, so that placement always has room to land in.
+ */
+#define DOM0_LOWMEM_LIMIT GB(4)
+
 static unsigned int __initdata acpi_intr_overrides;
 static struct acpi_madt_interrupt_override __initdata *intsrcovr;
 
@@ -366,7 +375,7 @@ static int __init pvh_setup_vmx_realmode_helpers(struct domain *d)
      * TSS structure (which accounts for the first 104b) doesn't cross
      * a page boundary.
      */
-    if ( !pvh_steal_ram(d, HVM_VM86_TSS_SIZE, 128, GB(4), &gaddr) )
+    if ( !pvh_steal_ram(d, HVM_VM86_TSS_SIZE, 128, DOM0_LOWMEM_LIMIT, &gaddr) )
     {
         if ( hvm_copy_to_guest_phys(gaddr, NULL, HVM_VM86_TSS_SIZE, v) !=
              HVMTRANS_okay )
@@ -381,7 +390,7 @@ static int __init pvh_setup_vmx_realmode_helpers(struct domain *d)
         printk("Unable to allocate VM86 TSS area\n");
 
     /* Steal some more RAM for the identity page tables. */
-    if ( pvh_steal_ram(d, PAGE_SIZE, PAGE_SIZE, GB(4), &gaddr) )
+    if ( pvh_steal_ram(d, PAGE_SIZE, PAGE_SIZE, DOM0_LOWMEM_LIMIT, &gaddr) )
     {
         printk("Unable to find memory to stash the identity page tables\n");
         return -ENOMEM;
@@ -522,8 +531,9 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
         if ( start >= end )
             continue;
 
-        if ( start < MB(1) )
-            low_ram_pages += PFN_DOWN(min_t(uint64_t, end, MB(1)) - start);
+        if ( start < DOM0_LOWMEM_LIMIT )
+            low_ram_pages +=
+                PFN_DOWN(min_t(uint64_t, end, DOM0_LOWMEM_LIMIT) - start);
         st.total_ram_pages += PFN_DOWN(end - start);
     }
 
@@ -534,15 +544,26 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
         nr_pages = st.total_ram_pages;
 
     /*
-     * RAM below 1MB is granted in full rather than rationed by the
+     * RAM below 4GB (lowmem) is granted in full rather than rationed by the
      * proportional trim, and is therefore taken out of the pool the trim
-     * distributes.  It is at most 1MB, so it cannot meaningfully skew how
-     * dom0_mem is spread across nodes -- but Linux must place its real-mode
-     * trampoline there (arch/x86/realmode/init.c:reserve_real_mode() allocates
-     * with a 1MB ceiling), and giving the sub-1MB slice only dom0's share of
-     * host RAM starves it once that share is small.  A 640KB low slice at a
-     * 4% share leaves 24KB, and dom0 then dies in init_real_mode() with "Real
-     * mode trampoline was not allocated" before it has a console to say so.
+     * distributes.
+     *
+     * Everything Xen must place for dom0 at construction time is confined to
+     * this range and has a size set by the guest, not by dom0's share of the
+     * host: the kernel image, via find_kernel_memory(). 4GB is the boundary
+     * the `pvh_setup_xx` funcs already use, and the RAM inside it is only a
+     * couple of GB, because firmware puts the MMIO hole below 4GB, and that
+     * amount is set by the memory map rather than by how much RAM the host
+     * has.
+     * So rationing it by dom0's share of total host RAM is something to avoid.
+     * Ex: On a 384GB host an 8GB dom0 is a 2% share, which leaves ~40MB and
+     * cannot fit a kernel. (low_ram_pages counts only E820_RAM below 4GB, so
+     * the exemption is bounded by what is actually there, not by the 4GB span.)
+     *
+     * Doing this unavoidably shifts some of dom0's RAM onto whichever node
+     * owns the lowmem addresses. A dom0 smaller than that lowmem RAM itself
+     * (typically 2-3GB) ends up entirely on that node, which costs locality but
+     * nothing else.
      */
     low_grant = min(nr_pages, low_ram_pages);
     st.total_ram_pages -= low_ram_pages;
@@ -552,8 +573,8 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
      * Worst case: each host RAM entry splits into one slice per intersecting
      * memblk plus head/tail/inter-memblk gaps, and each slice yields up to
      * two output entries (RAM + UNUSABLE).  Non-RAM entries pass through.
-     * The +2 covers the RAM/UNUSABLE pair the sub-1MB grant can emit for an
-     * entry straddling 1MB.  3*nr_map + 4*nr_memblks + 2 bounds that with
+     * The +2 covers the RAM/UNUSABLE pair the sub-4GB grant can emit for an
+     * entry straddling 4GB.  3*nr_map + 4*nr_memblks + 2 bounds that with
      * room to spare.
      */
     d->arch.e820 = xzalloc_array(struct e820entry,
@@ -609,13 +630,13 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
         }
 
         /*
-         * Hand dom0 the sub-1MB RAM in full before the proportional trim gets
-         * a say (see low_grant above), then continue from 1MB so the rest of
+         * Hand dom0 the sub-4GB RAM in full before the proportional trim gets
+         * a say (see low_grant above), then continue from 4GB so the rest of
          * this entry is distributed normally.
          */
-        if ( start < MB(1) )
+        if ( start < DOM0_LOWMEM_LIMIT )
         {
-            uint64_t low_end = min_t(uint64_t, end, MB(1));
+            uint64_t low_end = min_t(uint64_t, end, DOM0_LOWMEM_LIMIT);
             unsigned long pages =
                 min_t(unsigned long, low_grant, PFN_DOWN(low_end - start));
 
@@ -687,7 +708,7 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
             trim_emit_ram_slice(&st, slice_start, end);
     }
 
-    /* The sub-1MB grant is accounted separately from the trim's own total. */
+    /* The lowmem grant is accounted separately from the trim's own total. */
     ASSERT(low_grant == 0);
     ASSERT(st.cur_pages == st.nr_pages);
 }
@@ -1268,7 +1289,7 @@ static int __init pvh_setup_acpi_madt(struct domain *d, paddr_t *addr)
     madt->header.checksum -= acpi_tb_checksum(ACPI_CAST_PTR(u8, madt), size);
 
     /* Place the new MADT in guest memory space. */
-    if ( pvh_steal_ram(d, size, 0, GB(4), addr) )
+    if ( pvh_steal_ram(d, size, 0, DOM0_LOWMEM_LIMIT, addr) )
     {
         printk("Unable to steal guest RAM for MADT\n");
         rc = -ENOMEM;
@@ -1388,7 +1409,7 @@ static int __init pvh_setup_acpi_srat(struct domain *d, paddr_t *addr)
      */
     srat->header.checksum -= acpi_tb_checksum(ACPI_CAST_PTR(u8, srat), size);
 
-    if ( pvh_steal_ram(d, size, 0, GB(4), addr) )
+    if ( pvh_steal_ram(d, size, 0, DOM0_LOWMEM_LIMIT, addr) )
     {
         printk("Unable to steal guest RAM for SRAT\n");
         rc = -ENOMEM;
@@ -1484,7 +1505,7 @@ static int __init pvh_setup_acpi_slit(struct domain *d, paddr_t *addr)
     slit->header.length = size;
     slit->header.checksum -= acpi_tb_checksum(ACPI_CAST_PTR(u8, slit), size);
 
-    if ( pvh_steal_ram(d, size, 0, GB(4), addr) )
+    if ( pvh_steal_ram(d, size, 0, DOM0_LOWMEM_LIMIT, addr) )
     {
         printk("Unable to steal guest RAM for SLIT\n");
         rc = -ENOMEM;
@@ -1683,7 +1704,7 @@ static int __init pvh_setup_acpi_xsdt(struct domain *d, paddr_t madt_addr,
     xsdt->header.checksum -= acpi_tb_checksum(ACPI_CAST_PTR(u8, xsdt), size);
 
     /* Place the new XSDT in guest memory space. */
-    if ( pvh_steal_ram(d, size, 0, GB(4), addr) )
+    if ( pvh_steal_ram(d, size, 0, DOM0_LOWMEM_LIMIT, addr) )
     {
         printk("Unable to find guest RAM for XSDT\n");
         rc = -ENOMEM;
@@ -1815,7 +1836,7 @@ static int __init pvh_setup_acpi(struct domain *d, paddr_t start_info)
      * the native RSDT, and should not be used for the Dom0 kernel's boot
      * purposes (we keep it visible for post boot access).
      */
-    if ( pvh_steal_ram(d, sizeof(rsdp), 0, GB(4), &rsdp_paddr) )
+    if ( pvh_steal_ram(d, sizeof(rsdp), 0, DOM0_LOWMEM_LIMIT, &rsdp_paddr) )
     {
         printk("Unable to allocate guest RAM for RSDP\n");
         return -ENOMEM;
