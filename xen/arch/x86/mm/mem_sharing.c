@@ -2018,6 +2018,7 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
 int mem_sharing_fork_complete(struct domain *d)
 {
     struct domain *pd = d->parent;
+    struct p2m_domain *pp2m;
     struct mem_sharing_domain *msd = &d->arch.hvm.mem_sharing;
     unsigned long gfn, max_pfn, count = 0;
     struct vcpu *v;
@@ -2025,25 +2026,70 @@ int mem_sharing_fork_complete(struct domain *d)
     if ( !mem_sharing_is_fork(d) )
         return -EINVAL;
 
-    max_pfn = p2m_get_hostp2m(pd)->max_mapped_pfn;
+    pp2m = p2m_get_hostp2m(pd);
+    max_pfn = pp2m->max_mapped_pfn;
 
     for ( gfn = msd->next_gfn_to_materialize; gfn <= max_pfn; gfn++ )
     {
         p2m_type_t t;
+        p2m_access_t a;
+        unsigned int order = PAGE_ORDER_4K;
+        unsigned long span = 1;
 
         /*
-         * P2M_ALLOC (without P2M_UNSHARE) routes a hole through
-         * mem_sharing_fork_page()'s read path: it nominates the parent's page
-         * -- flipping it to p2m_ram_shared -- and inserts a shared entry into
-         * the child.  Pages the child already holds (shared, or private after
-         * an earlier copy-on-write) are returned as-is and left untouched, as
-         * are gfn's the parent itself does not populate (-ENOENT, a no-op).
+         * Only RAM can be forked into the child: mem_sharing_fork_page()
+         * nominates a p2m_ram_rw/logdirty page on its read path and copies a
+         * p2m_is_ram() one on its write path, and refuses everything else.  So
+         * ask the parent what is here before asking for the work to be done,
+         * because arriving at that refusal the long way costs three p2m walks
+         * and two lock round-trips per gfn to accomplish nothing.
+         *
+         * The saving is not the walk, it is the range.  A p2m lookup reports
+         * the order of the entry it stopped at, and an absent 1G or 2M entry
+         * means the whole aligned range under it is absent -- so a physmap's
+         * holes cost one lookup each instead of one per page.  That is most of
+         * what this loop used to iterate over: a guest with RAM either side of
+         * the 32-bit PCI window has a gigabyte of nothing in the middle, and
+         * max_mapped_pfn reaches past the top of its RAM.
+         *
+         * Unlocked, because both domains are paused for the whole operation
+         * (see above) -- the same thing the max_pfn snapshot already assumes.
          */
-        (void)get_gfn(d, gfn, &t);
-        put_gfn(d, gfn);
+        if ( !mfn_valid(_get_gfn_type_access(pp2m, _gfn(gfn), &t, &a, 0,
+                                             &order, false)) ||
+             !p2m_is_ram(t) )
+        {
+            /*
+             * Retire the rest of the entry's range.  `gfn` becomes its last
+             * gfn, so the loop's increment lands on the next entry, and the
+             * cursor written below resumes there rather than re-walking it.
+             */
+            unsigned long last = gfn | ((1UL << order) - 1);
 
-        /* Preempt periodically; the cursor lets us resume where we stopped. */
-        if ( ++count >= 0x2000 )
+            span = last - gfn + 1;
+            gfn = last;
+        }
+        else
+        {
+            /*
+             * P2M_ALLOC (without P2M_UNSHARE) routes a hole through
+             * mem_sharing_fork_page()'s read path: it nominates the parent's
+             * page -- flipping it to p2m_ram_shared -- and inserts a shared
+             * entry into the child.  Pages the child already holds (shared, or
+             * private after an earlier copy-on-write) are returned as-is and
+             * left untouched.
+             */
+            (void)get_gfn(d, gfn, &t);
+            put_gfn(d, gfn);
+        }
+
+        /*
+         * Preempt periodically; the cursor lets us resume where we stopped.
+         * Counted in gfns covered rather than iterations, so a skip that
+         * retires a gigabyte does not also defer the check by 8192 of them.
+         */
+        count += span;
+        if ( count >= 0x2000 )
         {
             if ( hypercall_preempt_check() )
             {
