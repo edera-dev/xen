@@ -315,6 +315,17 @@ config HYPERV_GUEST
 
 	  If unsure, say N.
 
+config KVM_GUEST
+	bool "KVM Guest"
+	select GUEST
+	help
+	  Support for Xen detecting when it is running under KVM, and taking
+	  its time from KVM's pvclock rather than from timers the L0 VMM
+	  emulates.  Without this, Xen nested under KVM calibrates against an
+	  emulated platform timer and its guests inherit the resulting drift.
+
+	  If unsure, say N.
+
 config REQUIRE_NX
 	bool "Require NX (No eXecute) support"
 	help
