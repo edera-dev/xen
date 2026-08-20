@@ -41,6 +41,18 @@
 #define XENMEMF_exact_node(n) (XENMEMF_node(n) | XENMEMF_exact_node_request)
 /* Flag to indicate the node specified is virtual node */
 #define XENMEMF_vnode  (1<<18)
+/*
+ * Guarantee that the populated extents read as zero. Without this a freshly
+ * populated frame holds whatever the heap had in it: Xen scrubs a page on the
+ * way out of a domain only conditionally, so a page a live guest ballooned out
+ * comes back holding what that guest left there, and where Xen does scrub, a
+ * CONFIG_SCRUB_DEBUG hypervisor scrubs with a poison pattern rather than zeroes.
+ *
+ * For a toolstack the alternative is mapping every frame and writing zeroes over
+ * it, which on a PVH dom0 costs a p2m insertion and removal per frame -- far
+ * more than zeroing the page costs here, where it is already mapped.
+ */
+#define XENMEMF_zero   (1<<19)
 #endif
 
 struct xen_memory_reservation {
@@ -791,7 +803,60 @@ struct xen_get_mfn_pxms {
 typedef struct xen_get_mfn_pxms xen_get_mfn_pxms_t;
 DEFINE_XEN_GUEST_HANDLE(xen_get_mfn_pxms_t);
 
-/* Next available Edera-custom subop number is 41 */
+/*
+ * XENMEM_domain_copy_range: copy between the caller's memory and a range of a
+ * domain's physical memory, without the caller mapping the frames.
+ *
+ * A toolstack that writes a guest's memory -- loading a kernel into a new
+ * domain, rebuilding one from a snapshot -- otherwise maps every frame into its
+ * own address space to do it. On a PVH dom0 that is a p2m insertion and a
+ * removal per frame, with the flushes that go with them, and it dominates the
+ * cost of the operation: measured against a snapshot restore, 6.1us to map a
+ * frame and 7.9us to unmap it, against a copy an order of magnitude cheaper.
+ * Here the frame is mapped in the hypervisor, where it is already directly
+ * addressable, and the copy is all that is paid for.
+ *
+ * The frames are named either as the contiguous run of nr_frames starting at
+ * `start_gfn`, which is what a domain builder and a whole-guest read walk, or
+ * as an explicit list when they are not contiguous -- the frames a snapshot
+ * holds are the populated subset of a window and can have holes in them. A null
+ * `gfns` selects the contiguous form.
+ *
+ * `buffer` is nr_frames pages of the caller's memory holding the frames'
+ * contents in the order the frames are named. Frames are copied in that order
+ * and the call is preemptible, resuming from where it left off.
+ *
+ * Only ordinary writable guest RAM can be written; anything else is refused
+ * rather than silently skipped, so a caller cannot come away believing a frame
+ * holds what it asked for.
+ */
+#define XENMEM_domain_copy_range            41
+
+struct xen_domain_copy_range {
+    /* IN: the domain whose memory is copied to or from. */
+    domid_t domid;
+    /* IN: XENMEM_DOMAIN_COPY_* below. */
+    uint16_t flags;
+    /* IN: how many frames the call covers. */
+    uint32_t nr_frames;
+    /* IN: the first frame of the run, when `gfns` is null. */
+    uint64_aligned_t start_gfn;
+    /* IN: nr_frames frame numbers, or null for the run at start_gfn. */
+    XEN_GUEST_HANDLE(xen_pfn_t) gfns;
+    /* IN: nr_frames pages of caller memory, in the order the frames are named. */
+    XEN_GUEST_HANDLE(uint8) buffer;
+};
+typedef struct xen_domain_copy_range xen_domain_copy_range_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domain_copy_range_t);
+
+/*
+ * Copy out of the domain's frames into the caller's buffer instead of into
+ * them. Unset, the copy goes into the domain.
+ */
+#define _XENMEM_DOMAIN_COPY_from_guest      0
+#define XENMEM_DOMAIN_COPY_from_guest       (1u << _XENMEM_DOMAIN_COPY_from_guest)
+
+/* Next available Edera-custom subop number is 42 */
 
 #endif /* __XEN_PUBLIC_MEMORY_H__ */
 
