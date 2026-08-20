@@ -705,17 +705,14 @@ static struct platform_timesource __initdata_cf_clobber plt_tsc =
     .init = init_tsc,
 };
 
-#ifdef CONFIG_XEN_GUEST
-/************************************************************
- * PLATFORM TIMER 5: XEN PV CLOCK SOURCE
- *
- * Xen clock source is a variant of TSC source.
+#if defined(CONFIG_XEN_GUEST) || defined(CONFIG_KVM_GUEST)
+/*
+ * Shared by the Xen and KVM platform timers below.  Both hypervisors publish a
+ * pvclock of the same shape -- they descend from the same design -- so the
+ * frequency calculation and the seqlock-protected read are common.
  */
-static uint64_t xen_timer_last;
-
-static uint64_t xen_timer_cpu_frequency(void)
+static uint64_t pvclock_cpu_frequency(const struct vcpu_time_info *info)
 {
-    struct vcpu_time_info *info = &this_cpu(vcpu_info)->time;
     uint64_t freq;
 
     freq = (1000000000ULL << 32) / info->tsc_to_system_mul;
@@ -725,14 +722,6 @@ static uint64_t xen_timer_cpu_frequency(void)
         freq >>= info->tsc_shift;
 
     return freq;
-}
-
-static int64_t __init cf_check init_xen_timer(struct platform_timesource *pts)
-{
-    if ( !xen_guest )
-        return 0;
-
-    return xen_timer_cpu_frequency();
 }
 
 static always_inline uint64_t read_cycle(const struct vcpu_time_info *info,
@@ -748,12 +737,16 @@ static always_inline uint64_t read_cycle(const struct vcpu_time_info *info,
     return info->system_time + offset;
 }
 
-static uint64_t cf_check read_xen_timer(void)
+/*
+ * Read a pvclock under its seqlock, then clamp the result to a global floor.
+ * An odd version means the publisher is mid-update; the floor keeps the
+ * platform counter monotonic even if two CPUs' copies disagree slightly.
+ */
+static always_inline uint64_t read_pvclock(const struct vcpu_time_info *info,
+                                           uint64_t *floor)
 {
-    struct vcpu_time_info *info = &this_cpu(vcpu_info)->time;
     uint32_t version;
-    uint64_t ret;
-    uint64_t last;
+    uint64_t ret, last;
 
     do {
         version = info->version & ~1;
@@ -769,12 +762,34 @@ static uint64_t cf_check read_xen_timer(void)
 
     /* Maintain a monotonic global value */
     do {
-        last = read_atomic(&xen_timer_last);
+        last = read_atomic(floor);
         if ( ret < last )
             return last;
-    } while ( unlikely(cmpxchg(&xen_timer_last, last, ret) != last) );
+    } while ( unlikely(cmpxchg(floor, last, ret) != last) );
 
     return ret;
+}
+#endif
+
+#ifdef CONFIG_XEN_GUEST
+/************************************************************
+ * PLATFORM TIMER 5: XEN PV CLOCK SOURCE
+ *
+ * Xen clock source is a variant of TSC source.
+ */
+static uint64_t xen_timer_last;
+
+static int64_t __init cf_check init_xen_timer(struct platform_timesource *pts)
+{
+    if ( !xen_guest )
+        return 0;
+
+    return pvclock_cpu_frequency(&this_cpu(vcpu_info)->time);
+}
+
+static uint64_t cf_check read_xen_timer(void)
+{
+    return read_pvclock(&this_cpu(vcpu_info)->time, &xen_timer_last);
 }
 
 static void cf_check resume_xen_timer(struct platform_timesource *pts)
@@ -790,6 +805,74 @@ static struct platform_timesource __initdata_cf_clobber plt_xen_timer =
     .read_counter = read_xen_timer,
     .init = init_xen_timer,
     .resume = resume_xen_timer,
+    .counter_bits = 63,
+};
+#endif
+
+#ifdef CONFIG_KVM_GUEST
+/************************************************************
+ * PLATFORM TIMER 6: KVM PV CLOCK SOURCE
+ *
+ * The L0 hypervisor's timeline, read from a shared page.  Preferred over the
+ * emulated platform timers when Xen is nested under KVM: those cost a VM exit
+ * per read and drift with host scheduling, and Xen's calibration -- and so
+ * every guest's pvclock -- inherits that drift.
+ */
+static uint64_t kvm_timer_last;
+
+static int64_t __init cf_check init_kvm_timer(struct platform_timesource *pts)
+{
+    const struct vcpu_time_info *info = kvm_pvclock();
+
+    if ( !kvm_guest || !info )
+        return 0;
+
+    /*
+     * A single platform counter is read from whichever CPU asks, so the
+     * per-vCPU pvclocks have to agree.  KVM promises that only when it
+     * advertises a stable TSC; without it, decline and let Xen fall back to an
+     * emulated timer.  A slow clock beats one that can step backwards.
+     */
+    if ( !kvm_pvclock_stable() )
+    {
+        printk(XENLOG_WARNING
+               "KVM: pvclock is not stable, not using it as platform timer\n");
+        return 0;
+    }
+
+    return pvclock_cpu_frequency(info);
+}
+
+static uint64_t cf_check read_kvm_timer(void)
+{
+    const struct vcpu_time_info *info = kvm_pvclock();
+
+    /*
+     * A CPU whose pvclock could not be set up would read a zeroed page and
+     * report time 0, dragging the platform counter backwards.  The AP bring-up
+     * refuses such a CPU, so this is belt and braces -- but the floor is the
+     * cheaper answer than a zero.
+     */
+    if ( unlikely(!info) )
+        return read_atomic(&kvm_timer_last);
+
+    return read_pvclock(info, &kvm_timer_last);
+}
+
+static void cf_check resume_kvm_timer(struct platform_timesource *pts)
+{
+    write_atomic(&kvm_timer_last, 0);
+}
+
+static struct platform_timesource __initdata_cf_clobber plt_kvm_timer =
+{
+    .id = "kvm",
+    .name = "KVM PV CLOCK",
+    /* system_time is in nanoseconds. */
+    .frequency = 1000000000ULL,
+    .read_counter = read_kvm_timer,
+    .init = init_kvm_timer,
+    .resume = resume_kvm_timer,
     .counter_bits = 63,
 };
 #endif
@@ -1085,6 +1168,9 @@ static u64 __init init_platform_timer(void)
 #endif
 #ifdef CONFIG_HYPERV_GUEST
         &plt_hyperv_timer,
+#endif
+#ifdef CONFIG_KVM_GUEST
+        &plt_kvm_timer,
 #endif
         &plt_hpet, &plt_pmtimer, &plt_pit
     };
