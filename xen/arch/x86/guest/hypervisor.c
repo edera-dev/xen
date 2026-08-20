@@ -30,6 +30,13 @@ const char *__init hypervisor_probe(void)
          */
         fns = hyperv_probe();
 
+    if ( !fns )
+        /*
+         * KVM last: its signature is distinct, but a Xen or Hyper-V host is the
+         * more specific answer when more than one is visible.
+         */
+        fns = kvm_probe();
+
     if ( fns )
         ops = *fns;
 
