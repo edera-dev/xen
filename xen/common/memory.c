@@ -1645,9 +1645,26 @@ static int domain_copy_range(
 
         /*
          * Refused rather than skipped: a caller that asked for a frame to hold
-         * something must not be told it does when it does not.
+         * something must not be told it does when it does not. A write asks for
+         * ordinary writable RAM by type -- p2m_is_readonly() is x86-only, and
+         * every other RAM type this could name (a read-only one, one being
+         * log-dirty tracked) is one this path has no business writing behind
+         * the back of. Reading any RAM type is fine.
          */
-        if ( !p2m_is_ram(p2mt) || (to_guest && p2m_is_readonly(p2mt)) )
+        if ( to_guest ? p2mt != p2m_ram_rw : !p2m_is_ram(p2mt) )
+        {
+            put_page(page);
+            rc = -EPERM;
+            goto out;
+        }
+
+        /*
+         * The type reference a mapping for writing would have taken. Without
+         * it a caller -- which may be the domain itself -- could write a frame
+         * the domain has live as a page table, which is the whole of the PV MMU
+         * validation it would otherwise have to go through.
+         */
+        if ( to_guest && !get_page_type(page, PGT_writable_page) )
         {
             put_page(page);
             rc = -EPERM;
@@ -1664,7 +1681,10 @@ static int domain_copy_range(
                                       (unsigned long)done << PAGE_SHIFT,
                                       frame, PAGE_SIZE) ? -EFAULT : 0;
         unmap_domain_page(frame);
-        put_page(page);
+        if ( to_guest )
+            put_page_and_type(page);
+        else
+            put_page(page);
 
         if ( rc )
             goto out;
