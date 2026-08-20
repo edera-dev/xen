@@ -321,9 +321,19 @@ can be maintained with the pv-shim mechanism.
     available in hardware.
 
 ### clocksource (x86)
-> `= pit | hpet | acpi | tsc`
+> `= pit | hpet | acpi | tsc | xen | hyperv | kvm`
 
 If set, override Xen's default choice for the platform timer.
+
+Left unset, Xen prefers a paravirtualised clock offered by the hypervisor it is
+running under -- `xen`, `hyperv` or `kvm` -- over the emulated timers, since
+reading one of those costs no VM exit and it does not drift with the host's
+scheduling of Xen's own vCPUs.  Each is only available if the corresponding
+`CONFIG_*_GUEST` was enabled at build time, and each declines to be used unless
+the hypervisor is actually present and offering the clock; `kvm` additionally
+requires KVM to advertise a stable TSC, without which the per-vCPU pvclocks are
+not guaranteed to agree with one another.
+
 Having TSC as platform timer requires being explicitly set. This is because
 TSC can only be safely used if CPU hotplug isn't performed on the system. On
 some platforms, the "maxcpus" option may need to be used to further adjust
