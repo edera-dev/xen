@@ -10,6 +10,7 @@
 
 #include <asm/guest/hyperv.h>
 #include <asm/guest/hypervisor.h>
+#include <asm/guest/kvm.h>
 #include <asm/guest/pvh-boot.h>
 #include <asm/guest/xen.h>
 #include <asm/guest/xen-hcall.h>

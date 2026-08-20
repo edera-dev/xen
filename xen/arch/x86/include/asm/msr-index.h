@@ -724,4 +724,14 @@
 #define MSR_PKGC9_IRTL			0x00000634
 #define MSR_PKGC10_IRTL			0x00000635
 
+/*
+ * KVM paravirtualised interfaces, as consumed when Xen runs nested under KVM.
+ * Values are KVM's stable guest ABI (Linux: arch/x86/include/uapi/asm/kvm_para.h).
+ */
+#define MSR_KVM_SYSTEM_TIME_NEW             0x4b564d01
+#define  KVM_MSR_ENABLED                    (_AC(1, ULL) << 0)
+
+#define KVM_FEATURE_CLOCKSOURCE2            (1U << 3)
+#define KVM_FEATURE_CLOCKSOURCE_STABLE_BIT  (1U << 24)
+
 #endif /* __ASM_MSR_INDEX_H */
