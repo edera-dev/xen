@@ -228,6 +228,18 @@ struct npfec {
 #define  MEMF_no_icache_flush (1U<<_MEMF_no_icache_flush)
 #define _MEMF_no_scrub    8
 #define  MEMF_no_scrub    (1U<<_MEMF_no_scrub)
+/*
+ * MEMF_zero guarantees the allocated extent reads as zero, which is stronger
+ * than what a scrub promises: a CONFIG_SCRUB_DEBUG hypervisor scrubs with a
+ * poison pattern precisely so that code conflating the two is caught. It is for
+ * callers who would otherwise have to write zeroes over the extent themselves --
+ * a toolstack rebuilding a guest's memory maps every frame to do that, at a cost
+ * per frame that dwarfs zeroing one here.
+ *
+ * Contradicts MEMF_no_scrub and is rejected together with it.
+ */
+#define _MEMF_zero        9
+#define  MEMF_zero        (1U<<_MEMF_zero)
 #define _MEMF_node        16
 #define  MEMF_node_mask   ((1U << (8 * sizeof(nodeid_t))) - 1)
 #define  MEMF_node(n)     ((((n) + 1) & MEMF_node_mask) << _MEMF_node)

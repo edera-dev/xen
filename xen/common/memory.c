@@ -1187,6 +1187,9 @@ static int construct_memop_from_reservation(
         a->memflags = MEMF_bits(address_bits);
     }
 
+    if ( r->mem_flags & XENMEMF_zero )
+        a->memflags |= MEMF_zero;
+
     if ( r->mem_flags & XENMEMF_vnode )
     {
         nodeid_t vnode, pnode;
@@ -1538,6 +1541,127 @@ static int acquire_resource(
         }
 
     } while ( xmar.nr_frames );
+
+    rc = 0;
+
+ out:
+    rcu_unlock_domain(d);
+
+    return rc;
+}
+
+
+/*
+ * Copy between the caller's memory and `d`'s physical memory, a page at a time,
+ * with the frame mapped in the hypervisor rather than in the caller.
+ *
+ * This exists because the alternative costs so much more than the copy does. A
+ * toolstack rebuilding a guest's memory maps each frame into its own address
+ * space, and on a PVH dom0 that is a p2m insertion and a removal per frame, plus
+ * the flushes: measured at some 14us a frame against a memcpy of about a tenth
+ * of that. Here the page is already addressable.
+ *
+ * Progress lives in the command word, as it does for XENMEM_acquire_resource, so
+ * a preempted call resumes from the frame it stopped at without the caller
+ * having to track anything.
+ */
+static int copy_physmap(
+    XEN_GUEST_HANDLE_PARAM(xen_copy_physmap_t) arg,
+    unsigned long start_extent)
+{
+    struct xen_copy_physmap xcp;
+    struct domain *d;
+    unsigned int done;
+    bool to_guest;
+    int rc;
+
+    if ( copy_from_guest(&xcp, arg, 1) )
+        return -EFAULT;
+
+    if ( xcp.flags & ~XENMEM_COPY_from_guest )
+        return -EINVAL;
+
+    /*
+     * The progress carried in the command word has to be able to hold the whole
+     * job, and a resumed call cannot claim to have done more than there is.
+     */
+    if ( xcp.nr_frames > (UINT_MAX >> MEMOP_EXTENT_SHIFT) ||
+         start_extent > xcp.nr_frames )
+        return -EINVAL;
+
+    rc = rcu_lock_remote_domain_by_id(xcp.domid, &d);
+    if ( rc )
+        return rc;
+
+    /*
+     * The same privilege mapping a frame of this domain would need. Writing a
+     * frame through a mapping and writing it here are the same act, and a caller
+     * that may do the one may do the other.
+     */
+    rc = xsm_add_to_physmap(XSM_TARGET, current->domain, d);
+    if ( rc )
+        goto out;
+
+    to_guest = !(xcp.flags & XENMEM_COPY_from_guest);
+
+    for ( done = start_extent; done < xcp.nr_frames; done++ )
+    {
+        xen_pfn_t gfn;
+        struct page_info *page;
+        p2m_type_t p2mt;
+        void *frame;
+
+        /*
+         * Checked before the frame rather than after it, and not on the first
+         * iteration, so a resumed call always makes progress and cannot spin
+         * handing itself back.
+         */
+        if ( done != start_extent && hypercall_preempt_check() )
+        {
+            rc = hypercall_create_continuation(
+                __HYPERVISOR_memory_op, "lh",
+                XENMEM_copy_physmap |
+                ((unsigned long)done << MEMOP_EXTENT_SHIFT),
+                arg);
+            goto out;
+        }
+
+        if ( copy_from_guest_offset(&gfn, xcp.gfns, done, 1) )
+        {
+            rc = -EFAULT;
+            goto out;
+        }
+
+        rc = check_get_page_from_gfn(d, _gfn(gfn), !to_guest, &p2mt, &page);
+        if ( rc )
+            goto out;
+
+        /*
+         * Refused rather than skipped: a caller that asked for a frame to hold
+         * something must not be told it does when it does not.
+         */
+        if ( !p2m_is_ram(p2mt) || (to_guest && p2m_is_readonly(p2mt)) )
+        {
+            put_page(page);
+            rc = -EPERM;
+            goto out;
+        }
+
+        frame = __map_domain_page(page);
+        if ( to_guest )
+            rc = copy_from_guest_offset(frame, xcp.buffer,
+                                        (unsigned long)done << PAGE_SHIFT,
+                                        PAGE_SIZE) ? -EFAULT : 0;
+        else
+            rc = copy_to_guest_offset(xcp.buffer,
+                                      (unsigned long)done << PAGE_SHIFT,
+                                      frame, PAGE_SIZE) ? -EFAULT : 0;
+        unmap_domain_page(frame);
+        put_page(page);
+
+        if ( rc )
+            goto out;
+    }
 
     rc = 0;
 
@@ -2023,6 +2147,12 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_acquire_resource:
         rc = acquire_resource(
             guest_handle_cast(arg, xen_mem_acquire_resource_t),
+            start_extent);
+        break;
+
+    case XENMEM_copy_physmap:
+        rc = copy_physmap(
+            guest_handle_cast(arg, xen_copy_physmap_t),
             start_extent);
         break;
 

@@ -41,6 +41,18 @@
 #define XENMEMF_exact_node(n) (XENMEMF_node(n) | XENMEMF_exact_node_request)
 /* Flag to indicate the node specified is virtual node */
 #define XENMEMF_vnode  (1<<18)
+/*
+ * Guarantee that the populated extents read as zero. Without this a freshly
+ * populated frame holds whatever the heap had in it: Xen scrubs a page on the
+ * way out of a domain only conditionally, so a page a live guest ballooned out
+ * comes back holding what that guest left there, and where Xen does scrub, a
+ * CONFIG_SCRUB_DEBUG hypervisor scrubs with a poison pattern rather than zeroes.
+ *
+ * For a toolstack the alternative is mapping every frame and writing zeroes over
+ * it, which on a PVH dom0 costs a p2m insertion and removal per frame -- far
+ * more than zeroing the page costs here, where it is already mapped.
+ */
+#define XENMEMF_zero   (1<<19)
 #endif
 
 struct xen_memory_reservation {
@@ -792,6 +804,50 @@ typedef struct xen_get_mfn_pxms xen_get_mfn_pxms_t;
 DEFINE_XEN_GUEST_HANDLE(xen_get_mfn_pxms_t);
 
 /* Next available Edera-custom subop number is 41 */
+
+/*
+ * XENMEM_copy_physmap: copy between the caller's memory and the physical memory
+ * of a domain it is privileged over, without the caller mapping the frames.
+ *
+ * A toolstack that writes a guest's memory -- loading a kernel into a new
+ * domain, rebuilding one from a snapshot -- otherwise maps every frame into its
+ * own address space to do it. On a PVH dom0 that is a p2m insertion and a
+ * removal per frame, with the flushes that go with them, and it dominates the
+ * cost of the operation: the copy itself is memory bandwidth, while the mapping
+ * either side of it is not. Here the frame is mapped in the hypervisor, where it
+ * is already directly addressable, and the copy is all that is paid for.
+ *
+ * `gfns` lists the frames to copy, and `buffer` is nr_frames pages of the
+ * caller's memory holding their contents in that order. Frames are copied in the
+ * order listed and the call is preemptible, resuming from where it left off.
+ *
+ * Only ordinary writable guest RAM can be written; anything else is refused
+ * rather than silently skipped, so a caller cannot come away believing a frame
+ * holds what it asked for.
+ */
+#define XENMEM_copy_physmap 41
+
+struct xen_copy_physmap {
+    /* IN: the domain whose memory is copied to or from. */
+    domid_t domid;
+    /* IN: XENMEM_COPY_* below. */
+    uint16_t flags;
+    /* IN: how many frames the call covers. */
+    uint32_t nr_frames;
+    /* IN: nr_frames guest frame numbers. */
+    XEN_GUEST_HANDLE(xen_pfn_t) gfns;
+    /* IN: nr_frames pages of caller memory, in the order `gfns` lists them. */
+    XEN_GUEST_HANDLE(uint8) buffer;
+};
+typedef struct xen_copy_physmap xen_copy_physmap_t;
+DEFINE_XEN_GUEST_HANDLE(xen_copy_physmap_t);
+
+/*
+ * Copy out of the domain's frames into the caller's buffer instead of into
+ * them. Unset, the copy goes into the domain.
+ */
+#define _XENMEM_COPY_from_guest 0
+#define XENMEM_COPY_from_guest  (1u << _XENMEM_COPY_from_guest)
 
 #endif /* __XEN_PUBLIC_MEMORY_H__ */
 
