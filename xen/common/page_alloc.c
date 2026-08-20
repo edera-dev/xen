@@ -991,6 +991,8 @@ static struct page_info *alloc_heap_pages(
     ASSERT(zone_hi < NR_ZONES);
 
     ASSERT(!(memflags & MEMF_keep_scrub) || (memflags & MEMF_no_scrub));
+    /* Zeroing an extent and declining to scrub it are contradictory requests. */
+    ASSERT(!(memflags & MEMF_zero) || !(memflags & MEMF_no_scrub));
 
     if ( unlikely(order > MAX_ORDER) )
         return NULL;
@@ -1109,11 +1111,29 @@ static struct page_info *alloc_heap_pages(
     spin_unlock(&heap_lock);
 
     if ( first_dirty != INVALID_DIRTY_IDX ||
-         (scrub_debug && !(memflags & MEMF_no_scrub)) )
+         (scrub_debug && !(memflags & MEMF_no_scrub)) ||
+         (memflags & MEMF_zero) )
     {
         bool cold = d && d != current->domain;
 
-        if ( !(memflags & MEMF_no_scrub) )
+        if ( memflags & MEMF_zero )
+        {
+            /*
+             * Every page, not just the dirty ones: a clean page here is one
+             * that was scrubbed rather than one that is known to be zero, and
+             * on a CONFIG_SCRUB_DEBUG hypervisor those differ by a poison
+             * pattern. The dirty ones are still accounted for as dealt with,
+             * because zeroing is a scrub and more.
+             */
+            for ( i = 0; i < (1U << order); i++ )
+            {
+                if ( test_and_clear_bit(_PGC_need_scrub, &pg[i].count_info) )
+                    dirty_cnt++;
+                if ( likely(!(pg[i].count_info & PGC_broken)) )
+                    clear_domain_page(page_to_mfn(&pg[i]));
+            }
+        }
+        else if ( !(memflags & MEMF_no_scrub) )
         {
             for ( i = 0; i < (1U << order); i++ )
             {
