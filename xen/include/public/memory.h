@@ -828,7 +828,19 @@ DEFINE_XEN_GUEST_HANDLE(xen_get_mfn_pxms_t);
  *
  * Only ordinary writable guest RAM can be written; anything else is refused
  * rather than silently skipped, so a caller cannot come away believing a frame
- * holds what it asked for.
+ * holds what it asked for. Any RAM type can be read, shared (copy-on-write)
+ * memory included -- a read takes the reference a read-only mapping would and
+ * leaves the sharing alone, which is what lets a whole-guest read walk a VM
+ * fork without unsharing it a frame at a time.
+ *
+ * XENMEM_DOMAIN_COPY_report_errs turns that refusal into a per-frame answer:
+ * every frame's result is written to `errs` and the walk carries on past the
+ * ones it could not copy, rather than the whole call failing at the first. The
+ * caller learns exactly which frames it did not get, so nothing is silently
+ * skipped -- and a whole-guest read needs that, because a physmap's holes are
+ * information rather than failures: which frames are absent is half of what a
+ * snapshot has to record, and one refusal per hole would mean discovering them
+ * one hypercall at a time.
  */
 #define XENMEM_domain_copy_range            41
 
@@ -845,6 +857,14 @@ struct xen_domain_copy_range {
     XEN_GUEST_HANDLE(xen_pfn_t) gfns;
     /* IN: nr_frames pages of caller memory, in the order the frames are named. */
     XEN_GUEST_HANDLE(uint8) buffer;
+    /*
+     * OUT: nr_frames per-frame results, in the same order, when
+     * XENMEM_DOMAIN_COPY_report_errs is set; ignored and may be null otherwise.
+     * A frame that was copied reads 0; one that was not reads the error the
+     * copy of that frame alone would have failed with, and its page of `buffer`
+     * is left untouched.
+     */
+    XEN_GUEST_HANDLE(int) errs;
 };
 typedef struct xen_domain_copy_range xen_domain_copy_range_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domain_copy_range_t);
@@ -855,6 +875,13 @@ DEFINE_XEN_GUEST_HANDLE(xen_domain_copy_range_t);
  */
 #define _XENMEM_DOMAIN_COPY_from_guest      0
 #define XENMEM_DOMAIN_COPY_from_guest       (1u << _XENMEM_DOMAIN_COPY_from_guest)
+
+/*
+ * Report each frame's result in `errs` and keep going, instead of failing the
+ * call at the first frame that cannot be copied. Requires a non-null `errs`.
+ */
+#define _XENMEM_DOMAIN_COPY_report_errs     1
+#define XENMEM_DOMAIN_COPY_report_errs      (1u << _XENMEM_DOMAIN_COPY_report_errs)
 
 /* Next available Edera-custom subop number is 42 */
 
