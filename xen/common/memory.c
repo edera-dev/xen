@@ -1564,6 +1564,11 @@ static int acquire_resource(
  * Progress lives in the command word, as it does for XENMEM_acquire_resource, so
  * a preempted call resumes from the frame it stopped at without the caller
  * having to track anything.
+ *
+ * A frame that cannot be copied fails the call, unless the caller asked for the
+ * per-frame results in `errs`, in which case it is recorded there and the walk
+ * carries on. The distinction is what a whole-guest read needs: a physmap's
+ * holes are what it is trying to find out, not a reason to stop.
  */
 static int domain_copy_range(
     XEN_GUEST_HANDLE_PARAM(xen_domain_copy_range_t) arg,
@@ -1572,13 +1577,24 @@ static int domain_copy_range(
     struct xen_domain_copy_range xcr;
     struct domain *d;
     unsigned int done;
-    bool to_guest, contiguous;
+    bool to_guest, contiguous, report_errs;
     int rc;
 
     if ( copy_from_guest(&xcr, arg, 1) )
         return -EFAULT;
 
-    if ( xcr.flags & ~XENMEM_DOMAIN_COPY_from_guest )
+    if ( xcr.flags & ~(XENMEM_DOMAIN_COPY_from_guest |
+                       XENMEM_DOMAIN_COPY_report_errs) )
+        return -EINVAL;
+
+    /*
+     * Nowhere to report to is not "report nowhere": a caller that asked to be
+     * told which frames were skipped and is not told would read a skipped frame
+     * as one that was copied, which is the one outcome this whole option exists
+     * to prevent.
+     */
+    report_errs = xcr.flags & XENMEM_DOMAIN_COPY_report_errs;
+    if ( report_errs && guest_handle_is_null(xcr.errs) )
         return -EINVAL;
 
     contiguous = guest_handle_is_null(xcr.gfns);
@@ -1615,6 +1631,7 @@ static int domain_copy_range(
         struct page_info *page;
         p2m_type_t p2mt;
         void *frame;
+        int frc;
 
         /*
          * Checked before the frame rather than after it, and not on the first
@@ -1639,55 +1656,76 @@ static int domain_copy_range(
             goto out;
         }
 
-        rc = check_get_page_from_gfn(d, _gfn(gfn), !to_guest, &p2mt, &page);
-        if ( rc )
-            goto out;
-
-        /*
-         * Refused rather than skipped: a caller that asked for a frame to hold
-         * something must not be told it does when it does not. A write asks for
-         * ordinary writable RAM by type -- p2m_is_readonly() is x86-only, and
-         * every other RAM type this could name (a read-only one, one being
-         * log-dirty tracked) is one this path has no business writing behind
-         * the back of. Reading any RAM type is fine.
-         */
-        if ( to_guest ? p2mt != p2m_ram_rw : !p2m_is_ram(p2mt) )
+        frc = check_get_page_from_gfn(d, _gfn(gfn), !to_guest, &p2mt, &page);
+        if ( !frc )
         {
-            put_page(page);
-            rc = -EPERM;
+            /*
+             * Refused rather than skipped: a caller that asked for a frame to
+             * hold something must not be told it does when it does not. A write
+             * asks for ordinary writable RAM by type -- p2m_is_readonly() is
+             * x86-only, and every other RAM type this could name (a read-only
+             * one, one being log-dirty tracked) is one this path has no business
+             * writing behind the back of. Reading any RAM type is fine,
+             * p2m_ram_shared included: the reference taken above is the one a
+             * read-only mapping would take, against dom_cow rather than the
+             * domain, so reading a copy-on-write frame leaves it shared.
+             */
+            if ( to_guest ? p2mt != p2m_ram_rw : !p2m_is_ram(p2mt) )
+            {
+                put_page(page);
+                frc = -EPERM;
+            }
+            /*
+             * The type reference a mapping for writing would have taken.
+             * Without it a caller -- which may be the domain itself -- could
+             * write a frame the domain has live as a page table, which is the
+             * whole of the PV MMU validation it would otherwise have to go
+             * through.
+             */
+            else if ( to_guest && !get_page_type(page, PGT_writable_page) )
+            {
+                put_page(page);
+                frc = -EPERM;
+            }
+        }
+
+        if ( !frc )
+        {
+            frame = __map_domain_page(page);
+            if ( to_guest )
+                rc = copy_from_guest_offset(frame, xcr.buffer,
+                                            (unsigned long)done << PAGE_SHIFT,
+                                            PAGE_SIZE) ? -EFAULT : 0;
+            else
+                rc = copy_to_guest_offset(xcr.buffer,
+                                          (unsigned long)done << PAGE_SHIFT,
+                                          frame, PAGE_SIZE) ? -EFAULT : 0;
+            unmap_domain_page(frame);
+            if ( to_guest )
+                put_page_and_type(page);
+            else
+                put_page(page);
+
+            /*
+             * Not reported per frame, and not recoverable by carrying on: the
+             * buffer is the caller's own memory, so a fault on it says the call
+             * was made wrong rather than anything about this frame.
+             */
+            if ( rc )
+                goto out;
+        }
+        else if ( !report_errs )
+        {
+            rc = frc;
             goto out;
         }
 
-        /*
-         * The type reference a mapping for writing would have taken. Without
-         * it a caller -- which may be the domain itself -- could write a frame
-         * the domain has live as a page table, which is the whole of the PV MMU
-         * validation it would otherwise have to go through.
-         */
-        if ( to_guest && !get_page_type(page, PGT_writable_page) )
+        if ( report_errs &&
+             unlikely(copy_to_guest_offset(xcr.errs, done, &frc, 1)) )
         {
-            put_page(page);
-            rc = -EPERM;
+            rc = -EFAULT;
             goto out;
         }
-
-        frame = __map_domain_page(page);
-        if ( to_guest )
-            rc = copy_from_guest_offset(frame, xcr.buffer,
-                                        (unsigned long)done << PAGE_SHIFT,
-                                        PAGE_SIZE) ? -EFAULT : 0;
-        else
-            rc = copy_to_guest_offset(xcr.buffer,
-                                      (unsigned long)done << PAGE_SHIFT,
-                                      frame, PAGE_SIZE) ? -EFAULT : 0;
-        unmap_domain_page(frame);
-        if ( to_guest )
-            put_page_and_type(page);
-        else
-            put_page(page);
-
-        if ( rc )
-            goto out;
     }
 
     rc = 0;
