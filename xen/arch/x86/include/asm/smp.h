@@ -31,6 +31,9 @@ DECLARE_PER_CPU(cpumask_var_t, send_ipi_cpumask);
  */
 extern bool park_offline_cpus;
 
+/* Keep the little (E-) cores of a hybrid part offline. */
+extern bool opt_disable_little_cores;
+
 void smp_send_nmi_allbutself(void);
 
 void send_IPI_mask(const cpumask_t *mask, int vector);

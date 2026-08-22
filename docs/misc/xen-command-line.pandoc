@@ -1109,6 +1109,30 @@ applying clipping.
 Control retrieval of Extended Disc Data (EDD) from the BIOS during
 boot.
 
+### edera_disable_little_cores (x86)
+> `= <boolean>`
+
+> Default: `false`
+
+On hybrid Intel parts, keep the little (E-) cores offline and run Xen on the
+big (P-) cores only.
+
+A core's type is reported by `CPUID` leaf `0x1a` executed on that core, and is
+not visible from any other CPU.  Each AP therefore still has to be started in
+order to identify itself; a little core recognises itself early in bringup,
+declines to come online, and is left halted.  It never enters
+`cpu_online_map`, receives no interrupt vectors, is never scheduled on, and
+does not contribute to the feature set Xen considers common to all CPUs.  Such
+CPUs remain present but permanently offline, so their Xen CPU IDs stay unused
+and `cpu_up()` on them keeps failing for as long as the option is in effect.
+
+Because a rejected core stays halted on its boot stack indefinitely, enabling
+this option on a hybrid system also forces offline CPUs to be parked (as if by
+`mce`), so that those stacks are not freed underneath them.
+
+Has no effect on non-hybrid systems.  If the BSP is itself a little core it
+cannot be disabled, and Xen warns instead.
+
 ### edid (x86)
 > `= no | force`
 

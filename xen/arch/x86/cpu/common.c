@@ -461,6 +461,31 @@ void reset_cpuinfo(struct cpuinfo_x86 *c, bool keep_basic)
     CPU_DATA_INIT((*c));
 }
 
+/*
+ * Classify the CPU this is executed on as a big or a little core.
+ *
+ * CPUID leaf 0x1a describes the caller only, so unlike most topology
+ * information this cannot be gathered on behalf of another CPU; each core
+ * has to run this itself.  Non-hybrid parts which implement the leaf report
+ * a core type of zero, i.e. X86_CORE_TYPE_UNKNOWN.
+ */
+uint8_t get_this_cpu_core_type(void)
+{
+	unsigned int eax, ebx, ecx, edx;
+
+	if (cpuid_eax(0) < CPUID_HYBRID_LEAF)
+		return X86_CORE_TYPE_UNKNOWN;
+
+	/* Leaf 0x1a is only defined when CPUID.0x7:0.EDX.HYBRID is set. */
+	cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
+	if (!(edx & cpufeat_mask(X86_FEATURE_HYBRID)))
+		return X86_CORE_TYPE_UNKNOWN;
+
+	cpuid(CPUID_HYBRID_LEAF, &eax, &ebx, &ecx, &edx);
+
+	return MASK_EXTR(eax, HYBRID_CORE_TYPE_MASK);
+}
+
 void identify_cpu(struct cpuinfo_x86 *c)
 {
 	uint64_t val;
@@ -592,6 +617,8 @@ void identify_cpu(struct cpuinfo_x86 *c)
 		c->x86_capability[i] |= forced_caps[i];
 		c->x86_capability[i] &= ~cleared_caps[i];
 	}
+
+	c->core_type = get_this_cpu_core_type();
 
 	/* If the model name is still unset, do table lookup. */
 	if ( !c->x86_model_id[0] ) {
@@ -824,7 +851,14 @@ void print_cpu_info(unsigned int cpu)
 	else
 		printk("%s", c->x86_model_id);
 
-	printk(" stepping %02x\n", c->stepping);
+	printk(" stepping %02x", c->stepping);
+
+	switch (c->core_type) {
+	case X86_CORE_TYPE_ATOM: printk(" (little core)"); break;
+	case X86_CORE_TYPE_CORE: printk(" (big core)");    break;
+	}
+
+	printk("\n");
 }
 
 static cpumask_t cpu_initialized;

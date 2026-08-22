@@ -97,6 +97,7 @@ extern unsigned int hap_paddr_bits;
 extern unsigned int vaddr_bits;
 
 extern void identify_cpu(struct cpuinfo_x86 *c);
+extern uint8_t get_this_cpu_core_type(void);
 extern void setup_clear_cpu_cap(unsigned int cap);
 extern void setup_force_cpu_cap(unsigned int cap);
 extern bool is_forced_cpu_cap(unsigned int cap);

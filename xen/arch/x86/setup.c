@@ -1141,7 +1141,7 @@ void asmlinkage __init noreturn __start_xen(void)
     char *kextra;
     void *bsp_stack;
     struct cpu_info *info = get_cpu_info(), *bsp_info;
-    unsigned int initrdidx, num_parked = 0;
+    unsigned int initrdidx, num_parked = 0, num_little = 0;
     struct boot_info *bi;
     unsigned long nr_pages, raw_max_page;
     int i, j, bytes = 0;
@@ -2152,7 +2152,11 @@ void asmlinkage __init noreturn __start_xen(void)
                  !cpu_online(i) )
             {
                 ret = cpu_up(i);
-                if ( ret != 0 )
+                if ( ret == -ENODEV &&
+                     cpu_data[i].core_type == X86_CORE_TYPE_ATOM )
+                    /* Declined itself in smp_callin(); it already said so. */
+                    ++num_little;
+                else if ( ret != 0 )
                     printk("Failed to bring up CPU %u (error %d)\n", i, ret);
                 else if ( num_online_cpus() > max_cpus ||
                           (!opt_smt &&
@@ -2172,6 +2176,12 @@ void asmlinkage __init noreturn __start_xen(void)
     printk("Brought up %ld CPUs\n", (long)num_online_cpus());
     if ( num_parked )
         printk(XENLOG_INFO "Parked %u CPUs\n", num_parked);
+    if ( num_little )
+        printk(XENLOG_INFO "Disabled %u little cores\n", num_little);
+    if ( opt_disable_little_cores &&
+         boot_cpu_data.core_type == X86_CORE_TYPE_ATOM )
+        printk(XENLOG_WARNING
+               "BSP is a little core; it cannot be disabled\n");
     smp_cpus_done();
 
     do_initcalls();
