@@ -2014,20 +2014,37 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
  * Preemptible: the caller re-issues the hypercall until it stops returning
  * -ERESTART.  Both domains are expected to be paused for the operation (the
  * fork already holds the parent paused; the child has not yet been resumed).
+ *
+ * The child's p2m is locked across a run of frames rather than once per frame.
+ * Reaching mem_sharing_fork_page() through get_gfn() costs three walks of the
+ * child's p2m for one frame -- one to find the hole, one inside
+ * add_to_physmap()'s get_two_gfns(), and one to read back what was just put
+ * there -- plus a lock, unlock and deferred TLB flush around each. None of that
+ * says anything a bulk materialisation does not already know: it is walking the
+ * parent's physmap in order, and every frame it has not reached yet is a hole.
+ * So look the child's entry up once, call the fork-in page directly, and pay the
+ * lock and the flush per run instead of per frame.
+ *
+ * Holding the lock across the run is safe for the same reason the operation is:
+ * the child is paused and not yet reachable by anything else. It is dropped
+ * before every preemption, because a continuation returns to the caller.
  */
 int mem_sharing_fork_complete(struct domain *d)
 {
     struct domain *pd = d->parent;
-    struct p2m_domain *pp2m;
+    struct p2m_domain *pp2m, *cp2m;
     struct mem_sharing_domain *msd = &d->arch.hvm.mem_sharing;
-    unsigned long gfn, max_pfn, count = 0;
+    unsigned long gfn, max_pfn, count = 0, failed = 0;
     struct vcpu *v;
 
     if ( !mem_sharing_is_fork(d) )
         return -EINVAL;
 
     pp2m = p2m_get_hostp2m(pd);
+    cp2m = p2m_get_hostp2m(d);
     max_pfn = pp2m->max_mapped_pfn;
+
+    p2m_lock(cp2m);
 
     for ( gfn = msd->next_gfn_to_materialize; gfn <= max_pfn; gfn++ )
     {
@@ -2071,16 +2088,22 @@ int mem_sharing_fork_complete(struct domain *d)
         }
         else
         {
+            p2m_type_t ct;
+            p2m_access_t ca;
+
             /*
-             * P2M_ALLOC (without P2M_UNSHARE) routes a hole through
-             * mem_sharing_fork_page()'s read path: it nominates the parent's
-             * page -- flipping it to p2m_ram_shared -- and inserts a shared
-             * entry into the child.  Pages the child already holds (shared, or
-             * private after an earlier copy-on-write) are returned as-is and
-             * left untouched.
+             * mem_sharing_fork_page()'s read path nominates the parent's page
+             * -- flipping it to p2m_ram_shared -- and inserts a shared entry
+             * into the child.  Called directly rather than through get_gfn(),
+             * which is the same thing with the lookups this already has.
+             *
+             * Only for a hole, which is what get_gfn() would have checked:
+             * pages the child already holds (shared, or private after an
+             * earlier copy-on-write) are left untouched.
              */
-            (void)get_gfn(d, gfn, &t);
-            put_gfn(d, gfn);
+            cp2m->get_entry(cp2m, _gfn(gfn), &ct, &ca, 0, NULL, NULL);
+            if ( p2m_is_hole(ct) && mem_sharing_fork_page(d, _gfn(gfn), false) )
+                failed++;
         }
 
         /*
@@ -2094,11 +2117,21 @@ int mem_sharing_fork_complete(struct domain *d)
             if ( hypercall_preempt_check() )
             {
                 msd->next_gfn_to_materialize = gfn + 1;
-                return -ERESTART;
+                p2m_unlock(cp2m);
+                goto out;
             }
             count = 0;
+            /*
+             * Bound how long the run holds the lock even when the call is not
+             * preempted, so the deferred TLB flush the unlock performs happens
+             * a few times over a guest rather than once at the end of it.
+             */
+            p2m_unlock(cp2m);
+            p2m_lock(cp2m);
         }
     }
+
+    p2m_unlock(cp2m);
 
     /*
      * The child inherited the parent's registered vcpu_info and runstate
@@ -2132,7 +2165,19 @@ int mem_sharing_fork_complete(struct domain *d)
     domain_unpause(pd);
     put_domain(pd);
 
-    return 0;
+ out:
+    /*
+     * A frame that could not be materialised leaves a hole in a child that is
+     * about to lose the parent it would have resolved that hole through. It was
+     * silently ignored before this said so, and it is still not fatal -- the
+     * guest may never touch the frame -- but it is not something to find out
+     * about from the guest.
+     */
+    if ( failed )
+        gprintk(XENLOG_WARNING, "d%d: %lu forked frame(s) not materialised\n",
+                d->domain_id, failed);
+
+    return msd->next_gfn_to_materialize ? -ERESTART : 0;
 }
 
 int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
