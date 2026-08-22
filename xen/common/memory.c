@@ -1552,6 +1552,31 @@ static int acquire_resource(
 
 
 /*
+ * Per-frame results buffered before being written back, so a walk pays one
+ * copy_to_guest() per this many frames rather than one per frame. On a PVH dom0
+ * a four-byte copy_to_guest() is a full walk of the caller's page tables, and a
+ * whole-guest read is mostly holes -- a 512 MiB guest's physmap is a million
+ * frames of which an eighth exist -- so that write was the greater part of what
+ * finding a hole cost. Sized to stay well inside the hypervisor stack.
+ */
+#define COPY_RANGE_ERRS_BATCH 128
+
+/*
+ * Write back `nr` buffered results, the first of which describes frame `at`.
+ * Flushed when the buffer fills, before the call gives itself up to a
+ * continuation, and once the walk is done.
+ */
+static int flush_copy_range_errs(
+    XEN_GUEST_HANDLE(int) errs, unsigned int at, const int *buf,
+    unsigned int nr)
+{
+    if ( !nr )
+        return 0;
+
+    return copy_to_guest_offset(errs, at, buf, nr) ? -EFAULT : 0;
+}
+
+/*
  * Copy between the caller's memory and `d`'s physical memory, a page at a time,
  * with the frame mapped in the hypervisor rather than in the caller.
  *
@@ -1577,6 +1602,9 @@ static int domain_copy_range(
     struct xen_domain_copy_range xcr;
     struct domain *d;
     unsigned int done;
+    /* Buffered per-frame results, and the frame buf[0] describes. */
+    int buf[COPY_RANGE_ERRS_BATCH];
+    unsigned int nr_buf = 0, buf_at = 0;
     bool to_guest, contiguous, report_errs;
     int rc;
 
@@ -1640,6 +1668,16 @@ static int domain_copy_range(
          */
         if ( done != start_extent && hypercall_preempt_check() )
         {
+            /*
+             * The results so far go out before the continuation, not after it:
+             * a resumed call starts a fresh buffer at the frame it stopped at,
+             * so anything still held here would have nothing to write it.
+             */
+            rc = flush_copy_range_errs(xcr.errs, buf_at, buf, nr_buf);
+            if ( rc )
+                goto out;
+            nr_buf = 0;
+
             rc = hypercall_create_continuation(
                 __HYPERVISOR_memory_op, "lh",
                 XENMEM_domain_copy_range |
@@ -1720,15 +1758,28 @@ static int domain_copy_range(
             goto out;
         }
 
-        if ( report_errs &&
-             unlikely(copy_to_guest_offset(xcr.errs, done, &frc, 1)) )
+        if ( report_errs )
         {
-            rc = -EFAULT;
-            goto out;
+            if ( nr_buf == ARRAY_SIZE(buf) )
+            {
+                rc = flush_copy_range_errs(xcr.errs, buf_at, buf, nr_buf);
+                if ( rc )
+                    goto out;
+                nr_buf = 0;
+            }
+            if ( !nr_buf )
+                buf_at = done;
+            buf[nr_buf++] = frc;
         }
     }
 
-    rc = 0;
+    /*
+     * The tail of the buffer. An error exit above leaves whatever it still held
+     * unwritten, which is deliberate: a failed call reports nothing per frame,
+     * and a caller reading `errs` after one would be reading a walk that did
+     * not finish.
+     */
+    rc = flush_copy_range_errs(xcr.errs, buf_at, buf, nr_buf);
 
  out:
     rcu_unlock_domain(d);
