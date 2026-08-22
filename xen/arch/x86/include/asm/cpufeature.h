@@ -40,6 +40,23 @@
 #define VFM_FAMILY(vfm) MASK_EXTR(vfm, VFM_FAMILY_MASK)
 #define VFM_VENDOR(vfm) MASK_EXTR(vfm, VFM_VENDOR_MASK)
 
+/*
+ * Intel Hybrid Information Enumeration, CPUID leaf 0x1a.  EAX[31:24] holds
+ * the type of the core executing CPUID; it is not architecturally visible
+ * from any other CPU, so each core has to enumerate itself.
+ */
+#define CPUID_HYBRID_LEAF       0x1a
+#define HYBRID_CORE_TYPE_MASK   0xff000000
+
+/*
+ * Values of cpuinfo_x86.core_type.  UNKNOWN covers both non-hybrid parts and
+ * hybrid parts reporting a core type Xen does not recognise; in neither case
+ * may a core be assumed to be little.
+ */
+#define X86_CORE_TYPE_UNKNOWN   0x00
+#define X86_CORE_TYPE_ATOM      0x20 /* "little", E-core */
+#define X86_CORE_TYPE_CORE      0x40 /* "big", P-core */
+
 #ifndef __ASSEMBLER__
 
 struct cpuinfo_x86 {
@@ -82,6 +99,7 @@ struct cpuinfo_x86 {
     unsigned int cpu_core_id;          /* core ID of each logical CPU */
     unsigned int compute_unit_id;      /* AMD compute unit ID of each logical CPU */
     unsigned short x86_clflush_size;
+    uint8_t core_type;                 /* X86_CORE_TYPE_* of each logical CPU */
 } __cacheline_aligned;
 
 #define CPU_DATA_INIT(what...)                     \
@@ -93,7 +111,8 @@ struct cpuinfo_x86 {
         what.apicid = BAD_APICID,                  \
         what.phys_proc_id = XEN_INVALID_SOCKET_ID, \
         what.cpu_core_id = XEN_INVALID_CORE_ID,    \
-        what.compute_unit_id = INVALID_CUID
+        what.compute_unit_id = INVALID_CUID,       \
+        what.core_type = X86_CORE_TYPE_UNKNOWN
 
 /*
  * @keep_basic set to true retains data firmly assumed to be symmetric
