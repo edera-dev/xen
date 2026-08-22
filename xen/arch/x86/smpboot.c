@@ -16,6 +16,7 @@
 #include <xen/kernel.h>
 #include <xen/mm.h>
 #include <xen/numa.h>
+#include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/serial.h>
 #include <xen/softirq.h>
@@ -47,6 +48,10 @@
 
 uint32_t __ro_after_init trampoline_phys;
 enum ap_boot_method __read_mostly ap_boot_method = AP_BOOT_NORMAL;
+
+/* Keep the little (E-) cores of a hybrid part offline. */
+bool __read_mostly opt_disable_little_cores;
+boolean_param("edera_disable_little_cores", opt_disable_little_cores);
 
 /* representing HT siblings of each logical CPU */
 DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_sibling_mask);
@@ -202,6 +207,22 @@ static void smp_callin(void)
     Dprintk("CALLIN, before setup_local_APIC().\n");
     x2apic_ap_setup();
     setup_local_APIC(false);
+
+    /*
+     * Record what kind of core this is.  Only this CPU can enumerate it, and
+     * it has to happen before identify_cpu() below, so that a core about to
+     * be rejected doesn't first narrow boot_cpu_data to its own feature set.
+     */
+    cpu_data[cpu].core_type = get_this_cpu_core_type();
+
+    if ( opt_disable_little_cores &&
+         cpu_data[cpu].core_type == X86_CORE_TYPE_ATOM )
+    {
+        printk("CPU%u: little core disabled by edera_disable_little_cores\n",
+               cpu);
+        cpu_error = -ENODEV;
+        goto halt;
+    }
 
     /* Save our processor parameters. */
     if ( !smp_store_cpu_info(cpu) )
@@ -1165,6 +1186,14 @@ static struct notifier_block cpu_smpboot_nfb = {
 
 void __init smp_prepare_cpus(void)
 {
+    /*
+     * A little core which declines to come online stays halted on its boot
+     * stack for the lifetime of the system, so that stack must not be handed
+     * back to the heap.  Parking offline CPUs is what keeps it allocated.
+     */
+    if ( opt_disable_little_cores && cpu_has_hybrid )
+        park_offline_cpus = true;
+
     register_cpu_notifier(&cpu_smpboot_nfb);
 
     mtrr_aps_sync_begin();
