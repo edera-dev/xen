@@ -13,6 +13,19 @@ config DEBUG
 
 if DEBUG || EXPERT
 
+config DEBUG_INITCALL_TRACE
+	bool "Trace initcalls as they run"
+	default n
+	help
+	  Print the symbol name of every initcall in do_initcalls() before it
+	  is invoked.
+
+	  Useful when bringing up a new platform: an initcall that hangs or
+	  faults otherwise leaves no clue which one it was, because the boot
+	  simply stops after the last unrelated message.
+
+	  Say N.
+
 config GDBSX
 	bool "Guest debugging with gdbsx"
 	depends on X86

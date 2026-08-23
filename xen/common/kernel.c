@@ -424,7 +424,11 @@ void __init do_initcalls(void)
 {
     const initcall_t *call;
     for ( call = __presmp_initcall_end; call < __initcall_end; call++ )
+    {
+        if ( IS_ENABLED(CONFIG_DEBUG_INITCALL_TRACE) )
+            printk("initcall %ps\n", *call);
         (*call)();
+    }
 }
 
 #ifdef CONFIG_HYPFS
