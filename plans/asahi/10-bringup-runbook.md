@@ -1068,21 +1068,42 @@ The AIC physical layer has been checked line by line against
 So the remaining suspects are on the injection side (Xen -> vGIC -> dom0) or in
 RTKit itself, and both need evidence from the machine rather than more reading.
 
-Xen now has an `'i'` keyhandler on ARM (it was x86-only), reachable over the
-two-way console: press the console-switch key three times -- Ctrl-A by default,
-`conswitch` changes it -- then `i`. It lists every interrupt with a descriptor,
+### There is no console input yet
+
+`push-xen.py` forwards keystrokes to the port, and they reach the dockchannel's
+RX FIFO, but **nothing in Xen reads it**. The `dtuart=/nonexistent` in the
+default bootargs is deliberate -- it stops Xen registering the s5l UART and
+moving printk to the SBU pins, invisible in debugusb mode -- and the consequence
+is that `early_puts` is the whole console, which is output only. dom0's `hvc0`
+takes its input from Xen's console, so there is nothing to forward: the dracut
+prompt cannot be typed into, and neither can Xen's own keyhandlers.
+
+The fix is a real dockchannel console driver with an RX path, registered as a
+proper `uart_driver` so `dtuart=` can point at it. Until then, both diagnostics
+below have to be non-interactive.
+
+Xen has an `'i'` keyhandler on ARM (it was x86-only). Once there is console
+input it is reachable by pressing the console-switch key three times -- Ctrl-A
+by default, `conswitch` changes it -- then `i`. It lists every interrupt with a descriptor,
 its status bits, and for guest-routed ones the domain and virq. That answers "is
 this interrupt routed, and to whom?", which was previously unanswerable from a
 running system.
 
-The pair of checks to run:
+The pair of checks, neither needing a keyboard:
 
 ```sh
-cat /proc/interrupts        # in dom0: are the mailbox rows counting?
+./push-xen.py --dump-irqs ...        # Xen prints its bindings at end of boot
 ```
-```
-Ctrl-A Ctrl-A Ctrl-A i     # in Xen: are 749-752 routed to d0, and enabled?
-```
+
+and the initramfs carries a dracut `pre-mount` hook (`diag/` in
+asahi-bringup, installed under `/var/lib/dracut/hooks/` -- note
+`/usr/lib/dracut/hooks` is only a symlink to it) that prints
+`/proc/interrupts`, the block devices, the loaded modules and the relevant
+`dmesg` lines by itself.
+
+Note that `-append` does **not** reach Xen under QEMU: `boot_fdt_cmdline()`
+prefers `xen,xen-bootargs` and only falls back to plain `bootargs` when a dom0
+module carries a command line, so no Xen boot parameter can be tested that way.
 
 Reading them together:
 

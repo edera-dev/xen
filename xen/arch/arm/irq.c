@@ -14,6 +14,7 @@
 #include <xen/irq.h>
 #include <xen/init.h>
 #include <xen/keyhandler.h>
+#include <xen/param.h>
 #include <xen/errno.h>
 #include <xen/sched.h>
 
@@ -785,11 +786,23 @@ static void cf_check dump_irqs(unsigned char key)
 
     printk("Guest interrupt information:\n");
 
+    /*
+     * nr_irqs spans the whole INTID space, but descriptors do not: with
+     * extended SPIs it reaches 5120 while irq_desc[] still only covers up to
+     * NR_IRQS, and INTIDs between the two are the architecturally reserved gap.
+     * __irq_to_desc() indexes irq_desc[] unconditionally for anything that is
+     * not local and not an eSPI, so walking the gap reads off the end of the
+     * array -- which is a data abort, not an empty entry.
+     */
     for ( irq = 0; irq < nr_irqs; irq++ )
     {
-        struct irq_desc *desc = irq_to_desc(irq);
+        struct irq_desc *desc;
         unsigned long flags;
 
+        if ( irq >= NR_IRQS && !is_espi(irq) )
+            continue;
+
+        desc = irq_to_desc(irq);
         if ( !desc )
             continue;
 
@@ -813,7 +826,10 @@ static void cf_check dump_irqs(unsigned char key)
         spin_unlock_irqrestore(&desc->lock, flags);
     }
 
-    printk("Interrupt space: %u descriptors\n", nr_irqs);
+    printk("Interrupt space: %u INTIDs (%u regular", nr_irqs, NR_IRQS);
+    if ( IS_ENABLED(CONFIG_GICV3_ESPI) )
+        printk(", extended %u-%u", ESPI_BASE_INTID, ESPI_MAX_INTID);
+    printk(")\n");
 }
 
 static int __init cf_check setup_dump_irqs(void)
@@ -823,3 +839,20 @@ static int __init cf_check setup_dump_irqs(void)
     return 0;
 }
 __initcall(setup_dump_irqs);
+
+static bool __initdata opt_dump_irqs_at_boot;
+boolean_param("dump-irqs", opt_dump_irqs_at_boot);
+
+/*
+ * Print the same table once, at the end of boot.
+ *
+ * The keyhandler above needs console *input*, which a platform still using
+ * early printk does not have -- on Apple hardware that is the whole console, so
+ * "which interrupts got routed" would otherwise be unobservable exactly where
+ * it is most needed.  Off unless asked for on the command line.
+ */
+void __init dump_irqs_at_boot(void)
+{
+    if ( opt_dump_irqs_at_boot )
+        dump_irqs('i');
+}
