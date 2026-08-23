@@ -180,25 +180,42 @@ Today:
 On Apple (`irq-apple-aic.c:552-613`, `t8103.dtsi:368-375` — the `arm,armv8-timer`
 node points `interrupt-parent = &aic` with `AIC_FIQ` timer indices):
 
-1. **Stop routing the timer through `request_irq`/`do_IRQ`.** Instead the FIQ
-   dispatcher (doc 03 §7) demuxes by reading control registers:
-   - `TIMER_FIRING(CNTHP_CTL_EL2)` → Xen hypervisor tick →
-     `raise_softirq(TIMER_SOFTIRQ)` (reuse `htimer_interrupt` body).
-   - `TIMER_FIRING(CNTP_CTL_EL0)` / `CNTV_CTL_EL0` per policy.
-2. **Guest (EL1) vtimer:** enable/mask via the Apple EL2 register
-   `SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2` (`:187-189`, V=bit0 virt, P=bit1 phys). On
-   the guest-timer FIQ, inject the vtimer as a **vGICv3 PPI 27** through the
-   existing `vgic_inject_irq` path (reuse `vtimer_interrupt` body). There is no
-   architectural CNTHCTL trap equivalent — this Apple register *is* the
-   guest-timer control.
-3. **`CNTVOFF_EL2`/`CNTFRQ`** must be programmed per the boot protocol
-   (m1n1 sets `CNTFRQ`; Xen manages `CNTVOFF` per vCPU as it already does).
-4. Drop `check_timer_irq_cfg` (`time.c:322`) trigger-type assumptions — the
-   FIQ has no configurable GIC trigger.
+### 6.1 What was implemented — **DONE**
 
-Net: `time.c` keeps its scheduling/softirq logic; the ~40 lines of
-`init_timer_interrupt`/`request_irq`/`do_IRQ` glue are replaced by FIQ-dispatch
-hooks and the Apple guest-timer enable register.
+The plan above assumed `request_irq`/`do_IRQ` had to be bypassed. It does not:
+Apple's timer node names its FIQs `"phys"`, `"virt"`, `"hyp-phys"`, `"hyp-virt"`,
+and `time.c` looks its PPIs up **by name** via `platform_get_irq_byname()`. So
+the existing registration works unchanged once `aic_irq_xlate()` maps an
+`AIC_FIQ` specifier to its pseudo IRQ, and the FIQ dispatcher only has to demux
+to the right pseudo IRQ and call `do_IRQ()`.
+
+Which register names a given FIQ depends on the exception level it belongs to,
+and under forced VHE the unsuffixed accessors reach EL2's own timers while the
+`_EL02` ones reach the guest's:
+
+| AIC FIQ | Accessor | What it is | Handler |
+|---|---|---|---|
+| 0 `AIC_TMR_HV_PHYS` | `CNTP_CTL_EL0` → `CNTHP_CTL_EL2` | Xen's own tick | `htimer_interrupt` via `do_IRQ` |
+| 1 `AIC_TMR_HV_VIRT` | `CNTV_CTL_EL0` → `CNTHV_CTL_EL2` | EL2 virtual, unused | masked |
+| 2 `AIC_TMR_GUEST_PHYS` | `CNTP_CTL_EL02` | guest physical | masked (emulated in software) |
+| 3 `AIC_TMR_GUEST_VIRT` | `CNTV_CTL_EL02` | guest virtual | `vtimer_interrupt` via `do_IRQ` |
+
+`aic_handle_fiq()` originally checked only rows 0 and 1, and `aic_init_cpu()`
+left `SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2` at zero, so the guest virtual timer could
+not raise an FIQ and would not have been recognised if it had — a guest hung as
+soon as it waited for a tick. Xen now sets `VM_TMR_FIQ_ENABLE_V` permanently:
+the FIQ stays gated by `CNTV_CTL_EL02.ENABLE`, which `virt_timer_{save,restore}`
+already manage per vCPU, so an open route costs nothing while nothing has armed
+it. Every source not dispatched is masked before returning — an FIQ has no
+acknowledge register, so anything left asserted re-enters forever.
+
+Still open:
+- **`CNTVOFF_EL2`/`CNTFRQ`** per the boot protocol (m1n1 sets `CNTFRQ`; Xen
+  manages `CNTVOFF` per vCPU as it already does) — believed fine, unverified.
+- **`check_timer_irq_cfg`** (`time.c:322`) asserts a GIC trigger type. An AIC
+  FIQ has none; `aic_irq_xlate()` reports `IRQ_TYPE_LEVEL_HIGH` so the check
+  passes, but the assumption is cosmetic rather than meaningful here.
+- **`CNTHCTL_EL2`** bit meanings under E2H=1 — see doc 06 §1.2 item 4.
 
 ## 7. IPIs to guests / guest SGIs
 

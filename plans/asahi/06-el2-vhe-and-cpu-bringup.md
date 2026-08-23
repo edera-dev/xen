@@ -84,7 +84,8 @@ Xen/arm is a classic **non-VHE type-1 hypervisor**. Verified in this tree:
   EL2* alias the **EL2** registers, not EL1. Xen's guest context switch
   (`ctxt_switch_to`, save/restore of guest EL1 state) would then corrupt EL2
   state instead of touching the guest's EL1 state.
-- **Timer**: `CNTHCTL_EL2` bit meanings change under E2H=1; `CNTKCTL_EL1`
+- **Timer**: `CNTHCTL_EL2` bit meanings change under E2H=1 (still outstanding,
+  see item 4 below); `CNTKCTL_EL1`
   aliases into EL2.
 
 ### 1.2 The solution: teach Xen an hVHE/VHE mode
@@ -107,16 +108,32 @@ set of changes so the existing type-1 structure works. Concrete work items:
    The least-disruptive choice keeps Xen's existing high-VA link addresses and
    maps them via `TTBR1_EL2` (VHE high range), mirroring how a VHE host kernel
    runs. This touches the boot page tables and the identity-map bring-up.
-3. **Guest EL1 context switch** (`xen/arch/arm/arm64/domain.c`,
-   `ctxt_switch_to/from`, `vsysreg.c`): use the **`_EL12` accessors** for guest
-   EL1 system registers when running with E2H=1 (`SCTLR_EL12`, `TTBR0_EL12`,
-   `TTBR1_EL12`, `TCR_EL12`, `CNTKCTL_EL12`, `SPSR_EL12`, `ELR_EL12`, …). This
-   is the bulk of the mechanical work and must be audited register-by-register.
-   Note Apple also exposes `PMCR1_EL12` (an EL12 alias) — consistent with the
-   VHE model.
-4. **Timer** (`time.c`): account for E2H=1 `CNTHCTL_EL2` semantics and the
-   `CNTKCTL` aliasing; combine with the FIQ-based delivery from doc 04 §6.
-5. **Exception entry** (`entry.S`): EL2h vectors are unchanged in principle, but
+3. **Guest EL1 context switch** — **DONE**. `READ/WRITE_SYSREG_EL1()` and
+   `_EL0()` in `arm64/sysregs.h` pick the `_EL12`/`_EL02` encoding when E2H is
+   set and the plain one otherwise; ARM32 gets pass-throughs. Every access to
+   guest EL1/EL0 state now goes through them (`domain.c`, `mmu/p2m.c`,
+   `asm/p2m.h`, `guest_walk.c`, `traps.c`, `vm_event.c`, `arm64/sve.c`,
+   `arm64/vsysreg.c`, `vtimer.c`, `time.c`). `CSSELR_EL1`, `TPIDR_EL1` and
+   `PAR_EL1` are deliberately untouched — they are not part of the aliasing.
+
+   This was the cause of Xen and dom0 both falling silent at handoff: the write
+   of the guest's `SCTLR` in `p2m_restore_state()` turned Xen's own MMU off.
+
+   Still open here: `vcpreg.c`'s `TVM_REG32` paths for 32-bit guests. They are
+   unreachable on Apple Silicon (no AArch32 at EL1), so they are left as-is.
+4. **Timer** — partly done. The FIQ-based delivery from doc 04 §6 is in place
+   (see that document). Outstanding: `CNTHCTL_EL2` bit meanings under E2H=1.
+   Xen writes `CNTHCTL_EL2_EL1PCTEN` to let guests read the physical counter
+   while denying the timer; under E2H=1 that bit position is `EL0PCTEN` and the
+   field Xen wants is `EL1PCTEN` at a different offset, so the guest's access
+   permissions are currently not what Xen intends.
+5. **CPTR_EL2** — **DONE**. Under E2H=1 it takes the `CPACR_EL1` format, where
+   the fields move and are enables rather than traps. The non-VHE value lands
+   `HCPTR_TTA` (bit 20) inside `FPEN`, giving `FPEN=0b01`: FP works at EL1 and
+   faults at EL0, so a guest kernel boots and its userspace does not.
+   `get_default_cptr_flags()` now has a VHE branch, and
+   `cptr_flags_allow_sve()` lifts the SVE trap in whichever format is in use.
+6. **Exception entry** (`entry.S`): EL2h vectors are unchanged in principle, but
    verify `SPSR`/`ELR` handling and the guest-entry/exit `HCR.TGE` toggling.
 
 ### 1.3 Effort / risk
