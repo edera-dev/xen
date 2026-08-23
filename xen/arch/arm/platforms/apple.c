@@ -126,16 +126,16 @@ static void __init apple_report_vhe(void)
     /*
      * head.S probes E2H and programs TCR_EL2/SCTLR_EL2 in the matching format,
      * so Xen's own EL2 execution and page tables are correct under forced VHE.
-     * What is *not* yet adapted is everything that runs on behalf of a guest:
-     * the guest EL1 system registers still use the _EL1 accessors (which alias
-     * EL2 state when E2H=1) rather than _EL12, CPTR_EL2 is written in its
-     * non-VHE layout, and CNTHCTL_EL2 changes meaning.  See
-     * plans/asahi/06-el2-vhe-and-cpu-bringup.md sections 1.2/3-5.
+     * Guest EL1/EL0 state now goes through the _EL12/_EL02 accessors instead of
+     * aliasing Xen's own EL2 registers, and CPTR_EL2 is written in its
+     * CPACR_EL1 format.  Still outstanding: CNTHCTL_EL2 changes meaning under
+     * E2H=1, and vcpreg.c's 32-bit-guest paths are unconverted.  See
+     * plans/asahi/06-el2-vhe-and-cpu-bringup.md sections 1.2/4.
      */
     if ( e2h_now || vhe_only_by_id )
         printk(XENLOG_WARNING
-               "Apple: VHE-only CPU; EL2 boot state is VHE-aware, but guest "
-               "EL1 context, CPTR_EL2 and the timer are not yet (see "
+               "Apple: VHE-only CPU; CNTHCTL_EL2 semantics and 32-bit guest "
+               "coprocessor traps are not yet VHE-aware (see "
                "plans/asahi/06-el2-vhe-and-cpu-bringup.md)\n");
 }
 

@@ -16,9 +16,9 @@ void vm_event_fill_regs(vm_event_request_t *req)
 
     req->data.regs.arm.cpsr = regs->cpsr;
     req->data.regs.arm.pc = regs->pc;
-    req->data.regs.arm.ttbcr = READ_SYSREG(TCR_EL1);
-    req->data.regs.arm.ttbr0 = READ_SYSREG64(TTBR0_EL1);
-    req->data.regs.arm.ttbr1 = READ_SYSREG64(TTBR1_EL1);
+    req->data.regs.arm.ttbcr = READ_SYSREG_EL1(TCR);
+    req->data.regs.arm.ttbr0 = READ_SYSREG64_EL1(TTBR0);
+    req->data.regs.arm.ttbr1 = READ_SYSREG64_EL1(TTBR1);
 }
 
 void vm_event_set_registers(struct vcpu *v, vm_event_response_t *rsp)
