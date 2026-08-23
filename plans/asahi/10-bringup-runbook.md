@@ -730,6 +730,34 @@ probes, avoiding a deferred-probe round trip.
 `rhgb quiet` from the BLS entry are dropped on purpose; `rd.shell` is added so a
 failure lands in a shell rather than a panic.
 
+### dom0 memory
+
+`PLEASE SPECIFY dom0_mem PARAMETER - USING 512M FOR NOW` is not a detection
+failure. Xen sees the whole machine; from the boot log its main bank is
+
+```
+(XEN) RAM: 0000000801fbc000 - 0000000dd1bdbfff      ~23.2 GiB
+```
+
+plus the small reserved-memory banks above it. Apple Silicon puts RAM at
+`0x800000000`, so *no* memory is below the 32-bit line and
+`allocate_memory_11()` reports `No bank has been allocated below 32-bit` -- which
+is harmless for a 64-bit dom0 (it only panics for a 32-bit one). dom0 was simply
+being given Xen's ARM default of 512M, which is why its single bank landed at
+`0xd80000000-0xd9fffffff`.
+
+`push-xen.py --dom0-mem` supplies it (default `16G`), leaving room for guests;
+`--dom0-mem 0` restores Xen's default. Two things to know about the parameter:
+
+- ARM's `parse_dom0_mem()` (`arch/arm/domain_build.c`) takes a **plain size**.
+  The x86 `min:`/`max:` syntax is not accepted.
+- It sets `d->max_pages`, so it is a hard ceiling -- dom0 cannot balloon past it.
+
+There is no bank-count limit to worry about: `NR_MEM_BANKS` is 256 and the 1:1
+allocator fills banks with descending power-of-2 orders down to 4MB, so a large
+request is satisfied out of the contiguous main bank. `CONFIG_DOM0_MEM` can bake
+a default into the build instead, if passing it every boot becomes tiresome.
+
 ### The pmgr messages
 
 The `apple-pmgr-pwrstate ... sync_state() pending due to <device>` flood is not a
