@@ -623,6 +623,19 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
             config->arch.gic_version = XEN_DOMCTL_CONFIG_GIC_V3;
             break;
 
+        case GIC_INVALID:
+            /*
+             * Not a bug: the platform's interrupt controller has no
+             * virtual-interface driver, so there is no GIC version to hand
+             * back and no way to inject interrupts into a guest.  Apple
+             * Silicon is in this state until the vGICv3 work in
+             * plans/asahi/04-virtual-interrupts-and-timer.md lands.
+             */
+            printk(XENLOG_ERR
+                   "No virtual interrupt controller: guests cannot be created "
+                   "on this platform yet\n");
+            return -EOPNOTSUPP;
+
         default:
             ASSERT_UNREACHABLE();
             return -EINVAL;
