@@ -1873,8 +1873,30 @@ static int vgic_v3_domain_init(struct domain *d)
         d->arch.vgic.rdist_regions[0].size = GUEST_GICV3_GICR0_SIZE;
         d->arch.vgic.rdist_regions[0].first_cpu = 0;
 
-        d->arch.vgic.intid_bits = vgic_v3_hw.enabled ? vgic_v3_hw.intid_bits
-                                                    : VGIC_V3_SYNTH_INTID_BITS;
+        if ( vgic_v3_hw.enabled )
+            d->arch.vgic.intid_bits = vgic_v3_hw.intid_bits;
+        else
+        {
+            d->arch.vgic.intid_bits = VGIC_V3_SYNTH_INTID_BITS;
+
+            /*
+             * GICD_TYPER.IDbits bounds every INTID the guest may see, and an
+             * extended SPI lives at ESPI_BASE_INTID or above -- far outside the
+             * 10 bits a synthesised distributor would otherwise advertise.
+             * Widen it to cover the highest eSPI actually offered, or the guest
+             * would be told its own interrupts cannot exist.
+             */
+#ifdef CONFIG_GICV3_ESPI
+            if ( d->arch.vgic.nr_espis )
+            {
+                unsigned int top = espi_idx_to_intid(d->arch.vgic.nr_espis) - 1;
+                unsigned int bits = flsl(top);
+
+                if ( bits > d->arch.vgic.intid_bits )
+                    d->arch.vgic.intid_bits = bits;
+            }
+#endif
+        }
     }
 
     /* Register mmio handle for the Distributor */

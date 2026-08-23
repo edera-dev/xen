@@ -1284,8 +1284,18 @@ static int __init aic_dt_preinit(struct dt_device_node *node, const void *data)
          * NR_ESPI_IRQS is the most the architecture allows and also the size of
          * Xen's espi_desc[], so clamp to it; anything beyond stays unroutable
          * and aic_irq_xlate() reports it.
+         *
+         * Round up to a whole number of 32-interrupt ranks.  The vGIC describes
+         * eSPIs in ranks and reconstructs the count by rounding the domain's
+         * configured maximum INTID up to a multiple of 32
+         * (domain_vgic_init()), so a count that is not itself a multiple of 32
+         * comes back larger than what is reported here and the domain is
+         * refused with -EINVAL.  t8112 has 1152 events, i.e. 164 past the SPI
+         * range, which becomes 192.  Claiming the few extra costs nothing: no
+         * event maps to them, because both aic_irq_xlate() and aic_read_irq()
+         * range-check against the controller's real event count.
          */
-        aic_set_nr_espi(min(aic.nr_irq - AIC_NR_SPI_EVENTS,
+        aic_set_nr_espi(min(ROUNDUP(aic.nr_irq - AIC_NR_SPI_EVENTS, 32),
                             (unsigned int)NR_ESPI_IRQS));
 
         if ( !IS_ENABLED(CONFIG_GICV3_ESPI) )
