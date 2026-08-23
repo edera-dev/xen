@@ -909,3 +909,47 @@ about a second. This is not the DART fault -- Apple NVMe uses the SART for DMA,
 and `apple_sart` loaded -- so it needs its own investigation: power domains
 (`ps_ans2`, `ps_apcie_st`), the ASC mailbox, and whether the RTKit shared-memory
 buffers dom0 hands the coprocessor are reachable through the p2m.
+
+## AIC events above 1019: the ESPI gap
+
+```
+GICv3: SPI 1035 out of range (use ESPI?)
+WARNING: kernel/irq/manage.c:2150 at request_threaded_irq+0x1a0/0x1d8
+apple-dart 382f00000.iommu: probe with driver apple-dart failed with error -22
+```
+
+AIC event 1003 becomes INTID 1035 under the identity mapping (`AIC_HWIRQ_BASE`
+is 32), and GICv3's largest SPI is 1019. Six nodes on t8112 are affected, all of
+them USB: `usb@382280000`, `usb@502280000` and their four DARTs. Xen already
+reported them as `Cannot route irq 0 of ...`.
+
+The architected home for these is **GICv3.1 ESPI** (INTIDs 4096-5119,
+`CONFIG_GICV3_ESPI`, which Xen already has some plumbing for -- `is_espi()`,
+`intc_info.nr_espi`). Making it work needs: enabling the option, an ESPI case in
+`aic_irq_xlate()`, `nr_espi` reported in `aic_intc_info`, the synthesised GICv3
+node advertising an ESPI range, and dom0's interrupt specifiers for those nodes
+rewritten to the ESPI form (`interrupt-cells` type 2). That is the real fix and
+is not done.
+
+### What is done instead
+
+`handle_node()` now withholds any device whose interrupt cannot be routed,
+rather than handing it over without one.
+
+The previous behaviour -- warn, skip the interrupt, expose the device anyway --
+rested on the assumption that the guest driver "will simply fail to get an
+interrupt". Hardware disproved that: `apple_dart_probe()` called
+`request_threaded_irq()`, hit the `WARN` above, failed with `-EINVAL`, and then
+runtime PM invoked `apple_dart_suspend()`, which dereferenced the driver data
+that the failed probe had never set. That killed a kworker **with IRQs
+disabled**. A driver's probe-failure path is far less well travelled than its
+absent-device path, so omitting the node is the safer of the two.
+
+`device_has_unroutable_irq()` keys off `-ERANGE` from `dt_device_get_irq()`,
+which only the AIC's xlate produces, so the check is inert on a GIC. It calls
+the controller's xlate and nothing else, so it does not disturb any interrupt's
+configuration.
+
+The cost is that dom0 has no USB until ESPI lands. The internal keyboard and
+trackpad are on SPI/HID rather than USB, and the debug console is the
+dockchannel, so this does not affect bring-up.

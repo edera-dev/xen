@@ -126,6 +126,27 @@ int __overlay_init map_range_to_domain(const struct dt_device_node *dev,
  *   < 0 error
  *   0   success
  */
+bool __init device_has_unroutable_irq(const struct dt_device_node *dev)
+{
+    unsigned int i, nirq = dt_number_of_irq(dev);
+
+    for ( i = 0; i < nirq; i++ )
+    {
+        struct dt_irq irq;
+
+        /*
+         * Only -ERANGE means "cannot be routed"; anything else is either fine
+         * or a broken description, which the mapping path reports properly.
+         * dt_device_get_irq() runs the controller's xlate and nothing else, so
+         * this does not disturb any interrupt's configuration.
+         */
+        if ( dt_device_get_irq(dev, i, &irq) == -ERANGE )
+            return true;
+    }
+
+    return false;
+}
+
 int __overlay_init map_device_irqs_to_domain(struct domain *d,
                                              struct dt_device_node *dev,
                                              bool need_mapping,
@@ -181,10 +202,11 @@ int __overlay_init map_device_irqs_to_domain(struct domain *d,
         {
             /*
              * The interrupt is described correctly but this platform's
-             * controller cannot route it into Xen's IRQ space.  Losing one
-             * device is much better than refusing to build the domain's device
-             * tree at all, so warn and carry on; the device is still exposed,
-             * and its driver will simply fail to get an interrupt.
+             * controller cannot route it into Xen's IRQ space.  Carry on
+             * without it; handle_node() normally withholds such a device from
+             * the domain altogether (device_has_unroutable_irq()), so reaching
+             * here means a path that does not check, and one interrupt-less
+             * device still beats failing to build the domain.
              */
             printk(XENLOG_WARNING
                    "Cannot route irq %u of %s; leaving it unmapped\n",
