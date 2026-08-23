@@ -1050,3 +1050,48 @@ If every device row is zero, device interrupt delivery is the bug, and it
 subsumes both ANS and USB. If ANS's mailbox rows are counting, the problem is
 inside the RTKit handshake -- power domains (`ps_ans2`, `ps_apcie_st`), the SART,
 or shared-memory reachability -- and worth a separate look.
+
+## Diagnosing "ANS did not boot"
+
+The AIC physical layer has been checked line by line against
+`drivers/irqchip/irq-apple-aic.c` and matches it. Recorded so it is not redone:
+
+| checked | result |
+|---|---|
+| register layout (`sw_set`/`sw_clr`/`mask_set`/`mask_clr` derived from `irq_cfg + 4 * max_irq`) | matches; uses `max_irq`, not `nr_irq` |
+| mask/unmask register and bit arithmetic | matches `aic_irq_mask`/`aic_irq_unmask` |
+| reading the event register auto-masks, so EOI must unmask | done in `aic_eoi_irq`/`aic_deactivate_irq` |
+| a guest-routed IRQ must stay masked until the guest deactivates | `aic_guest_irq_end()` deliberately does nothing |
+| affinity is a no-op on AIC2 | correct: Linux's `aic2_chip` has no `irq_set_affinity` either, so the hardware default routing is what native uses too |
+| the interrupts themselves | routable: mailbox events 717-720 -> INTIDs 749-752, nvme 724 -> 756 |
+
+So the remaining suspects are on the injection side (Xen -> vGIC -> dom0) or in
+RTKit itself, and both need evidence from the machine rather than more reading.
+
+Xen now has an `'i'` keyhandler on ARM (it was x86-only), reachable over the
+two-way console: press the console-switch key three times -- Ctrl-A by default,
+`conswitch` changes it -- then `i`. It lists every interrupt with a descriptor,
+its status bits, and for guest-routed ones the domain and virq. That answers "is
+this interrupt routed, and to whom?", which was previously unanswerable from a
+running system.
+
+The pair of checks to run:
+
+```sh
+cat /proc/interrupts        # in dom0: are the mailbox rows counting?
+```
+```
+Ctrl-A Ctrl-A Ctrl-A i     # in Xen: are 749-752 routed to d0, and enabled?
+```
+
+Reading them together:
+
+- **routed in Xen, zero in dom0** -- the loss is between the AIC and vGIC
+  injection. That single bug would explain both ANS and USB, and ESPI cannot be
+  validated until it is fixed.
+- **counting in dom0** -- interrupt delivery works and the fault is inside the
+  RTKit handshake: the `ps_ans2`/`ps_apcie_st` power domains, the SART, or
+  whether the shared-memory buffers dom0 hands the coprocessor are reachable
+  through the p2m.
+- **not routed in Xen at all** -- the device tree or `route_irq_to_guest()` is
+  the place to look, not the AIC.
