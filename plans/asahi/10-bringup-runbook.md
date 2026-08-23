@@ -585,6 +585,27 @@ Two details that matter:
 Verified against the real `t8112-j413.dtb` by exercising the shipped
 `add_modules()` and decompiling the result.
 
+Module uploads are compressed on the host and decompressed on the target
+(`--compress`, default `auto` = xz unless the file already looks compressed).
+An unwrapped Asahi kernel Image goes from 79MB to 14.7MB, which is a 5.4x
+saving on the slowest part of the loop.  Files that are already compressed --
+an initramfs is zstd -- are detected and sent as-is.
+
+**Do not "improve" the xz settings.**  m1n1 decodes with minilzlib, not
+liblzma, and it requires a single-stream *single-block* file, CRC32 (or no)
+check, LZMA2 with no BCJ filter, and `lc=3 lp=0 pb=2` -- the only property byte
+it accepts (`k_LzSupportedProperties`, `lzmadec.c:117`).  liblzma splits a
+stream into multiple blocks only when threading, so `xz -T0` produces a file
+minilzlib rejects.  Preset 6 is used rather than 9 because it is within 1% on a
+kernel Image while claiming an 8MB dictionary instead of 64MB.
+
+Fedora Asahi's `vmlinuz` is not directly loadable: it is a CONFIG_EFI_ZBOOT
+image, a PE32+ EFI application with the real Image zstd-compressed inside, and
+Xen's loader understands only a raw Image, a zImage, or a uImage (decompressing
+only the last).  `unzboot.py` unwraps it.  Note also that the distribution
+kernel is built with `# CONFIG_XEN is not set`, so it can be used to exercise
+the boot path but cannot function as a dom0.
+
 ### M4 — dom0's device tree (plans/asahi/08)
 
 This is the next substantial piece, and it is where dom0's device tree stops
