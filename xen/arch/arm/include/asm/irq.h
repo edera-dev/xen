@@ -64,6 +64,8 @@ static inline bool is_lpi(unsigned int irq)
     return irq >= LPI_OFFSET;
 }
 
+void dump_irqs_at_boot(void);
+
 static inline bool is_espi(unsigned int irq)
 {
 #ifdef CONFIG_GICV3_ESPI

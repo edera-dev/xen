@@ -509,6 +509,9 @@ void asmlinkage __init noreturn start_xen(unsigned long fdt_paddr)
     for_each_domain( d )
         domain_unpause_by_systemcontroller(d);
 
+    /* Optional: report the interrupt routing before handing over. */
+    dump_irqs_at_boot();
+
     /* Switch on to the dynamically allocated stack for the idle vcpu
      * since the static one we're running on is about to be freed. */
     memcpy(idle_vcpu[0]->arch.cpu_info, get_cpu_info(),
