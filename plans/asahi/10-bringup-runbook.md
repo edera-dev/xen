@@ -132,6 +132,22 @@ SoC UART regardless — so use the UART for everything during bring-up.
    ~/src/asahi-bringup/set-console.sh s5l                    # serial
    ```
 
+   **Record the reg[0] value here once probed** — it is a property of the SoC,
+   not of a session, and it is otherwise held *only* in `xen/.config`:
+
+   | machine | ADT `dockchannel-uart` reg[0] | data window (`+ 0x4000`) |
+   |---|---|---|
+   | t8112-j413 (M2 Air 13") | _TODO: paste from probe-console.py_ | |
+
+   A single `make distclean` -- or any detour through `arm64_defconfig` for a
+   QEMU run -- regenerates `.config` from `apple_defconfig`, which selects the
+   **s5l** backend. Xen then boots correctly and writes every byte into a port
+   nobody is reading, which is indistinguishable from Xen dying before its
+   first print. `set-console.sh` now records the choice in
+   `asahi-bringup/out/console.conf` and `mkpayload.sh` re-applies it on every
+   build, so the route survives; the table above is the backstop for when the
+   whole working directory is gone.
+
    ### Why the dockchannel needs its own backend
 
    It is not a UART at all: no baud rate, no line control, just a byte FIFO
