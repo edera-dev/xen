@@ -173,6 +173,45 @@
  * aic_irq_xlate() so the standard request_irq() flow can be used for them.
  */
 #define AIC_HWIRQ_BASE          NR_GIC_LOCAL_IRQS
+
+/*
+ * AIC event numbers are dense from 0, but the Xen/GIC INTID space they are
+ * mapped into is not: 1020-1023 are reserved, so only events below
+ * AIC_NR_SPI_EVENTS fit as plain SPIs.  Everything above goes into the GICv3.1
+ * extended SPI range at ESPI_BASE_INTID, in order, so the two ranges together
+ * cover every event the controller has:
+ *
+ *   event < AIC_NR_SPI_EVENTS : INTID = AIC_HWIRQ_BASE + event
+ *   event >= AIC_NR_SPI_EVENTS: INTID = ESPI_BASE_INTID +
+ *                                       (event - AIC_NR_SPI_EVENTS)
+ *
+ * On an M2 the only events past the SPI range belong to the USB controllers
+ * and their DARTs.
+ */
+#define AIC_NR_SPI_EVENTS       (1020U - AIC_HWIRQ_BASE)
+
+static inline bool aic_event_is_espi(unsigned int event)
+{
+    return IS_ENABLED(CONFIG_GICV3_ESPI) && event >= AIC_NR_SPI_EVENTS;
+}
+
+/* AIC event number -> Xen INTID.  The caller must have range-checked event. */
+static inline unsigned int aic_event_to_irq(unsigned int event)
+{
+    if ( aic_event_is_espi(event) )
+        return espi_idx_to_intid(event - AIC_NR_SPI_EVENTS);
+
+    return AIC_HWIRQ_BASE + event;
+}
+
+/* Xen INTID -> AIC event number; the inverse of aic_event_to_irq(). */
+static inline unsigned int aic_irq_to_event(unsigned int irq)
+{
+    if ( is_espi(irq) )
+        return AIC_NR_SPI_EVENTS + espi_intid_to_idx(irq);
+
+    return irq - AIC_HWIRQ_BASE;
+}
 #define AIC_FIQ_PSEUDO_BASE     16
 
 /* AIC FIQ source indexes (dt-bindings/interrupt-controller/apple-aic.h). */
@@ -221,6 +260,29 @@ struct aic {
 static struct aic aic __read_mostly;
 
 static struct intc_info aic_intc_info;
+
+/*
+ * struct intc_info carries nr_espi only when CONFIG_GICV3_ESPI is set, so read
+ * and write it through these; with the option off the extended range does not
+ * exist and every ESPI branch folds away.
+ */
+static inline unsigned int aic_nr_espi(void)
+{
+#ifdef CONFIG_GICV3_ESPI
+    return aic_intc_info.nr_espi;
+#else
+    return 0;
+#endif
+}
+
+static inline void aic_set_nr_espi(unsigned int nr)
+{
+#ifdef CONFIG_GICV3_ESPI
+    aic_intc_info.nr_espi = nr;
+#else
+    ASSERT(!nr);
+#endif
+}
 
 /*
  * Xen's logical SGIs (enum gic_sgi) multiplexed over the single hardware
@@ -314,7 +376,7 @@ static inline bool aic_is_hw_irq(const struct irq_desc *desc)
 static inline unsigned int aic_hwirq(const struct irq_desc *desc)
 {
     ASSERT(aic_is_hw_irq(desc));
-    return desc->irq - AIC_HWIRQ_BASE;
+    return aic_irq_to_event(desc->irq);
 }
 
 static void aic_irq_enable(struct irq_desc *desc)
@@ -444,8 +506,10 @@ static unsigned int aic_read_irq(void)
         unsigned int die = aic_event_die(ev);
 
         if ( likely(type == AIC_EVENT_TYPE_IRQ && die == 0 &&
-                    AIC_HWIRQ_BASE + num < aic_intc_info.nr_lines) )
-            return AIC_HWIRQ_BASE + num;
+                    num < aic.nr_irq &&
+                    (!aic_event_is_espi(num) ||
+                     num - AIC_NR_SPI_EVENTS < aic_nr_espi())) )
+            return aic_event_to_irq(num);
 
         if ( type == AIC_EVENT_TYPE_IPI )
         {
@@ -1067,16 +1131,18 @@ static int aic_irq_xlate(const u32 *intspec, unsigned int intsize,
          * device tree -- they are no longer plain SPIs.  On an M2 this costs
          * the two USB controllers and their DARTs; see plans/asahi/08.
          */
-        if ( AIC_HWIRQ_BASE + intspec[1] >= aic_intc_info.nr_lines )
+        if ( intspec[1] >= aic.nr_irq ||
+             (aic_event_is_espi(intspec[1]) &&
+              intspec[1] - AIC_NR_SPI_EVENTS >= aic_nr_espi()) )
         {
             printk_once(XENLOG_WARNING
-                        "AIC: event %u is beyond the %u routable IRQs; "
-                        "extended SPI support is needed for it\n",
-                        intspec[1], aic_intc_info.nr_lines);
+                        "AIC: event %u is not routable (%u SPI events, %u "
+                        "extended)\n", intspec[1], AIC_NR_SPI_EVENTS,
+                        aic_nr_espi());
             return -ERANGE;
         }
 
-        *out_hwirq = AIC_HWIRQ_BASE + intspec[1];
+        *out_hwirq = aic_event_to_irq(intspec[1]);
         break;
 
     case AIC_SPEC_FIQ:
@@ -1211,10 +1277,24 @@ static int __init aic_dt_preinit(struct dt_device_node *node, const void *data)
     nr_lines = AIC_HWIRQ_BASE + aic.nr_irq;
     if ( nr_lines > 1020 )
     {
-        printk(XENLOG_WARNING
-               "AIC: only %u of %u IRQs routable (TODO: widen IRQ space)\n",
-               1020 - AIC_HWIRQ_BASE, aic.nr_irq);
         nr_lines = 1020;
+
+        /*
+         * Events past the SPI range live in the extended SPI range instead.
+         * NR_ESPI_IRQS is the most the architecture allows and also the size of
+         * Xen's espi_desc[], so clamp to it; anything beyond stays unroutable
+         * and aic_irq_xlate() reports it.
+         */
+        aic_set_nr_espi(min(aic.nr_irq - AIC_NR_SPI_EVENTS,
+                            (unsigned int)NR_ESPI_IRQS));
+
+        if ( !IS_ENABLED(CONFIG_GICV3_ESPI) )
+            printk(XENLOG_WARNING
+                   "AIC: only %u of %u IRQs routable; the rest need "
+                   "CONFIG_GICV3_ESPI\n", AIC_NR_SPI_EVENTS, aic.nr_irq);
+        else
+            printk("AIC: %u IRQs: %u as SPIs, %u as extended SPIs\n",
+                   aic.nr_irq, AIC_NR_SPI_EVENTS, aic_nr_espi());
     }
     if ( aic.nr_die > 1 )
         printk(XENLOG_WARNING
