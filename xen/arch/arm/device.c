@@ -141,6 +141,23 @@ int __overlay_init map_device_irqs_to_domain(struct domain *d,
     for ( i = 0; i < nirq; i++ )
     {
         res = dt_device_get_raw_irq(dev, i, &rirq);
+        if ( res == -ENOENT )
+        {
+            /*
+             * A sparse "interrupts-extended" leaves holes, and there is nothing
+             * to map for those indices.  Apple's audio DMA controller is
+             * described this way:
+             *
+             *   interrupts-extended = <0>, <&aic AIC_IRQ 760 ...>, <0>, <0>;
+             *
+             * Unlike a driver, which asks only for the indices it uses, this
+             * walks every one to hand the device to the domain, so it has to
+             * tolerate the holes.
+             */
+            dt_dprintk("irq %u of %s is not described, skipping\n",
+                       i, dt_node_full_name(dev));
+            continue;
+        }
         if ( res )
         {
             printk(XENLOG_ERR "Unable to retrieve irq %u for %s\n",

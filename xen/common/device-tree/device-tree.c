@@ -1578,6 +1578,21 @@ int dt_device_get_raw_irq(const struct dt_device_node *device,
                               addr, out_irq);
     }
 
+    /*
+     * An "interrupts-extended" entry is allowed to be empty -- a <0>
+     * placeholder meaning "this device has no interrupt at this index" -- which
+     * is how a device with sparse interrupts is described.  Report that as
+     * -ENOENT instead of falling through to "interrupts", so that a caller
+     * enumerating every index can tell an absent interrupt from a broken
+     * description.
+     *
+     * dt_parse_phandle_with_args() also returns -ENOENT when the property does
+     * not exist at all, hence checking for it explicitly.
+     */
+    if ( res == -ENOENT &&
+         dt_get_property(device, "interrupts-extended", NULL) != NULL )
+        return res;
+
     /* Get the interrupts property */
     intspec = dt_get_property(device, "interrupts", &intlen);
     if ( intspec == NULL )
