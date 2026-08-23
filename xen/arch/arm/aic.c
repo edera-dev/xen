@@ -1083,6 +1083,12 @@ static const struct intc_hw_operations aic_intc_ops = {
     .read_irq            = aic_read_irq,
     .eoi_irq             = aic_eoi_irq,
     .deactivate_irq      = aic_deactivate_irq,
+    /*
+     * Reading the AIC event register acknowledges *and* masks the event, and
+     * there is no physical GIC CPU interface for a list register's HW bit to
+     * act on, so Xen has to unmask it once the guest is finished.
+     */
+    .sw_deactivate_guest_irq = true,
     .set_irq_type        = aic_set_irq_type,
     .set_irq_priority    = aic_set_irq_priority,
     .send_SGI            = aic_send_SGI,

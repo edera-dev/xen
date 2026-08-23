@@ -414,6 +414,23 @@ struct intc_hw_operations {
     void (*eoi_irq)(struct irq_desc *irqd);
     /* Deactivate/reduce priority of irq */
     void (*deactivate_irq)(struct irq_desc *irqd);
+    /*
+     * Set when a physical interrupt backing a guest one has to be deactivated
+     * by software.
+     *
+     * A GICv3 list register can carry the physical INTID alongside the virtual
+     * one, and the CPU interface then deactivates the physical interrupt when
+     * the guest deactivates the virtual one.  That linkage only exists if there
+     * *is* a physical GIC CPU interface: Apple cores implement the EL2
+     * virtualisation registers but report ID_AA64PFR0_EL1.GIC == 0, and the
+     * interrupts come from the AIC, so nothing acts on the physical INTID and
+     * the source stays masked after its first delivery.
+     *
+     * Controllers that set this get no physical INTID in the list register and
+     * are deactivated explicitly once the guest is finished (see
+     * gic_update_one_lr()).
+     */
+    bool sw_deactivate_guest_irq;
     /* Force the active state of an IRQ by accessing the distributor */
     void (*set_active_state)(struct irq_desc *irqd, bool state);
     /* Force the pending state of an IRQ by accessing the distributor */

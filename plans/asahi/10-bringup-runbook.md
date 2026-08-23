@@ -1116,3 +1116,42 @@ Reading them together:
   through the p2m.
 - **not routed in Xen at all** -- the device tree or `route_irq_to_guest()` is
   the place to look, not the AIC.
+
+## Why a guest interrupt arrived exactly once
+
+The diagnostic hook settled it. dom0's `/proc/interrupts`:
+
+```
+ 28:    1  0 0 0 0 0 0 0   GICv3 752 Level   277408000.mbox-recv
+ 29:    0  0 0 0 0 0 0 0   GICv3 749 Level   277408000.mbox-send
+ 42:    0  0 0 0 0 0 0 0   GICv3 4143 Level  apple-dart fault handler
+ 43:    0  0 0 0 0 0 0 0   GICv3 4224 Level  apple-dart fault handler
+```
+
+Two things at once. **ESPI works**: 4143 and 4224 are extended SPIs
+(`4096 + 47`, `4096 + 128`), so the device-tree rewrite resolves and dom0
+registers handlers on them -- the part QEMU could never exercise. And the ANS
+mailbox delivered **one** interrupt and then stopped, which is why the RTKit
+handshake times out: it needs several messages.
+
+Two mechanisms combine to make it exactly one:
+
+1. Reading the AIC event register acknowledges *and masks* the event. Nothing
+   unmasks it until someone deactivates the interrupt.
+2. Xen's normal guest path never deactivates in software. `gic_set_lr()` puts the
+   physical INTID in the list register and `gic_update_one_lr()` only does
+   `clear_bit(_IRQ_INPROGRESS, ...)` when the guest is done -- because on a GIC
+   the CPU interface acts on the list register's HW bit and deactivates the
+   physical interrupt itself.
+
+That linkage needs a physical GIC CPU interface. Apple cores implement the EL2
+virtualisation registers but report `ID_AA64PFR0_EL1.GIC == 0`, and the
+interrupts come from the AIC, so nothing acts on the physical INTID: the event
+stays masked forever after its first delivery.
+
+Fixed with `intc_hw_operations.sw_deactivate_guest_irq`, set only by the AIC.
+Where it is set, the physical INTID is withheld from the list register (there is
+nothing to act on it) and `gic_update_one_lr()` calls
+`intc_hw_ops->deactivate_irq()` -- already implemented as `aic_deactivate_irq()`,
+which unmasks the event -- once the guest is finished with it. GICv2 and GICv3
+leave the flag false and are untouched.
