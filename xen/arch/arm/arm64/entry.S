@@ -493,10 +493,27 @@ FUNC_LOCAL(guest_irq)
         guest_vector compat=0, iflags=IFLAGS__A__, trap=irq
 END(guest_irq)
 
+#ifdef CONFIG_APPLE_AIC
+/*
+ * Physical FIQ taken while a guest was running.  Reachable only where the
+ * interrupt controller delivers sources as FIQs (Apple AIC), and needed as
+ * soon as a guest timer is armed: that FIQ fires with the guest at EL1, and
+ * HCR_EL2.FMO routes it here.
+ *
+ * Handled exactly like a guest IRQ -- same SError check, same
+ * enter/leave_hypervisor_* pairing so an interrupt injected by the dispatcher
+ * reaches the guest -- with I and F both left masked, because an FIQ has no
+ * acknowledge register and the dispatcher polls every source.
+ */
+FUNC_LOCAL(guest_fiq)
+        guest_vector compat=0, iflags=IFLAGS__A__, trap=fiq
+END(guest_fiq)
+#else
 FUNC_LOCAL(guest_fiq_invalid)
         entry   hyp=0, compat=0
         invalid BAD_FIQ
 END(guest_fiq_invalid)
+#endif
 
 FUNC_LOCAL(guest_error)
         guest_vector compat=0, iflags=IFLAGS__AI_, trap=guest_serror
@@ -510,10 +527,16 @@ FUNC_LOCAL(guest_irq_compat)
         guest_vector compat=1, iflags=IFLAGS__A__, trap=irq
 END(guest_irq_compat)
 
+#ifdef CONFIG_APPLE_AIC
+FUNC_LOCAL(guest_fiq_compat)
+        guest_vector compat=1, iflags=IFLAGS__A__, trap=fiq
+END(guest_fiq_compat)
+#else
 FUNC_LOCAL(guest_fiq_invalid_compat)
         entry   hyp=0, compat=1
         invalid BAD_FIQ
 END(guest_fiq_invalid_compat)
+#endif
 
 FUNC_LOCAL(guest_error_compat)
         guest_vector compat=1, iflags=IFLAGS__AI_, trap=guest_serror
@@ -651,12 +674,20 @@ FUNC(hyp_traps_vector)
 
         ventry  guest_sync                  /* Synchronous 64-bit EL0/EL1 */
         ventry  guest_irq                   /* IRQ 64-bit EL0/EL1 */
+#ifdef CONFIG_APPLE_AIC
+        ventry  guest_fiq                   /* FIQ 64-bit EL0/EL1 */
+#else
         ventry  guest_fiq_invalid           /* FIQ 64-bit EL0/EL1 */
+#endif
         ventry  guest_error                 /* Error 64-bit EL0/EL1 */
 
         ventry  guest_sync_compat           /* Synchronous 32-bit EL0/EL1 */
         ventry  guest_irq_compat            /* IRQ 32-bit EL0/EL1 */
+#ifdef CONFIG_APPLE_AIC
+        ventry  guest_fiq_compat            /* FIQ 32-bit EL0/EL1 */
+#else
         ventry  guest_fiq_invalid_compat    /* FIQ 32-bit EL0/EL1 */
+#endif
         ventry  guest_error_compat          /* Error 32-bit EL0/EL1 */
 END(hyp_traps_vector)
 
