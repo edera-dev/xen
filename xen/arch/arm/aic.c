@@ -880,6 +880,28 @@ static int aic_irq_xlate(const u32 *intspec, unsigned int intsize,
     case AIC_SPEC_IRQ:
         if ( intspec[1] >= aic.nr_irq )
             return -EINVAL;
+
+        /*
+         * Xen's linear IRQ space is NR_IRQS wide and a GICv3 reserves INTIDs
+         * 1020-1023, so aic_intc_info.nr_lines stops at 1020 and an AIC event
+         * beyond that has nowhere to live.  Refuse it here: letting the number
+         * escape would index past the end of irq_desc[] in __irq_to_desc().
+         *
+         * The architected home for these is the GICv3.1 extended SPI range
+         * (INTIDs 4096+), which needs CONFIG_GICV3_ESPI, an ESPI case in the
+         * translation below, and rewriting of the affected specifiers in dom0's
+         * device tree -- they are no longer plain SPIs.  On an M2 this costs
+         * the two USB controllers and their DARTs; see plans/asahi/08.
+         */
+        if ( AIC_HWIRQ_BASE + intspec[1] >= aic_intc_info.nr_lines )
+        {
+            printk_once(XENLOG_WARNING
+                        "AIC: event %u is beyond the %u routable IRQs; "
+                        "extended SPI support is needed for it\n",
+                        intspec[1], aic_intc_info.nr_lines);
+            return -ERANGE;
+        }
+
         *out_hwirq = AIC_HWIRQ_BASE + intspec[1];
         break;
 

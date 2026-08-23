@@ -177,6 +177,20 @@ int __overlay_init map_device_irqs_to_domain(struct domain *d,
         }
 
         irq = platform_get_irq(dev, i);
+        if ( irq == -ERANGE )
+        {
+            /*
+             * The interrupt is described correctly but this platform's
+             * controller cannot route it into Xen's IRQ space.  Losing one
+             * device is much better than refusing to build the domain's device
+             * tree at all, so warn and carry on; the device is still exposed,
+             * and its driver will simply fail to get an interrupt.
+             */
+            printk(XENLOG_WARNING
+                   "Cannot route irq %u of %s; leaving it unmapped\n",
+                   i, dt_node_full_name(dev));
+            continue;
+        }
         if ( irq < 0 )
         {
             printk(XENLOG_ERR "Unable to get irq %u for %s\n",
