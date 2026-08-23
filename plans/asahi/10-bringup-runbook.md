@@ -698,16 +698,61 @@ load them from.
 The `realpath: /lib/modules/7.1.6+` and `ldconfig ... uid=0` warnings from dracut
 are expected: it is building for a kernel this VM is not running.
 
-Neither the Fedora initramfs nor the copied `/boot` records a `root=`, so the
-first boot has to discover it. Boot without one, land in the dracut emergency
-shell, and read it off the machine:
+The real kernel command line is in the BLS entry copied from the target,
+`boot/5409f4eeaf2142ed8915ea0eda6dd506-7.1.6-400.asahi.fc44.aarch64+16k.conf`:
+
+```
+root=UUID=89cb3d63-91a4-4916-a6c4-de361910eb92 ro rootflags=subvol=root
+rd.luks.uuid=81535f8c-fb81-45a0-b32d-a27c578fd08e
+```
+
+**The root is LUKS.** That is easy to miss and fatal: without dracut's `crypt`
+module and `dm-crypt` (a module, as is `CRYPTO_ESSIV`) there is nothing to unlock
+and no `root=` value can work. dracut prompts for the passphrase on `hvc0`.
+
+`--force-drivers` rather than `--add-drivers` for the storage stack, so the
+image also carries `rd.driver.pre=` and loads it before the pre-mount hooks
+instead of waiting for udev to match. A dracut that bails early -- a bad or
+missing `root=`, for instance -- never reaches those hooks, which is why the
+first attempt left no `/dev/nvme0n1` and needed a manual `modprobe`. The DART
+and SART are listed first so the suppliers are present before `nvme-apple`
+probes, avoiding a deferred-probe round trip.
 
 ```sh
 ./push-xen.py --dom0 ~/src/asahi-linux/arch/arm64/boot/Image \
-              --initrd out/initramfs-dom0.img --seconds 300 \
-              --dom0-args "console=hvc0 earlycon=xenboot rd.shell rd.timeout=20"
-# then, at the dracut prompt:  blkid ; ls /dev/nvme*
+    --initrd out/initramfs-dom0.img --seconds 300 \
+    --dom0-args "console=hvc0 earlycon=xenboot rd.shell \
+                 root=UUID=89cb3d63-91a4-4916-a6c4-de361910eb92 ro \
+                 rootflags=subvol=root \
+                 rd.luks.uuid=81535f8c-fb81-45a0-b32d-a27c578fd08e"
 ```
+
+`rhgb quiet` from the BLS entry are dropped on purpose; `rd.shell` is added so a
+failure lands in a shell rather than a panic.
+
+### The pmgr messages
+
+The `apple-pmgr-pwrstate ... sync_state() pending due to <device>` flood is not a
+fault. Every one of those lines is timestamped at ~10.2 s, which is
+`deferred_probe_timeout` expiring: the driver core is reporting which consumers
+have not probed yet, and a minimal initramfs guarantees that most of them never
+will, because their modules are not in it. A power-domain provider simply cannot
+run `sync_state()` -- which is what would turn *off* unused domains -- until its
+consumers have probed, so the effect of these messages is that nothing gets
+powered down. That is the safe direction.
+
+`always-on domain msg is not on at boot` is a different line and a real one, but
+it is a sanity check rather than a failure. The DT node is
+`power-controller@78` in the pmgr at `0x23d280000`, `label = "msg"`, with
+`apple,always-on`; `apple_pmgr_pwrstate_probe()` warns when such a domain reads
+back inactive and then sets `GENPD_FLAG_ALWAYS_ON` so genpd keeps it on. It is
+also not on the NVMe path.
+
+The message that *would* implicate Xen is a pmgr **write** failing --
+`apple-pmgr-pwrstate ... timeout` or a failure to set a power state -- since that
+would mean dom0's MMIO mapping of the pmgr is not writable or is mapped with the
+wrong memory type. Watch for that specifically; the benign warning above is not
+evidence of it.
 
 ### Diagnostics that are expected, and why
 
