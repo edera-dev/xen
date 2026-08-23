@@ -362,6 +362,24 @@ END(zero_bss)
  *
  * Clobbers x0 - x3
  */
+/*
+ * ID_AA64MMFR0_EL1.PARange, limited to 48 bits / 256TB (encoding #5).
+ *
+ * Deliberately a macro rather than a value computed once before the E2H
+ * branch below: PRINT_ID clobbers x0, x1 and x3 (it stashes lr in x3), so no
+ * result can be held in a low register across a print.
+ *
+ * r: register number to receive PARange
+ * t: scratch register number
+ */
+.macro parange_clamped r, t
+        mrs   x\r, ID_AA64MMFR0_EL1
+        ubfm  x\r, x\r, #0, #3
+        mov   x\t, #5
+        cmp   x\r, x\t
+        csel  x\r, x\r, x\t, lt
+.endm
+
 FUNC_LOCAL(cpu_init)
         PRINT_ID("- Initialize CPU -\r\n")
 
@@ -370,7 +388,25 @@ FUNC_LOCAL(cpu_init)
         msr   mair_el2, x0
 
         /*
-         * Set up TCR_EL2:
+         * Xen is a non-VHE hypervisor, so ask to leave VHE.  Where
+         * HCR_EL2.E2H is writable this lands us in the native non-VHE EL2
+         * regime; where it is RES1 (Apple Silicon) or RAO/WI (older Apple
+         * "Fruity" cores) the write is ignored and it reads back as 1.  Probe
+         * rather than assume, in either direction -- see plans/asahi/06.
+         *
+         * This must happen before TCR_EL2/SCTLR_EL2 are programmed, because
+         * E2H selects which format those two registers have.  It is safe
+         * here: the MMU is still off, so nothing depends on them yet.
+         */
+        mrs   x0, HCR_EL2
+        bic   x0, x0, #HCR_E2H
+        msr   HCR_EL2, x0
+        isb
+        mrs   x0, HCR_EL2
+        tbnz  x0, #HCR_E2H_BIT, 2f
+
+        /*
+         * Set up TCR_EL2 (non-VHE layout, E2H == 0):
          * PS -- Based on ID_AA64MMFR0_EL1.PARange
          * Top byte is used
          * PT walks use Inner-Shareable accesses,
@@ -379,18 +415,44 @@ FUNC_LOCAL(cpu_init)
          */
         ldr   x0, =(TCR_RES1|TCR_SH0_IS|TCR_ORGN0_WBWA|TCR_IRGN0_WBWA|TCR_T0SZ(64-48))
         /* ID_AA64MMFR0_EL1[3:0] (PARange) corresponds to TCR_EL2[18:16] (PS) */
-        mrs   x1, ID_AA64MMFR0_EL1
-        /* Limit to 48 bits, 256TB PA range (#5) */
-        ubfm  x1, x1, #0, #3
-        mov   x2, #5
-        cmp   x1, x2
-        csel  x1, x1, x2, lt
-
+        parange_clamped 1, 2
         bfi   x0, x1, #16, #3
-
         msr   tcr_el2, x0
 
         ldr   x0, =SCTLR_EL2_SET
+        b     3f
+
+2:
+        PRINT_ID("- Forced VHE (HCR_EL2.E2H is RES1) -\r\n")
+
+        /*
+         * Set up TCR_EL2 (VHE layout, E2H == 1): the register takes the
+         * TCR_EL1 format, so PARange belongs in IPS[34:32] rather than
+         * PS[18:16], and there are no RES1 bits.
+         *
+         * Getting this wrong is silent and fatal.  The non-VHE value leaves
+         * IPS == 0, i.e. a 32-bit output address size, while Apple RAM starts
+         * at 0x8_00000000 -- so the very first table walk, for the TTBR0_EL2
+         * base itself, takes an address size fault on the instruction after
+         * the MMU is enabled, with no console left to report it.
+         *
+         * Xen occupies only the low half of the EL2&0 regime (TTBR0_EL2), so
+         * the TTBR1 range is switched off outright with EPD1.
+         */
+#ifdef CONFIG_DEBUG_MMU_MINIMAL
+        ldr   x0, =(TCR_SH0_NS|TCR_ORGN0_NC|TCR_IRGN0_NC|TCR_T0SZ(64-48)|\
+                    TCR_TG0_4K|TCR_EL1_EPD1|TCR_EL1_TG1_4K|TCR_EL1_T1SZ(64-48))
+#else
+        ldr   x0, =(TCR_SH0_IS|TCR_ORGN0_WBWA|TCR_IRGN0_WBWA|TCR_T0SZ(64-48)|\
+                    TCR_TG0_4K|TCR_EL1_EPD1|TCR_EL1_TG1_4K|TCR_EL1_T1SZ(64-48))
+#endif
+        parange_clamped 1, 2
+        bfi   x0, x1, #TCR_EL1_IPS_SHIFT, #3
+        msr   tcr_el2, x0
+
+        ldr   x0, =SCTLR_EL2_VHE_SET
+
+3:
         msr   SCTLR_EL2, x0
         isb
 

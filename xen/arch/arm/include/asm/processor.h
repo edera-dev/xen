@@ -267,6 +267,19 @@
 #define SCTLR_EL2_SET   (SCTLR_EL2_RES1     | SCTLR_A64_ELx_SA  |\
                          SCTLR_Axx_ELx_I)
 
+/*
+ * When HCR_EL2.E2H == 1 -- forced on Apple Silicon, where the bit is RES1 (or
+ * RAO/WI on older "Fruity" cores) -- SCTLR_EL2 takes the SCTLR_EL1 format, and
+ * its RES1 bits differ: bit 20 (TSCXT) becomes RES1, while bits 4, 5, 16 and 18
+ * stop being RES1 and become the functional SA0/CP15BEN/nTWI/nTWE controls.
+ * See plans/asahi/06-el2-vhe-and-cpu-bringup.md.
+ */
+#define SCTLR_EL2_VHE_RES1 (BIT(11, UL) | BIT(20, UL) | BIT(22, UL) |\
+                            BIT(23, UL) | BIT(28, UL) | BIT(29, UL))
+
+#define SCTLR_EL2_VHE_SET  (SCTLR_EL2_VHE_RES1 | SCTLR_A64_ELx_SA |\
+                            SCTLR_Axx_ELx_I)
+
 /* Only used a pre-processing time... */
 #define SCTLR_EL2_CLEAR (SCTLR_EL2_RES0     | SCTLR_Axx_ELx_M   |\
                          SCTLR_Axx_ELx_A    | SCTLR_Axx_ELx_C   |\
@@ -285,7 +298,8 @@
 #endif
 
 /* HCR Hyp Configuration Register */
-#define HCR_E2H         (_AC(1,UL)<<34) /* EL2 Host (VHE); RES1 on Apple Silicon */
+#define HCR_E2H_BIT     34
+#define HCR_E2H         (_AC(1,UL)<<HCR_E2H_BIT) /* EL2 Host (VHE); RES1 on Apple Silicon */
 #define HCR_RW          (_AC(1,UL)<<31) /* Register Width, ARM64 only */
 #define HCR_TGE         (_AC(1,UL)<<27) /* Trap General Exceptions */
 #define HCR_TVM         (_AC(1,UL)<<26) /* Trap Virtual Memory Controls */
@@ -394,6 +408,15 @@
 /* Note that the fields TCR_EL2.TBI(0|1) exist only if HCR_EL2.E2H==1. */
 #define TCR_EL1_TBI0    (_AC(0x1,ULL)<<37)
 #define TCR_EL1_TBI1    (_AC(0x1,ULL)<<38)
+
+/*
+ * TCR_EL1-format fields, used for TCR_EL2 when HCR_EL2.E2H == 1.  Xen occupies
+ * only the low (TTBR0) half of the EL2&0 regime, so the TTBR1 range is switched
+ * off entirely with EPD1; T1SZ/TG1 are then unused, but are given architected
+ * values rather than left as reserved encodings.
+ */
+#define TCR_EL1_T1SZ(x) ((x)<<16)
+#define TCR_EL1_EPD1    (_AC(0x1,UL)<<23)
 
 #ifdef CONFIG_ARM_64
 
