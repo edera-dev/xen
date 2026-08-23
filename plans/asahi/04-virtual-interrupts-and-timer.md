@@ -209,6 +209,29 @@ already manage per vCPU, so an open route costs nothing while nothing has armed
 it. Every source not dispatched is masked before returning — an FIQ has no
 acknowledge register, so anything left asserted re-enters forever.
 
+### 6.2 The guest FIQ vector
+
+Enabling the guest timer FIQ immediately exposed a second gap: `entry.S` had a
+real `hyp_fiq` handler for **FIQ EL2h** but still had `guest_fiq_invalid` --
+`do_bad_mode()`, i.e. a panic -- in the **FIQ 64-bit EL0/EL1** slot. A guest
+timer FIQ by definition fires with the guest at EL1, and `HCR_EL2.FMO` routes it
+to EL2, so dom0's first tick panicked Xen with `Bad mode in FIQ handler`.
+
+Note that `ESR_EL2` in that dump is *stale* and misleading: an FIQ does not
+write it, so it still held the guest's last `HVC` (`EC=0x16`). The same goes for
+`FAR_EL2`/`HPFAR_EL2`.
+
+Both guest FIQ slots now use `guest_vector ... trap=fiq`, handled exactly like a
+guest IRQ -- same SError check and the same `enter`/`leave_hypervisor_*` pairing,
+so an interrupt the dispatcher injects actually reaches the guest -- with I and F
+both left masked while the dispatcher polls.
+
+This is gated on `CONFIG_APPLE_AIC` so that a build without it keeps upstream's
+panic on a genuinely unexpected guest FIQ. Note the gate is weaker than it
+looks: `ALL_PLATS` selects `APPLE_AIC`, so an ordinary `arm64_defconfig` build
+gets the new vector too. There it is unreachable, because Xen never routes group
+0 to FIQ on a GIC.
+
 Still open:
 - **`CNTVOFF_EL2`/`CNTFRQ`** per the boot protocol (m1n1 sets `CNTFRQ`; Xen
   manages `CNTVOFF` per vCPU as it already does) — believed fine, unverified.
