@@ -91,7 +91,14 @@ SECTIONS
 
   . = ALIGN(SMP_CACHE_BYTES);
   .data : {                    /* Data */
+       /*
+        * The boot page tables live here (DEFINE_BOOT_PAGE_TABLE{,S}).  head.S
+        * needs to invalidate them from the D-cache before populating them with
+        * the MMU off, so bracket the region with symbols.
+        */
+       _boot_page_tables_start = .;
        *(.data.page_aligned)
+       _boot_page_tables_end = .;
 
        SCHEDULER_ARRAY
        HYPFS_PARAM
