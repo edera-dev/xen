@@ -722,15 +722,23 @@ int platform_get_irq(const struct dt_device_node *device, int index)
 {
     struct dt_irq dt_irq;
     unsigned int type, irq;
+    int res;
 
-    if ( dt_device_get_irq(device, index, &dt_irq) )
-        return -1;
+    /*
+     * Propagate the reason rather than flattening everything to -1: callers
+     * need to tell "this platform cannot route that interrupt" from "the
+     * description is broken", and act differently.
+     */
+    res = dt_device_get_irq(device, index, &dt_irq);
+    if ( res )
+        return res;
 
     irq = dt_irq.irq;
     type = dt_irq.type;
 
-    if ( irq_set_type(irq, type) )
-        return -1;
+    res = irq_set_type(irq, type);
+    if ( res )
+        return res;
 
     return irq;
 }
