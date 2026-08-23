@@ -53,6 +53,14 @@ void init_traps(void);
 int handle_device(struct domain *d, struct dt_device_node *dev, p2m_type_t p2mt,
                   struct rangeset *iomem_ranges, struct rangeset *irq_ranges);
 
+/*
+ * True if any of the device's interrupts cannot be routed into Xen's IRQ space
+ * by this platform's interrupt controller.  Such a device must be withheld from
+ * a domain rather than handed over without its interrupt: see the comment at
+ * the call site in handle_node().
+ */
+bool device_has_unroutable_irq(const struct dt_device_node *dev);
+
 int map_device_irqs_to_domain(struct domain *d, struct dt_device_node *dev,
                               bool need_mapping, struct rangeset *irq_ranges);
 

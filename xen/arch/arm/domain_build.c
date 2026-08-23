@@ -1678,6 +1678,25 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         dt_dprintk("  Skip it (blacklisted)\n");
         return 0;
     }
+    /*
+     * A device whose interrupt this platform's controller cannot route must not
+     * be handed over.  Leaving it in the device tree without its interrupt is
+     * worse than omitting it: the guest's driver binds, request_irq() fails,
+     * and the probe error path is far less well tested than the absent-device
+     * path.  On Apple hardware that combination oopsed dom0 -- apple-dart's
+     * probe failed with -EINVAL and its runtime-PM suspend callback then
+     * dereferenced the driver data that probe never set.
+     *
+     * This can only trigger where irq_xlate() reports -ERANGE, so it is inert
+     * on a GIC.
+     */
+    if ( device_has_unroutable_irq(node) )
+    {
+        printk(XENLOG_WARNING
+               "%s: interrupt not routable, withholding the device from %pd\n",
+               path, d);
+        return 0;
+    }
     /* If Xen is scanning the PCI devices, don't expose real bus to hwdom */
     if ( hwdom_uses_vpci() && dt_device_type_is_equal(node, "pci") )
     {
