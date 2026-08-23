@@ -124,13 +124,19 @@ static void __init apple_report_vhe(void)
            vhe_only_by_id ? " (advertised VHE-only)" : "");
 
     /*
-     * Xen is a non-VHE hypervisor today, so running with E2H=1 needs the VHE
-     * adaptation described in plans/asahi/06-el2-vhe-and-cpu-bringup.md.
+     * head.S probes E2H and programs TCR_EL2/SCTLR_EL2 in the matching format,
+     * so Xen's own EL2 execution and page tables are correct under forced VHE.
+     * What is *not* yet adapted is everything that runs on behalf of a guest:
+     * the guest EL1 system registers still use the _EL1 accessors (which alias
+     * EL2 state when E2H=1) rather than _EL12, CPTR_EL2 is written in its
+     * non-VHE layout, and CNTHCTL_EL2 changes meaning.  See
+     * plans/asahi/06-el2-vhe-and-cpu-bringup.md sections 1.2/3-5.
      */
     if ( e2h_now || vhe_only_by_id )
         printk(XENLOG_WARNING
-               "Apple: VHE-only CPU; Xen's non-VHE EL2 assumptions must be "
-               "adapted (see plans/asahi/06-el2-vhe-and-cpu-bringup.md)\n");
+               "Apple: VHE-only CPU; EL2 boot state is VHE-aware, but guest "
+               "EL1 context, CPTR_EL2 and the timer are not yet (see "
+               "plans/asahi/06-el2-vhe-and-cpu-bringup.md)\n");
 }
 
 static int __init apple_init(void)
