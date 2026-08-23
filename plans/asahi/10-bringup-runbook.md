@@ -137,7 +137,7 @@ SoC UART regardless — so use the UART for everything during bring-up.
 
    | machine | ADT `dockchannel-uart` reg[0] | data window (`+ 0x4000`) |
    |---|---|---|
-   | t8112-j413 (M2 Air 13") | _TODO: paste from probe-console.py_ | |
+   | t8112-j413 (M2 Air 13") | `0x23d128000` | `0x23d12c000` |
 
    A single `make distclean` -- or any detour through `arm64_defconfig` for a
    QEMU run -- regenerates `.config` from `apple_defconfig`, which selects the
