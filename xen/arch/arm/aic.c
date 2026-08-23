@@ -674,6 +674,27 @@ static int aic_secondary_init(void)
     return 0;
 }
 
+/*
+ * The vGIC maintenance interrupt is the one FIQ source with no device tree
+ * node, so nothing has given its descriptor a trigger type and setup_irq()
+ * would trip the ASSERT in gic_set_irq_type().  Declare it here, from the
+ * driver that knows AIC lines are level-high.
+ *
+ * This has to happen after init_IRQ() has created the descriptors and before
+ * init_maintenance_interrupt() requests the IRQ, which is why it lives in the
+ * intc .init callback rather than beside the registration in the preinit.
+ */
+static void __init aic_init_maintenance_irq_type(void)
+{
+    unsigned int irq = AIC_FIQ_PSEUDO_BASE + AIC_VGIC_MI;
+    int res = irq_set_type(irq, IRQ_TYPE_LEVEL_HIGH);
+
+    if ( res )
+        printk(XENLOG_WARNING
+               "AIC: failed to set the type of maintenance IRQ %u (%d)\n",
+               irq, res);
+}
+
 static void aic_disable_interface(void)
 {
     aic_quiesce_fiq_sources();
@@ -697,6 +718,8 @@ static int __init aic_init(void)
         aic_write(AIC2_CONFIG, aic_read(AIC2_CONFIG) | AIC2_CONFIG_ENABLE);
 
     aic_cpu_init();
+
+    aic_init_maintenance_irq_type();
 
     return 0;
 }
