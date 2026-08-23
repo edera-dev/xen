@@ -565,7 +565,60 @@ injection), not doc 01's module packing -- dom0 cannot be created at all until
 a guest can be given an interrupt controller, so module packing would only move
 the same failure later.
 
-### M3 — dom0 modules
+### M3 — dom0 modules — **tooling done**
+
+`push-xen.py --dom0 <Image> [--initrd <file>] [--dom0-args "..."]` loads the
+modules into RAM and adds the `/chosen/module@N` nodes Xen looks for.  m1n1
+cannot do this itself: `kboot_set_chosen()` only sets *properties* on `/chosen`,
+never sub-nodes, so the tree is rewritten with `python3-libfdt` before handover.
+
+Two details that matter:
+
+- `reg` is decoded with **`/chosen`'s own** `#address-cells`/`#size-cells`,
+  which Apple's tree sets to 2/2 where the device tree default would be 2/1.
+  The tool reads them rather than assuming.
+- Nodes are inserted in reverse, because `fdt_add_subnode()` prepends and Xen's
+  `kind_guess` in `process_multiboot_node()` treats the first unknown module as
+  the kernel.  Explicit compatibles make that moot, but the order is also what
+  a human reading the tree expects.
+
+Verified against the real `t8112-j413.dtb` by exercising the shipped
+`add_modules()` and decompiling the result.
+
+### M4 — dom0's device tree (plans/asahi/08)
+
+This is the next substantial piece, and it is where dom0's device tree stops
+being m1n1's and becomes Xen's.  `aic_make_hwdom_dt_node()` currently returns
+`-ENODEV`, which is the wall a `--dom0` boot now hits.
+
+dom0 holds a **vGICv3** but every node in the tree it inherits says
+`interrupt-parent = <&aic>` with AIC 3-cell specifiers, so it is not enough to
+emit a GIC node: every device interrupt has to be re-parented and rewritten.
+
+The translation is mechanical, because `AIC_HWIRQ_BASE == NR_GIC_LOCAL_IRQS ==
+32`:
+
+| AIC specifier | Xen linear IRQ | GIC specifier |
+|---|---|---|
+| `<AIC_IRQ n flags>` | `32 + n` | `<GIC_SPI n IRQ_TYPE_LEVEL_HIGH>` |
+| `<AIC_FIQ f flags>` | `16 + f` | `<GIC_PPI (16 + f - 16) ...>` |
+
+so an AIC event number *is* its SPI number, and the FIQ sources land in the PPI
+range where the timer already expects them (`phys=18 hyp=16 virt=19` on
+hardware).
+
+Pieces needed:
+
+1. Emit a synthetic GICv3 node from `d->arch.vgic.dbase` and the rdist regions.
+   `make_gicv3_domU_node()` in `dom0less-build.c` already does exactly this for
+   domUs; it is `static` and takes a `kernel_info` for its phandle, so it wants
+   refactoring into something `aic_make_hwdom_dt_node()` can share.
+2. Point `interrupt-parent` at that node's phandle everywhere.
+3. Rewrite each `interrupts` property per the table above.
+4. Drop the AIC node itself, and keep `iomem_deny_access()` denying its MMIO so
+   dom0 cannot reach the real controller.
+
+### M3 (original notes) — dom0 modules
 
 Xen needs `/chosen` `multiboot,kernel` / `multiboot,ramdisk` /
 `multiboot,device-tree` sub-nodes whose `reg` point at where the modules were
