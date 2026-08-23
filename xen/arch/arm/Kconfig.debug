@@ -45,6 +45,28 @@ choice
 		  output to an Apple "s5l" UART (compatible "apple,s5l-uart"),
 		  as found on Apple Silicon (M1/M2/M3).
 
+	config EARLY_UART_CHOICE_DOCKCHANNEL
+		select EARLY_UART_DOCKCHANNEL
+		depends on ARM_64
+		bool "Early printk via Apple dockchannel"
+		help
+		  Say Y here if you wish the early printk to direct their
+		  output to the Apple "dockchannel" debug FIFO, as found on
+		  Apple Silicon (M1/M2/M3).
+
+		  This is the console route used when the target's USB-C port
+		  is in "debugusb" mode (macvdmtool debugusb), where the port
+		  controller tunnels the dockchannel to the host as
+		  /dev/cu.kis-100000-ch-0.  In "serial" mode the console
+		  leaves over the s5l UART instead; pick that option there.
+
+		  EARLY_UART_BASE_ADDRESS must be the dockchannel *data
+		  window* base: reg[0] of /arm-io/dockchannel-uart in the ADT,
+		  plus 0x4000.  There is no device tree node for it, so read
+		  it off the machine with m1n1's shell:
+
+		    hex(u.adt["arm-io"]["dockchannel-uart"].get_reg(0)[0] + 0x4000)
+
 	config EARLY_UART_CHOICE_IMX_LPUART
 		select EARLY_UART_IMX_LPUART
 		depends on ARM_64
@@ -119,6 +141,9 @@ config EARLY_UART_PL011
 	select EARLY_PRINTK
 	bool
 config EARLY_UART_S5L
+	select EARLY_PRINTK
+	bool
+config EARLY_UART_DOCKCHANNEL
 	select EARLY_PRINTK
 	bool
 config EARLY_UART_SCIF
@@ -201,6 +226,7 @@ config EARLY_PRINTK_INC
 	default "debug-meson.inc" if EARLY_UART_MESON
 	default "debug-mvebu.inc" if EARLY_UART_MVEBU
 	default "debug-pl011.inc" if EARLY_UART_PL011
+	default "debug-dockchannel.inc" if EARLY_UART_DOCKCHANNEL
 	default "debug-s5l.inc" if EARLY_UART_S5L
 	default "debug-scif.inc" if EARLY_UART_SCIF
 
