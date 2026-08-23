@@ -676,3 +676,59 @@ chainloads `<ESP>/m1n1/boot.bin`; a payload that hangs is fixed by
 `macvdmtool reboot` and re-pushing, and a broken `boot.bin` is fixed by
 mounting the ESP from macOS or 1TR. Keep a copy of the installer's original
 `boot.bin`.
+
+## dom0 userspace
+
+As of 2026-08-23 dom0 Linux boots to completion on the M2 Air: all 8 CPUs, arch
+timer on the virtual counter at 24 MHz, `hvc0` console, device probing, and the
+simple framebuffer. The first boot panicked only with `VFS: Unable to mount root
+fs`, because no initramfs had been supplied -- not a hypervisor problem.
+
+Fedora's stock initramfs cannot be reused. It targets
+`7.1.6-400.asahi.fc44.aarch64+16k`, while the Xen-enabled tree in
+`~/src/asahi-linux` builds `7.1.6+`, so none of its modules load. `nvme-apple`,
+`apple-sart` and `apple-dart` are all modules -- and the DART *is* the IOMMU that
+NVMe needs for DMA -- so they have to be in the initramfs; there is no root to
+load them from.
+
+```sh
+~/src/asahi-bringup/mkinitramfs.sh      # stages modules, runs dracut
+```
+
+The `realpath: /lib/modules/7.1.6+` and `ldconfig ... uid=0` warnings from dracut
+are expected: it is building for a kernel this VM is not running.
+
+Neither the Fedora initramfs nor the copied `/boot` records a `root=`, so the
+first boot has to discover it. Boot without one, land in the dracut emergency
+shell, and read it off the machine:
+
+```sh
+./push-xen.py --dom0 ~/src/asahi-linux/arch/arm64/boot/Image \
+              --initrd out/initramfs-dom0.img --seconds 300 \
+              --dom0-args "console=hvc0 earlycon=xenboot rd.shell rd.timeout=20"
+# then, at the dracut prompt:  blkid ; ls /dev/nvme*
+```
+
+### Diagnostics that are expected, and why
+
+None of these indicate a fault:
+
+| Message | Explanation |
+|---|---|
+| `Unhandled SMC/HVC: 0x84000050` | a PSCI function Xen does not implement; Linux probes and moves on |
+| `Unhandled SMC/HVC: 0x8600ff01` | SMCCC vendor-hypervisor UID query -- Linux asking "are you KVM?". Xen is not, and says so |
+| `Unhandled SMC/HVC: 0x84000063` | `FFA_VERSION`; the log's own `ARM FF-A: ... not supported` is the handled result |
+| `vGICD: unhandled word write ... to ICACTIVER*` | Xen's vGIC does not emulate `ICACTIVER` writes. Linux clears active state at init; pre-existing upstream gap, not Apple-specific |
+| `vGICD: RAZ on reserved register offset 0x00000c` | `GICD_TYPER2`, GICv3.1 only. RAZ is the correct answer |
+| `kvm [1]: HYP mode not available` | correct: EL2 belongs to Xen |
+| `cacheinfo: Unable to detect cache hierarchy` | Xen's generated dom0 device tree carries no cache nodes |
+
+`GICv3: 960 SPIs implemented` is worth noting: the synthesised GICv3 exposes 960
+SPIs against the AIC's 1152 lines, which is the `VGIC_MAX_IRQS` / ESPI gap
+recorded in doc 04. Nothing dom0 needs today falls in the missing range.
+
+Also note that the outstanding `CNTHCTL_EL2` bug (doc 06 §1.2 item 4) did **not**
+bite here: Linux under Xen uses the *virtual* counter (`arch_timer: cp15 timer
+running at 24.00MHz (virt)`), which those bits do not gate. A guest reading the
+*physical* counter from EL1 would still trap, so the bug is latent rather than
+fixed.
