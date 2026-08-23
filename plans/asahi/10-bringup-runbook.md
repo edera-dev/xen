@@ -847,3 +847,65 @@ Things worth ruling out before theorising, both of which were checked and were
 Note also that `mkpayload.sh` only applies `apple_defconfig` when `CONFIG_APPLE`
 is unset, so a newly added option in that defconfig does **not** reach an
 existing tree. Enable it with `scripts/config` or start from a clean config.
+
+## Locked DARTs: the display pipeline faults dom0 at stage 2
+
+Symptom, from dom0's first real boot with a root filesystem:
+
+```
+(XEN) arch/arm/traps.c:1982:d0v5 HSR=0x00000093c18047 pc=... gpa=0x00000dfff1c000
+[    1.299678] Unable to handle kernel ttbr address size fault at virtual address ffff800080d3c000
+      pc : apple_dart_hw_sync_locked.isra.0+0xd0/0x190 [apple_dart]
+      apple_dart_attach_dev_paging+0x288/0x340 [apple_dart]
+```
+
+`HSR=0x93c18047` decodes as EC=0x24 (data abort from a lower EL), WnR=1,
+DFSC=0x07 -- a **stage-2 level-3 translation fault on a write** to IPA
+`0xdfff1c000`. Xen has no mapping and no MMIO handler for it, so it falls through
+to `inject_abt` and hands dom0 a data abort.
+
+The cause is a *locked* DART. iBoot programs the display DART's TTBR and locks
+it, so Linux cannot install its own translation tables; instead
+`apple_dart_hw_map_locked_ttbr()` reads the physical address straight out of the
+TTBR register, `devm_memremap(..., MEMREMAP_WB)`s it, and
+`apple_dart_hw_sync_locked()` copies its page-table entries through that mapping
+(`drivers/iommu/apple-dart.c`). The page it lands on is a firmware carveout that
+appears in **neither** the memory node nor `/reserved-memory` -- note
+`0xdfff1c000` sits in a hole in Xen's own `RAM:` list, between `0xdd1c03fff` and
+`0xdfff70000` -- because dom0 learns of it only by reading the hardware.
+
+Everything after that in the log is cascade, and it is worth recognising so it
+is not chased separately: the oops kills a `modprobe` while it holds
+`module_mutex`, so every later `finit_module` spins in
+`idempotent_init_module`, which is why six CPUs end up in
+`queued_spin_lock_slowpath` and the watchdog reports soft lockups.
+
+### Current handling
+
+`apple_blacklist_dev` withholds `apple,display-subsystem`, `apple,dcp` and
+`apple,dcpext` from the hardware domain. The DART *probe* is harmless -- it is
+attaching a consumer to the IOMMU group that reaches the locked TTBR -- so
+withholding the consumers is enough, and matching on compatible rather than node
+path keeps it independent of a given SoC's addresses. `simple-framebuffer` is a
+separate node and still works, so dom0 keeps a console on the panel.
+
+This is a bring-up workaround, not a fix. The fix is for Xen to map the locked
+DART tables into the hardware domain's p2m, which means Xen reading the TTBRs
+itself -- enough of a DART driver to know each variant's register layout and
+which DARTs are locked. `platform_desc.specific_mapping()` is the hook for it.
+
+### Next: "ANS did not boot"
+
+Independent of the above, and the actual blocker for a root filesystem:
+
+```
+nvme-apple 27bcc0000.nvme: RTKit: Initializing (protocol version 12)
+nvme-apple 27bcc0000.nvme: ANS did not boot
+nvme nvme0: Reset failure status: -62
+```
+
+The RTKit handshake with the NVMe coprocessor starts and then times out after
+about a second. This is not the DART fault -- Apple NVMe uses the SART for DMA,
+and `apple_sart` loaded -- so it needs its own investigation: power domains
+(`ps_ans2`, `ps_apcie_st`), the ASC mailbox, and whether the RTKit shared-memory
+buffers dom0 hands the coprocessor are reachable through the p2m.
