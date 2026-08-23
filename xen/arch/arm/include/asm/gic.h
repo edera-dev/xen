@@ -485,6 +485,16 @@ struct gic_hw_operations {
     unsigned int (*read_apr)(int apr_reg);
 };
 
+#ifdef CONFIG_APPLE_AIC
+/*
+ * Bring up the GICv3 virtual CPU interface on a platform that has the GICv3
+ * EL2 virtualisation system registers but no GIC distributor (Apple Silicon).
+ * The distributor half stays with the platform's own controller.
+ */
+void gicv3_vcpuif_init(void);
+void gicv3_register_vcpuif(unsigned int maint_irq);
+#endif
+
 extern const struct gic_hw_operations *gic_hw_ops;
 extern const struct intc_hw_operations *intc_hw_ops;
 
