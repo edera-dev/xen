@@ -548,14 +548,72 @@ static void aic_handle_ipi(struct cpu_user_regs *regs)
 }
 
 /*
+ * Recursion depth of the FIQ dispatcher on this CPU.  do_IRQ() releases the
+ * descriptor lock with spin_unlock_irq(), which unmasks I *and* F (see
+ * DAIF_IRQ_BITS under CONFIG_APPLE_AIC), so a source still asserted when a
+ * handler runs re-enters this dispatcher.  Legitimate nesting is shallow --
+ * one level per distinct source -- so anything deeper means a source is not
+ * being cleared, which would otherwise spin here forever with no output at
+ * all.  Report it and quiesce, so a missed source names itself.
+ */
+static DEFINE_PER_CPU(unsigned int, fiq_depth);
+
+static void aic_quiesce_fiq_sources(void);
+
+#define AIC_FIQ_MAX_DEPTH   (AIC_NR_FIQ + 1)
+
+static void aic_report_fiq_storm(void)
+{
+    printk(XENLOG_ERR
+           "AIC: FIQ dispatcher re-entered %u deep on CPU %u; a source is not "
+           "being cleared.  IPI_SR=%#"PRIregister" CNTP_CTL_EL0=%#"PRIregister
+           " CNTV_CTL_EL0=%#"PRIregister" CNTP_CTL_EL02=%#"PRIregister
+           " CNTV_CTL_EL02=%#"PRIregister" ICH_HCR_EL2=%#"PRIregister
+           " ICH_MISR_EL2=%#"PRIregister" PMCR0=%#"PRIregister"\n",
+           this_cpu(fiq_depth), smp_processor_id(),
+           READ_SYSREG(SYS_IMP_APL_IPI_SR_EL1),
+           READ_SYSREG(CNTP_CTL_EL0), READ_SYSREG(CNTV_CTL_EL0),
+           READ_SYSREG(CNTP_CTL_EL02), READ_SYSREG(CNTV_CTL_EL02),
+           READ_SYSREG(ICH_HCR_EL2), READ_SYSREG(ICH_MISR_EL2),
+           READ_SYSREG(SYS_IMP_APL_PMCR0_EL1));
+}
+
+/*
  * FIQ root dispatcher, invoked from do_trap_fiq() via the handle_fiq hook.
  * Unlike a GIC IRQ, an FIQ carries no source id, so every possible source is
  * polled (matching the Asahi driver): the fast IPI, the EL0/EL2 architected
  * timers, and eventually the core/uncore PMU and the vGIC maintenance
  * interrupt.
+ *
+ * Every source must be silenced *before* its handler is dispatched, not by the
+ * handler: do_IRQ() unmasks FIQ while the handler runs, and an FIQ has no
+ * acknowledge register, so a source left asserted re-enters immediately.
  */
 static void aic_handle_fiq(struct cpu_user_regs *regs)
 {
+    register_t ctl;
+
+    if ( unlikely(this_cpu(fiq_depth) >= AIC_FIQ_MAX_DEPTH) )
+    {
+        static bool __read_mostly reported;
+
+        if ( !reported )
+        {
+            reported = true;
+            aic_report_fiq_storm();
+        }
+        /*
+         * Mask every per-CPU source, and take the guest timer route down too:
+         * aic_quiesce_fiq_sources() deliberately leaves it armed for normal
+         * operation, which is no use when the point is to stop the storm.
+         */
+        aic_quiesce_fiq_sources();
+        WRITE_SYSREG(0, SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2);
+        isb();
+        return;
+    }
+    this_cpu(fiq_depth)++;
+
     if ( READ_SYSREG(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING )
     {
         aic_ack_ipi();
@@ -579,26 +637,41 @@ static void aic_handle_fiq(struct cpu_user_regs *regs)
      * left asserted on the way out would re-enter immediately; every source
      * therefore has to be masked or disabled by the time we return.
      */
-    if ( TMR_FIRING(READ_SYSREG(CNTP_CTL_EL0)) )
-        do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_TMR_HV_PHYS, 1);
-
-    if ( TMR_FIRING(READ_SYSREG(CNTV_CTL_EL0)) )
+    ctl = READ_SYSREG(CNTP_CTL_EL0);
+    if ( TMR_FIRING(ctl) )
     {
-        /* Xen never arms this one; mask it so it cannot storm. */
-        WRITE_SYSREG(READ_SYSREG(CNTV_CTL_EL0) | TMR_CTL_IMASK, CNTV_CTL_EL0);
+        WRITE_SYSREG(ctl | TMR_CTL_IMASK, CNTP_CTL_EL0);
+        do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_TMR_HV_PHYS, 1);
     }
 
-    if ( TMR_FIRING(READ_SYSREG(CNTV_CTL_EL02)) )
-        do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_TMR_GUEST_VIRT, 1);
+    ctl = READ_SYSREG(CNTV_CTL_EL0);
+    if ( TMR_FIRING(ctl) )
+    {
+        /* Xen never arms this one; mask it so it cannot storm. */
+        WRITE_SYSREG(ctl | TMR_CTL_IMASK, CNTV_CTL_EL0);
+    }
 
-    if ( TMR_FIRING(READ_SYSREG(CNTP_CTL_EL02)) )
+    ctl = READ_SYSREG(CNTV_CTL_EL02);
+    if ( TMR_FIRING(ctl) )
+    {
+        /*
+         * vtimer_interrupt() sets IMASK too, but only after do_IRQ() has
+         * already unmasked FIQ.  Masking here is what keeps this from
+         * re-entering; the guest clears it again when it re-arms its timer.
+         */
+        WRITE_SYSREG(ctl | TMR_CTL_IMASK, CNTV_CTL_EL02);
+        do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_TMR_GUEST_VIRT, 1);
+    }
+
+    ctl = READ_SYSREG(CNTP_CTL_EL02);
+    if ( TMR_FIRING(ctl) )
     {
         /*
          * Xen emulates the guest physical timer in software and leaves the
          * hardware one disabled, so this should not fire.  Mask it rather than
          * livelock if a guest manages to arm it.
          */
-        WRITE_SYSREG(READ_SYSREG(CNTP_CTL_EL02) | TMR_CTL_IMASK, CNTP_CTL_EL02);
+        WRITE_SYSREG(ctl | TMR_CTL_IMASK, CNTP_CTL_EL02);
     }
 
     /*
@@ -610,6 +683,15 @@ static void aic_handle_fiq(struct cpu_user_regs *regs)
     if ( gic_hw_ops && (READ_SYSREG(ICH_HCR_EL2) & GICH_HCR_EN) &&
          READ_SYSREG(ICH_MISR_EL2) )
     {
+        /*
+         * UIE is the only maintenance cause Xen arms (gic-vgic.c), so clearing
+         * it silences the source before dispatch.  Nothing is lost: the handler
+         * is a stub whose whole purpose is to make gic_inject() run on the way
+         * back to the guest, and gic_inject() re-arms UIE if the list registers
+         * are still full.
+         */
+        WRITE_SYSREG(READ_SYSREG(ICH_HCR_EL2) & ~(register_t)GICH_HCR_UIE,
+                     ICH_HCR_EL2);
         do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_VGIC_MI, 1);
 
         /*
@@ -633,6 +715,8 @@ static void aic_handle_fiq(struct cpu_user_regs *regs)
      * TODO: core PMU (SYS_IMP_APL_PMCR0_EL1 IMODE==FIQ && IACT) and uncore PMU
      * (SYS_IMP_APL_UPMCR0_EL1 / UPMSR).
      */
+
+    this_cpu(fiq_depth)--;
 }
 
 /*

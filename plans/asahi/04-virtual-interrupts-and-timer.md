@@ -232,6 +232,34 @@ looks: `ALL_PLATS` selects `APPLE_AIC`, so an ordinary `arm64_defconfig` build
 gets the new vector too. There it is unreachable, because Xen never routes group
 0 to FIQ on a GIC.
 
+### 6.3 Why an FIQ source must be masked *before* dispatch
+
+Wiring the guest FIQ vector turned the panic into a silent freeze at the same
+point. The cause is `do_IRQ()`: it releases the descriptor lock with
+`spin_unlock_irq()`, and `local_irq_enable()` under `CONFIG_APPLE_AIC` clears
+**I and F together** (`arm64/system.h` `DAIF_IRQ_BITS`, needed so an
+`local_irq_disable()` section actually blocks FIQ-delivered interrupts). So
+`do_IRQ()` unmasks FIQ *before* running the handler that would silence the
+source -- and an FIQ has no acknowledge register, so a level-asserted source
+re-enters the dispatcher immediately and recurses forever with no output.
+
+Linux does not hit this because `generic_handle_domain_irq()` never re-enables
+interrupts; Xen's `do_IRQ()` does. The rule for this dispatcher is therefore:
+
+> silence the source in the dispatcher, before `do_IRQ()`, never in the handler.
+
+`vtimer_interrupt()` and `htimer_interrupt()` do still mask/disable their own
+timers, which is correct and required on a GIC; on AIC that write is simply
+redundant. For the vGIC maintenance interrupt the pre-mask is clearing
+`GICH_HCR_UIE`, the only maintenance cause Xen arms -- nothing is lost, because
+the handler is a stub whose purpose is to make `gic_inject()` run on the way back
+to the guest, and `gic_inject()` re-arms UIE if the list registers are still
+full.
+
+A per-CPU recursion counter now backstops this: nesting deeper than `AIC_NR_FIQ`
+levels reports every source register and quiesces, so a future missed source
+names itself instead of hanging the machine.
+
 Still open:
 - **`CNTVOFF_EL2`/`CNTFRQ`** per the boot protocol (m1n1 sets `CNTFRQ`; Xen
   manages `CNTVOFF` per vCPU as it already does) — believed fine, unverified.
