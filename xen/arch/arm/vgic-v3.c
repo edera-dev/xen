@@ -1766,6 +1766,28 @@ static int vgic_v3_vcpu_init(struct vcpu *v)
  * Return the maximum number possible of re-distributor regions for
  * a given domain.
  */
+/*
+ * INTID bits to advertise in GICD_TYPER for a synthesised GICv3, i.e. when
+ * there is no hardware GICv3 whose GICD_TYPER.IDbits could be copied.  Ten
+ * bits covers INTIDs 0..1023: the architected minimum, and more than
+ * VGIC_MAX_IRQS.  No LPIs are offered.
+ */
+#define VGIC_V3_SYNTH_INTID_BITS 10
+
+/*
+ * Whether this domain inherits the host's GICv3 MMIO layout.
+ *
+ * That needs a host GICv3 to inherit it from.  Where the interrupt controller
+ * is not a GIC at all -- Apple's AIC, which supplies only the virtual CPU
+ * interface -- there is no such layout, so even the hardware domain gets the
+ * synthesised one.  The distributor and redistributors are emulated either
+ * way; only their addresses differ.
+ */
+static bool vgic_v3_use_host_layout(const struct domain *d)
+{
+    return domain_use_host_layout(d) && vgic_v3_hw.enabled;
+}
+
 static inline unsigned int vgic_v3_max_rdist_count(struct domain *d)
 {
     /*
@@ -1780,7 +1802,7 @@ static inline unsigned int vgic_v3_max_rdist_count(struct domain *d)
      * the second region to domains which do not fit in the first one, so
      * that the layout seen by smaller domains stays unchanged.
      */
-    if ( domain_use_host_layout(d) )
+    if ( vgic_v3_use_host_layout(d) )
         return vgic_v3_hw.nr_rdist_regions;
 
     return (d->max_vcpus > GUEST_GICV3_GICR0_COUNT)
@@ -1810,7 +1832,7 @@ static int vgic_v3_domain_init(struct domain *d)
      * address.
      * Other domains get the virtual platform layout.
      */
-    if ( domain_use_host_layout(d) )
+    if ( vgic_v3_use_host_layout(d) )
     {
         unsigned int first_cpu = 0;
 
@@ -1870,7 +1892,8 @@ static int vgic_v3_domain_init(struct domain *d)
             d->arch.vgic.rdist_regions[1].first_cpu = GUEST_GICV3_GICR0_COUNT;
         }
 
-        d->arch.vgic.intid_bits = vgic_v3_hw.intid_bits;
+        d->arch.vgic.intid_bits = vgic_v3_hw.enabled ? vgic_v3_hw.intid_bits
+                                                     : VGIC_V3_SYNTH_INTID_BITS;
     }
 
     /* Register mmio handle for the Distributor */
@@ -1954,13 +1977,15 @@ static const struct vgic_ops v3_ops = {
 
 int vgic_v3_init(struct domain *d, unsigned int *mmio_count)
 {
-    if ( !vgic_v3_hw.enabled )
-    {
-        printk(XENLOG_G_ERR
-               "d%d: vGICv3 is not supported on this platform.\n",
-               d->domain_id);
-        return -ENODEV;
-    }
+    /*
+     * A hardware GICv3 is deliberately not required here.  The distributor and
+     * redistributors are emulated, and their MMIO layout is synthesised when
+     * there is nothing to copy (see vgic_v3_use_host_layout()), so all this
+     * needs is a GICv3 virtual CPU interface to inject through -- which
+     * arch_sanitise_domain_config() has already established by asking
+     * gic_hw_version().  That is what lets a guest run on a machine whose
+     * physical interrupt controller is not a GIC at all.
+     */
 
     /* GICD region + number of Redistributors */
     *mmio_count = vgic_v3_max_rdist_count(d) + 1;
