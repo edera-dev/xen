@@ -115,8 +115,30 @@ register_t get_default_cptr_flags(void)
      * On ARM64 the TCPx bits which we set here (0..9,12,13) are all
      * RES1, i.e. they would trap whether we did this write or not.
      */
+    /*
+     * Under forced VHE (HCR_EL2.E2H == 1) CPTR_EL2 takes the CPACR_EL1 format:
+     * the fields sit elsewhere and are enables rather than traps.  Express the
+     * same policy in that layout -- FP and SIMD usable by the guest, SVE and
+     * trace trapped to Xen.
+     *
+     * Writing the value below into a CPACR-formatted register would instead
+     * land HCPTR_TTA (bit 20) inside FPEN, giving FPEN = 0b01: FP would keep
+     * working at EL1 while faulting at EL0, so a guest kernel boots and its
+     * userspace does not.
+     */
+    if ( el2_is_vhe() )
+        return CPACR_FPEN_NO_TRAP | CPACR_ZEN_TRAP_ALL | CPACR_TTA;
+
     return  ((HCPTR_CP_MASK & ~(HCPTR_CP(10) | HCPTR_CP(11))) |
              HCPTR_TTA | HCPTR_TAM);
+}
+
+register_t cptr_flags_allow_sve(register_t cptr)
+{
+    if ( el2_is_vhe() )
+        return (cptr & ~CPACR_ZEN_MASK) | CPACR_ZEN_NO_TRAP;
+
+    return cptr & ~HCPTR_CP(8);
 }
 
 static enum {
@@ -390,7 +412,7 @@ void panic_PAR(uint64_t par)
 
 static void cpsr_switch_mode(struct cpu_user_regs *regs, int mode)
 {
-    register_t sctlr = READ_SYSREG(SCTLR_EL1);
+    register_t sctlr = READ_SYSREG_EL1(SCTLR);
 
     regs->cpsr &= ~(PSR_MODE_MASK|PSR_IT_MASK|PSR_JAZELLE|PSR_BIG_ENDIAN|PSR_THUMB);
 
@@ -406,12 +428,12 @@ static void cpsr_switch_mode(struct cpu_user_regs *regs, int mode)
 
 static vaddr_t exception_handler32(vaddr_t offset)
 {
-    register_t sctlr = READ_SYSREG(SCTLR_EL1);
+    register_t sctlr = READ_SYSREG_EL1(SCTLR);
 
     if ( sctlr & SCTLR_A32_EL1_V )
         return 0xffff0000U + offset;
     else /* always have security exceptions */
-        return READ_SYSREG(VBAR_EL1) + offset;
+        return READ_SYSREG_EL1(VBAR) + offset;
 }
 
 /* Injects an Undefined Instruction exception into the current vcpu,
@@ -465,7 +487,7 @@ static void inject_abt32_exception(struct cpu_user_regs *regs,
     regs->pc32 = exception_handler32(prefetch ? VECTOR32_PABT : VECTOR32_DABT);
 
     /* Inject a debug fault, best we can do right now */
-    if ( READ_SYSREG(TCR_EL1) & TTBCR_EAE )
+    if ( READ_SYSREG_EL1(TCR) & TTBCR_EAE )
         fsr = FSR_LPAE | FSRL_STATUS_DEBUG;
     else
         fsr = FSRS_FS_DEBUG;
@@ -478,9 +500,9 @@ static void inject_abt32_exception(struct cpu_user_regs *regs,
         WRITE_SYSREG(fsr, IFSR);
 #else
         /* FAR_EL1[63:32] is AArch32 register IFAR */
-        register_t far = READ_SYSREG(FAR_EL1) & 0xffffffffUL;
+        register_t far = READ_SYSREG_EL1(FAR) & 0xffffffffUL;
         far |= addr << 32;
-        WRITE_SYSREG(far, FAR_EL1);
+        WRITE_SYSREG_EL1(far, FAR);
         WRITE_SYSREG(fsr, IFSR32_EL2);
 #endif
     }
@@ -492,11 +514,11 @@ static void inject_abt32_exception(struct cpu_user_regs *regs,
         WRITE_SYSREG(fsr, DFSR);
 #else
         /* FAR_EL1[31:0] is AArch32 register DFAR */
-        register_t far = READ_SYSREG(FAR_EL1) & ~0xffffffffUL;
+        register_t far = READ_SYSREG_EL1(FAR) & ~0xffffffffUL;
         far |= addr;
-        WRITE_SYSREG(far, FAR_EL1);
+        WRITE_SYSREG_EL1(far, FAR);
         /* ESR_EL1 is AArch32 register DFSR */
-        WRITE_SYSREG(fsr, ESR_EL1);
+        WRITE_SYSREG_EL1(fsr, ESR);
 #endif
     }
 }
@@ -520,7 +542,7 @@ static void inject_pabt32_exception(struct cpu_user_regs *regs,
  */
 static vaddr_t exception_handler64(struct cpu_user_regs *regs, vaddr_t offset)
 {
-    vaddr_t base = READ_SYSREG(VBAR_EL1);
+    vaddr_t base = READ_SYSREG_EL1(VBAR);
 
     if ( usr_mode(regs) )
         base += VECTOR64_LOWER32_BASE;
@@ -553,7 +575,7 @@ void inject_undef64_exception(struct cpu_user_regs *regs)
         PSR_IRQ_MASK | PSR_DBG_MASK;
     regs->pc = handler;
 
-    WRITE_SYSREG(esr.bits, ESR_EL1);
+    WRITE_SYSREG_EL1(esr.bits, ESR);
 }
 
 /* Inject an abort exception into a 64 bit guest */
@@ -585,8 +607,8 @@ static void inject_abt64_exception(struct cpu_user_regs *regs,
         PSR_IRQ_MASK | PSR_DBG_MASK;
     regs->pc = handler;
 
-    WRITE_SYSREG(addr, FAR_EL1);
-    WRITE_SYSREG(esr.bits, ESR_EL1);
+    WRITE_SYSREG_EL1(addr, FAR);
+    WRITE_SYSREG_EL1(esr.bits, ESR);
 }
 
 static void inject_dabt64_exception(struct cpu_user_regs *regs,
@@ -942,18 +964,18 @@ static void _show_registers(const struct cpu_user_regs *regs,
 void show_registers(const struct cpu_user_regs *regs)
 {
     struct reg_ctxt ctxt;
-    ctxt.sctlr_el1 = READ_SYSREG(SCTLR_EL1);
-    ctxt.tcr_el1 = READ_SYSREG(TCR_EL1);
-    ctxt.ttbr0_el1 = READ_SYSREG64(TTBR0_EL1);
-    ctxt.ttbr1_el1 = READ_SYSREG64(TTBR1_EL1);
+    ctxt.sctlr_el1 = READ_SYSREG_EL1(SCTLR);
+    ctxt.tcr_el1 = READ_SYSREG_EL1(TCR);
+    ctxt.ttbr0_el1 = READ_SYSREG64_EL1(TTBR0);
+    ctxt.ttbr1_el1 = READ_SYSREG64_EL1(TTBR1);
 #ifdef CONFIG_ARM_32
     ctxt.dfar = READ_CP32(DFAR);
     ctxt.ifar = READ_CP32(IFAR);
     ctxt.dfsr = READ_CP32(DFSR);
     ctxt.ifsr = READ_CP32(IFSR);
 #else
-    ctxt.far = READ_SYSREG(FAR_EL1);
-    ctxt.esr_el1 = READ_SYSREG(ESR_EL1);
+    ctxt.far = READ_SYSREG_EL1(FAR);
+    ctxt.esr_el1 = READ_SYSREG_EL1(ESR);
     if ( guest_mode(regs) && is_32bit_domain(current->domain) )
         ctxt.ifsr32_el2 = READ_SYSREG(IFSR32_EL2);
 #endif

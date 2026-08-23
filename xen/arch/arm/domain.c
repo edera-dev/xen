@@ -104,15 +104,15 @@ static void ctxt_switch_from(struct vcpu *p)
     vfp_save_state(p);
 
     /* Control Registers */
-    p->arch.cpacr = READ_SYSREG(CPACR_EL1);
+    p->arch.cpacr = READ_SYSREG_EL1(CPACR);
 
-    p->arch.contextidr = READ_SYSREG(CONTEXTIDR_EL1);
+    p->arch.contextidr = READ_SYSREG_EL1(CONTEXTIDR);
     p->arch.tpidr_el0 = READ_SYSREG(TPIDR_EL0);
     p->arch.tpidrro_el0 = READ_SYSREG(TPIDRRO_EL0);
     p->arch.tpidr_el1 = READ_SYSREG(TPIDR_EL1);
 
     /* Arch timer */
-    p->arch.cntkctl = READ_SYSREG(CNTKCTL_EL1);
+    p->arch.cntkctl = READ_SYSREG_EL1(CNTKCTL);
     virt_timer_save(p);
 
 #ifdef CONFIG_ARM_32
@@ -123,10 +123,10 @@ static void ctxt_switch_from(struct vcpu *p)
     isb();
 
     /* MMU */
-    p->arch.vbar = READ_SYSREG(VBAR_EL1);
-    p->arch.ttbcr = READ_SYSREG(TCR_EL1);
-    p->arch.ttbr0 = READ_SYSREG64(TTBR0_EL1);
-    p->arch.ttbr1 = READ_SYSREG64(TTBR1_EL1);
+    p->arch.vbar = READ_SYSREG_EL1(VBAR);
+    p->arch.ttbcr = READ_SYSREG_EL1(TCR);
+    p->arch.ttbr0 = READ_SYSREG64_EL1(TTBR0);
+    p->arch.ttbr1 = READ_SYSREG64_EL1(TTBR1);
     if ( is_32bit_domain(p->domain) )
         p->arch.dacr = READ_SYSREG(DACR32_EL2);
     p->arch.par = read_sysreg_par();
@@ -136,8 +136,8 @@ static void ctxt_switch_from(struct vcpu *p)
     p->arch.amair0 = READ_CP32(AMAIR0);
     p->arch.amair1 = READ_CP32(AMAIR1);
 #else
-    p->arch.mair = READ_SYSREG64(MAIR_EL1);
-    p->arch.amair = READ_SYSREG64(AMAIR_EL1);
+    p->arch.mair = READ_SYSREG64_EL1(MAIR);
+    p->arch.amair = READ_SYSREG64_EL1(AMAIR);
 #endif
 
     /* Fault Status */
@@ -146,14 +146,14 @@ static void ctxt_switch_from(struct vcpu *p)
     p->arch.ifar = READ_CP32(IFAR);
     p->arch.dfsr = READ_CP32(DFSR);
 #elif defined(CONFIG_ARM_64)
-    p->arch.far = READ_SYSREG64(FAR_EL1);
-    p->arch.esr = READ_SYSREG64(ESR_EL1);
+    p->arch.far = READ_SYSREG64_EL1(FAR);
+    p->arch.esr = READ_SYSREG64_EL1(ESR);
 #endif
 
     if ( is_32bit_domain(p->domain) )
         p->arch.ifsr  = READ_SYSREG(IFSR32_EL2);
-    p->arch.afsr0 = READ_SYSREG(AFSR0_EL1);
-    p->arch.afsr1 = READ_SYSREG(AFSR1_EL1);
+    p->arch.afsr0 = READ_SYSREG_EL1(AFSR0);
+    p->arch.afsr1 = READ_SYSREG_EL1(AFSR1);
 
     /* XXX MPU */
 
@@ -188,20 +188,20 @@ static void ctxt_switch_to(struct vcpu *n)
     WRITE_CP32(n->arch.ifar, IFAR);
     WRITE_CP32(n->arch.dfsr, DFSR);
 #elif defined(CONFIG_ARM_64)
-    WRITE_SYSREG64(n->arch.far, FAR_EL1);
-    WRITE_SYSREG64(n->arch.esr, ESR_EL1);
+    WRITE_SYSREG64_EL1(n->arch.far, FAR);
+    WRITE_SYSREG64_EL1(n->arch.esr, ESR);
 #endif
 
     if ( is_32bit_domain(n->domain) )
         WRITE_SYSREG(n->arch.ifsr, IFSR32_EL2);
-    WRITE_SYSREG(n->arch.afsr0, AFSR0_EL1);
-    WRITE_SYSREG(n->arch.afsr1, AFSR1_EL1);
+    WRITE_SYSREG_EL1(n->arch.afsr0, AFSR0);
+    WRITE_SYSREG_EL1(n->arch.afsr1, AFSR1);
 
     /* MMU */
-    WRITE_SYSREG(n->arch.vbar, VBAR_EL1);
-    WRITE_SYSREG(n->arch.ttbcr, TCR_EL1);
-    WRITE_SYSREG64(n->arch.ttbr0, TTBR0_EL1);
-    WRITE_SYSREG64(n->arch.ttbr1, TTBR1_EL1);
+    WRITE_SYSREG_EL1(n->arch.vbar, VBAR);
+    WRITE_SYSREG_EL1(n->arch.ttbcr, TCR);
+    WRITE_SYSREG64_EL1(n->arch.ttbr0, TTBR0);
+    WRITE_SYSREG64_EL1(n->arch.ttbr1, TTBR1);
 
     /*
      * Erratum #852523 (Cortex-A57) or erratum #853709 (Cortex-A72):
@@ -218,8 +218,8 @@ static void ctxt_switch_to(struct vcpu *n)
     WRITE_CP32(n->arch.amair0, AMAIR0);
     WRITE_CP32(n->arch.amair1, AMAIR1);
 #elif defined(CONFIG_ARM_64)
-    WRITE_SYSREG64(n->arch.mair, MAIR_EL1);
-    WRITE_SYSREG64(n->arch.amair, AMAIR_EL1);
+    WRITE_SYSREG64_EL1(n->arch.mair, MAIR);
+    WRITE_SYSREG64_EL1(n->arch.amair, AMAIR);
 #endif
     isb();
 
@@ -230,14 +230,14 @@ static void ctxt_switch_to(struct vcpu *n)
     p2m_restore_state(n);
 
     /* Control Registers */
-    WRITE_SYSREG(n->arch.cpacr, CPACR_EL1);
+    WRITE_SYSREG_EL1(n->arch.cpacr, CPACR);
 
     /*
      * This write to sysreg CONTEXTIDR_EL1 ensures we don't hit erratum
      * #852523 (Cortex-A57) or #853709 (Cortex-A72).
      * I.e DACR32_EL2 is not correctly synchronized.
      */
-    WRITE_SYSREG(n->arch.contextidr, CONTEXTIDR_EL1);
+    WRITE_SYSREG_EL1(n->arch.contextidr, CONTEXTIDR);
     WRITE_SYSREG(n->arch.tpidr_el0, TPIDR_EL0);
     WRITE_SYSREG(n->arch.tpidrro_el0, TPIDRRO_EL0);
     WRITE_SYSREG(n->arch.tpidr_el1, TPIDR_EL1);
@@ -264,7 +264,7 @@ static void ctxt_switch_to(struct vcpu *n)
 
     /* This is could trigger an hardware interrupt from the virtual
      * timer. The interrupt needs to be injected into the guest. */
-    WRITE_SYSREG(n->arch.cntkctl, CNTKCTL_EL1);
+    WRITE_SYSREG_EL1(n->arch.cntkctl, CNTKCTL);
     virt_timer_restore(n);
 
     WRITE_SYSREG(n->arch.mdcr_el2, MDCR_EL2);
@@ -495,7 +495,7 @@ int arch_vcpu_create(struct vcpu *v)
     {
         if ( (rc = sve_context_init(v)) != 0 )
             goto fail;
-        v->arch.cptr_el2 &= ~HCPTR_CP(8);
+        v->arch.cptr_el2 = cptr_flags_allow_sve(v->arch.cptr_el2);
     }
 
     v->arch.hcr_el2 = get_default_hcr_flags();

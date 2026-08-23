@@ -268,8 +268,8 @@ static void vtimer_interrupt(int irq, void *dev_id)
 
     perfc_incr(virt_timer_irqs);
 
-    current->arch.virt_timer.ctl = READ_SYSREG(CNTV_CTL_EL0);
-    WRITE_SYSREG(current->arch.virt_timer.ctl | CNTx_CTL_MASK, CNTV_CTL_EL0);
+    current->arch.virt_timer.ctl = READ_SYSREG_EL0(CNTV_CTL);
+    WRITE_SYSREG_EL0(current->arch.virt_timer.ctl | CNTx_CTL_MASK, CNTV_CTL);
     vgic_inject_irq(current->domain, current, current->arch.virt_timer.irq, true);
 }
 
@@ -312,7 +312,7 @@ void init_timer_interrupt(void)
     WRITE_SYSREG64(0, CNTVOFF_EL2);     /* No VM-specific offset */
     /* Do not let the VMs program the physical timer, only read the physical counter */
     WRITE_SYSREG(CNTHCTL_EL2_EL1PCTEN, CNTHCTL_EL2);
-    WRITE_SYSREG(0, CNTP_CTL_EL0);    /* Physical timer disabled */
+    WRITE_SYSREG_EL0(0, CNTP_CTL);    /* Physical timer disabled */
     WRITE_SYSREG(0, CNTHP_CTL_EL2);   /* Hypervisor's timer disabled */
     isb();
 
@@ -339,7 +339,7 @@ void init_timer_interrupt(void)
  */
 static void deinit_timer_interrupt(void)
 {
-    WRITE_SYSREG(0, CNTP_CTL_EL0);    /* Disable physical timer */
+    WRITE_SYSREG_EL0(0, CNTP_CTL);    /* Disable physical timer */
     WRITE_SYSREG(0, CNTHP_CTL_EL2);   /* Disable hypervisor's timer */
     isb();
 

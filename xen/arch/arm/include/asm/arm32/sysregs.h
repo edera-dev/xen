@@ -69,7 +69,24 @@
 #define WRITE_SYSREG64(V, R...) WRITE_CP64(V, R)
 
 #define READ_SYSREG(R...)       READ_SYSREG32(R)
+
 #define WRITE_SYSREG(V, R...)   WRITE_SYSREG32(V, R)
+
+/*
+ * AArch32 EL2 has no Virtualization Host Extensions, so guest EL1 and EL0 state
+ * is reached by the plain register name.  These exist so that shared code can
+ * use one spelling; see the arm64 header for what they are working around.
+ */
+#define el2_is_vhe()                false
+
+#define READ_SYSREG_EL1(reg)        READ_SYSREG(reg ## _EL1)
+#define WRITE_SYSREG_EL1(v, reg)    WRITE_SYSREG(v, reg ## _EL1)
+#define READ_SYSREG_EL0(reg)        READ_SYSREG(reg ## _EL0)
+#define WRITE_SYSREG_EL0(v, reg)    WRITE_SYSREG(v, reg ## _EL0)
+#define READ_SYSREG64_EL1(reg)      READ_SYSREG64(reg ## _EL1)
+#define WRITE_SYSREG64_EL1(v, reg)  WRITE_SYSREG64(v, reg ## _EL1)
+#define READ_SYSREG64_EL0(reg)      READ_SYSREG64(reg ## _EL0)
+#define WRITE_SYSREG64_EL0(v, reg)  WRITE_SYSREG64(v, reg ## _EL0)
 
 /* Wrappers for accessing interrupt controller list registers. */
 #define ICH_LR_REG(index)       ICH_LR ## index ## _EL2

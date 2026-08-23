@@ -29,7 +29,7 @@
  */
 #define ACCESS_ALLOWED(regs, user_gate) \
     ( !regs_mode_is_user(regs) || \
-      (READ_SYSREG(CNTKCTL_EL1) & CNTKCTL_EL1_##user_gate) )
+      (READ_SYSREG_EL1(CNTKCTL) & CNTKCTL_EL1_##user_gate) )
 
 static void phys_timer_expired(void *data)
 {
@@ -153,9 +153,9 @@ void virt_timer_save(struct vcpu *v)
 {
     ASSERT(!is_idle_vcpu(v));
 
-    v->arch.virt_timer.ctl = READ_SYSREG(CNTV_CTL_EL0);
-    WRITE_SYSREG(v->arch.virt_timer.ctl & ~CNTx_CTL_ENABLE, CNTV_CTL_EL0);
-    v->arch.virt_timer.cval = READ_SYSREG64(CNTV_CVAL_EL0);
+    v->arch.virt_timer.ctl = READ_SYSREG_EL0(CNTV_CTL);
+    WRITE_SYSREG_EL0(v->arch.virt_timer.ctl & ~CNTx_CTL_ENABLE, CNTV_CTL);
+    v->arch.virt_timer.cval = READ_SYSREG64_EL0(CNTV_CVAL);
     if ( (v->arch.virt_timer.ctl & CNTx_CTL_ENABLE) &&
          !(v->arch.virt_timer.ctl & CNTx_CTL_MASK))
     {
@@ -174,8 +174,8 @@ void virt_timer_restore(struct vcpu *v)
     migrate_timer(&v->arch.phys_timer.timer, v->processor);
 
     WRITE_SYSREG64(v->domain->arch.virt_timer_base.offset, CNTVOFF_EL2);
-    WRITE_SYSREG64(v->arch.virt_timer.cval, CNTV_CVAL_EL0);
-    WRITE_SYSREG(v->arch.virt_timer.ctl, CNTV_CTL_EL0);
+    WRITE_SYSREG64_EL0(v->arch.virt_timer.cval, CNTV_CVAL);
+    WRITE_SYSREG_EL0(v->arch.virt_timer.ctl, CNTV_CTL);
 }
 
 static bool vtimer_cntp_ctl(struct cpu_user_regs *regs, register_t *r,
@@ -406,7 +406,7 @@ void vtimer_update_irqs(struct vcpu *v)
      * but this requires reworking the arch timer to implement this.
      */
     vtimer_update_irq(v, &v->arch.virt_timer,
-                      READ_SYSREG(CNTV_CTL_EL0) & ~CNTx_CTL_MASK);
+                      READ_SYSREG_EL0(CNTV_CTL) & ~CNTx_CTL_MASK);
 
     /* For the physical timer we rely on our emulated state. */
     vtimer_update_irq(v, &v->arch.phys_timer, v->arch.phys_timer.ctl);

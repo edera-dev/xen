@@ -27,7 +27,7 @@ static bool guest_walk_sd(const struct vcpu *v,
     uint32_t ttbr;
     paddr_t mask, paddr;
     short_desc_t pte;
-    register_t ttbcr = READ_SYSREG(TCR_EL1);
+    register_t ttbcr = READ_SYSREG_EL1(TCR);
     unsigned int n = ttbcr & TTBCR_N_MASK;
     struct domain *d = v->domain;
 
@@ -42,7 +42,7 @@ static bool guest_walk_sd(const struct vcpu *v,
          * Nevertheless, we have to use the READ_SYSREG64 macro, as it is
          * required for reading TTBR0_EL1.
          */
-        ttbr = READ_SYSREG64(TTBR0_EL1);
+        ttbr = READ_SYSREG64_EL1(TTBR0);
 
         /* If TTBCR.PD0 is set, translations using TTBR0 are disabled. */
         disabled = ttbcr & TTBCR_PD0;
@@ -56,7 +56,7 @@ static bool guest_walk_sd(const struct vcpu *v,
          * Nevertheless, we have to use the READ_SYSREG64 macro, as it is
          * required for reading TTBR1_EL1.
          */
-        ttbr = READ_SYSREG64(TTBR1_EL1);
+        ttbr = READ_SYSREG64_EL1(TTBR1);
 
         /* If TTBCR.PD1 is set, translations using TTBR1 are disabled. */
         disabled = ttbcr & TTBCR_PD1;
@@ -266,7 +266,7 @@ static bool get_ttbr_and_gran_64bit(uint64_t *ttbr, unsigned int *gran,
         }
 
         /* Use TTBR0 for GVA to IPA translation. */
-        *ttbr = READ_SYSREG64(TTBR0_EL1);
+        *ttbr = READ_SYSREG64_EL1(TTBR0);
 
         /* If TCR.EPD0 is set, translations using TTBR0 are disabled. */
         disabled = tcr & TCR_EPD0;
@@ -298,7 +298,7 @@ static bool get_ttbr_and_gran_64bit(uint64_t *ttbr, unsigned int *gran,
         }
 
         /* Use TTBR1 for GVA to IPA translation. */
-        *ttbr = READ_SYSREG64(TTBR1_EL1);
+        *ttbr = READ_SYSREG64_EL1(TTBR1);
 
         /* If TCR.EPD1 is set, translations using TTBR1 are disabled. */
         disabled = tcr & TCR_EPD1;
@@ -364,7 +364,7 @@ static bool guest_walk_ld(const struct vcpu *v,
     uint64_t ttbr = 0;
     paddr_t mask, paddr;
     lpae_t pte;
-    register_t tcr = READ_SYSREG(TCR_EL1);
+    register_t tcr = READ_SYSREG_EL1(TCR);
     struct domain *d = v->domain;
 
     static const unsigned int grainsizes[3] = {
@@ -426,7 +426,7 @@ static bool guest_walk_ld(const struct vcpu *v,
             input_size = 32 - t0_sz;
 
             /* Use TTBR0 for GVA to IPA translation. */
-            ttbr = READ_SYSREG64(TTBR0_EL1);
+            ttbr = READ_SYSREG64_EL1(TTBR0);
 
             /* If TCR.EPD0 is set, translations using TTBR0 are disabled. */
             disabled = tcr & TCR_EPD0;
@@ -443,7 +443,7 @@ static bool guest_walk_ld(const struct vcpu *v,
             input_size = 32 - t1_sz;
 
             /* Use TTBR1 for GVA to IPA translation. */
-            ttbr = READ_SYSREG64(TTBR1_EL1);
+            ttbr = READ_SYSREG64_EL1(TTBR1);
 
             /* If TCR.EPD1 is set, translations using TTBR1 are disabled. */
             disabled = tcr & TCR_EPD1;
@@ -554,8 +554,8 @@ static bool guest_walk_ld(const struct vcpu *v,
 bool guest_walk_tables(const struct vcpu *v, vaddr_t gva,
                        paddr_t *ipa, unsigned int *perms)
 {
-    register_t sctlr = READ_SYSREG(SCTLR_EL1);
-    register_t tcr = READ_SYSREG(TCR_EL1);
+    register_t sctlr = READ_SYSREG_EL1(SCTLR);
+    register_t tcr = READ_SYSREG_EL1(TCR);
     unsigned int _perms;
 
     /* We assume that the domain is running on the currently active domain. */

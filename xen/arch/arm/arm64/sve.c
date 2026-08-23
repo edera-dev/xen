@@ -66,7 +66,7 @@ register_t compute_max_zcr(void)
     unsigned int hw_vl;
 
     /* Remove trap for SVE resources */
-    WRITE_SYSREG(cptr_bits & ~HCPTR_CP(8), CPTR_EL2);
+    WRITE_SYSREG(cptr_flags_allow_sve(cptr_bits), CPTR_EL2);
     isb();
 
     /*
@@ -142,14 +142,14 @@ void sve_context_free(struct vcpu *v)
 
 void sve_save_state(struct vcpu *v)
 {
-    v->arch.zcr_el1 = READ_SYSREG(ZCR_EL1);
+    v->arch.zcr_el1 = READ_SYSREG_EL1(ZCR);
 
     sve_save_ctx(v->arch.vfp.sve_zreg_ctx_end, v->arch.vfp.fpregs, 1);
 }
 
 void sve_restore_state(struct vcpu *v)
 {
-    WRITE_SYSREG(v->arch.zcr_el1, ZCR_EL1);
+    WRITE_SYSREG_EL1(v->arch.zcr_el1, ZCR);
     WRITE_SYSREG(v->arch.zcr_el2, ZCR_EL2);
 
     sve_load_ctx(v->arch.vfp.sve_zreg_ctx_end, v->arch.vfp.fpregs, 1);

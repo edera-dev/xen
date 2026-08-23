@@ -479,6 +479,16 @@
 #define HCPTR_CP(x)     ((_AC(1,U)<<(x)))       /* Trap Coprocessor x */
 #define HCPTR_CP_MASK   ((_AC(1,U)<<14)-1)
 
+/*
+ * CPTR_EL2 fields when HCR_EL2.E2H == 1, in which case the register takes the
+ * CPACR_EL1 format: the fields move, and they are *enables* rather than traps.
+ */
+#define CPACR_ZEN_MASK      (_AC(3,UL)<<16)
+#define CPACR_ZEN_TRAP_ALL  (_AC(0,UL)<<16)     /* Trap SVE from EL0 and EL1 */
+#define CPACR_ZEN_NO_TRAP   (_AC(3,UL)<<16)     /* Allow SVE everywhere      */
+#define CPACR_FPEN_NO_TRAP  (_AC(3,UL)<<20)     /* Allow FP/SIMD everywhere  */
+#define CPACR_TTA           (_AC(1,UL)<<28)     /* Trap trace registers      */
+
 /* HSTR Hyp. System Trap Register */
 #define HSTR_T(x)       ((_AC(1,U)<<(x)))       /* Trap Cp15 c<x> */
 #define HSTR_TTEE       (_AC(1,U)<<16)          /* Trap ThumbEE */
@@ -675,6 +685,8 @@ void do_trap_guest_serror(struct cpu_user_regs *regs);
 register_t get_default_hcr_flags(void);
 
 register_t get_default_cptr_flags(void);
+/* Take a CPTR_EL2 value from the above and lift its trap on SVE. */
+register_t cptr_flags_allow_sve(register_t cptr);
 
 /*
  * Synchronize SError unless the feature is selected.

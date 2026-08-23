@@ -31,16 +31,21 @@
  * HCR_EL2.TVM is set.
  *
  * Note that it only traps NS write access from EL1.
+ * The register is named without its _EL1 suffix so that the write can pick the
+ * encoding that reaches the guest's copy: under forced VHE a plain _EL1 access
+ * from EL2 would land on Xen's own register instead (see WRITE_SYSREG_EL1).
+ * The generated function keeps the _EL1 name, because GENERATE_CASE() below
+ * derives it from the HSR_SYSREG_* constant.
  */
 #define TVM_REG(reg)                                                \
-static bool vreg_emulate_##reg(struct cpu_user_regs *regs,          \
-                               uint64_t *r, bool read)              \
+static bool vreg_emulate_##reg##_EL1(struct cpu_user_regs *regs,    \
+                                     uint64_t *r, bool read)        \
 {                                                                   \
     struct vcpu *v = current;                                       \
     bool cache_enabled = vcpu_has_cache_enabled(v);                 \
                                                                     \
     GUEST_BUG_ON(read);                                             \
-    WRITE_SYSREG64(*r, reg);                                        \
+    WRITE_SYSREG64_EL1(*r, reg);                                      \
                                                                     \
     p2m_toggle_cache(v, cache_enabled);                             \
                                                                     \
@@ -48,17 +53,17 @@ static bool vreg_emulate_##reg(struct cpu_user_regs *regs,          \
 }
 
 /* Defining helpers for emulating sysreg registers. */
-TVM_REG(SCTLR_EL1)
-TVM_REG(TTBR0_EL1)
-TVM_REG(TTBR1_EL1)
-TVM_REG(TCR_EL1)
-TVM_REG(ESR_EL1)
-TVM_REG(FAR_EL1)
-TVM_REG(AFSR0_EL1)
-TVM_REG(AFSR1_EL1)
-TVM_REG(MAIR_EL1)
-TVM_REG(AMAIR_EL1)
-TVM_REG(CONTEXTIDR_EL1)
+TVM_REG(SCTLR)
+TVM_REG(TTBR0)
+TVM_REG(TTBR1)
+TVM_REG(TCR)
+TVM_REG(ESR)
+TVM_REG(FAR)
+TVM_REG(AFSR0)
+TVM_REG(AFSR1)
+TVM_REG(MAIR)
+TVM_REG(AMAIR)
+TVM_REG(CONTEXTIDR)
 
 /* Macro to generate easily case for co-processor emulation */
 #define GENERATE_CASE(reg)                                              \

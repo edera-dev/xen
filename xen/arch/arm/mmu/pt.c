@@ -125,25 +125,6 @@ void dump_hyp_walk(vaddr_t addr)
     dump_pt_walk(ttbr, addr, HYP_PT_ROOT_LEVEL, 1);
 }
 
-/*
- * True when EL2 uses the EL2&0 translation regime rather than the single-level
- * EL2 regime, i.e. HCR_EL2.E2H == 1.  Some implementations force this: on
- * Apple Silicon E2H is RES1 (or RAO/WI on older cores), so Xen runs this way
- * whether it asks to or not -- head.S probes it at boot.
- *
- * Fields that are RES1 or ignored when EL2 has no EL0 become meaningful in
- * EL2&0; see the AP[1] discussion in mfn_to_xen_entry() below and
- * plans/asahi/06-el2-vhe-and-cpu-bringup.md for the rest.
- */
-static bool el2_is_vhe(void)
-{
-#ifdef CONFIG_ARM_64
-    return !!(READ_SYSREG(HCR_EL2) & HCR_E2H);
-#else
-    return false;
-#endif
-}
-
 lpae_t mfn_to_xen_entry(mfn_t mfn, unsigned int attr)
 {
     lpae_t e = (lpae_t) {

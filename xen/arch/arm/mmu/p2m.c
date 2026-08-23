@@ -185,7 +185,7 @@ void p2m_dump_info(struct domain *d)
  */
 void p2m_save_state(struct vcpu *p)
 {
-    p->arch.sctlr = READ_SYSREG(SCTLR_EL1);
+    p->arch.sctlr = READ_SYSREG_EL1(SCTLR);
 
     if ( cpus_have_const_cap(ARM64_WORKAROUND_AT_SPECULATE) )
     {
@@ -207,7 +207,7 @@ void p2m_restore_state(struct vcpu *n)
     if ( is_idle_vcpu(n) )
         return;
 
-    WRITE_SYSREG(n->arch.sctlr, SCTLR_EL1);
+    WRITE_SYSREG_EL1(n->arch.sctlr, SCTLR);
     WRITE_SYSREG(n->arch.hcr_el2, HCR_EL2);
 
     /*

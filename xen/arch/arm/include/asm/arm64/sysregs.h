@@ -513,6 +513,120 @@
 #define READ_SYSREG(name)     READ_SYSREG64(name)
 #define WRITE_SYSREG(v, name) WRITE_SYSREG64(v, name)
 
+/*
+ * Accessing guest EL1 (and EL0) state from EL2 under the Virtualization Host
+ * Extensions.
+ *
+ * When HCR_EL2.E2H is 1, an access made at EL2 to one of the remapped
+ * registers by its _EL1 name reaches the *EL2* register, not the guest's.  The
+ * _EL12 encodings -- the same register with op1 = 5 -- reach the real EL1 copy.
+ * The EL0 timer registers behave the same way, with _EL02.
+ *
+ * Xen's convention is that a bare _EL1 access in hypervisor code means "the
+ * guest's", which is exactly the assumption VHE breaks.  Getting it wrong is
+ * spectacular rather than subtle: restoring a vCPU's SCTLR_EL1 or TTBR0_EL1
+ * under E2H=1 overwrites Xen's own translation configuration, so the
+ * hypervisor destroys itself the moment it schedules a domain.
+ *
+ * Some implementations force E2H (it is RES1 on Apple Silicon), so this is a
+ * property of the CPU rather than a choice Xen makes.
+ *
+ * Registers with no EL2 counterpart -- CSSELR_EL1, TPIDR_EL1, PAR_EL1, the
+ * TPIDR*_EL0 pair -- are not remapped and must keep using their plain names.
+ */
+#define el2_is_vhe() (!!(READ_SYSREG(HCR_EL2) & (1ULL << 34)))
+
+/* op1 = 5 aliases of the EL1 registers that VHE remaps. */
+#define SCTLR_EL12          S3_5_C1_C0_0
+#define CPACR_EL12          S3_5_C1_C0_2
+#define TTBR0_EL12          S3_5_C2_C0_0
+#define TTBR1_EL12          S3_5_C2_C0_1
+#define TCR_EL12            S3_5_C2_C0_2
+#define SPSR_EL12           S3_5_C4_C0_0
+#define ELR_EL12            S3_5_C4_C0_1
+#define AFSR0_EL12          S3_5_C5_C1_0
+#define AFSR1_EL12          S3_5_C5_C1_1
+#define ESR_EL12            S3_5_C5_C2_0
+#define FAR_EL12            S3_5_C6_C0_0
+#define MAIR_EL12           S3_5_C10_C2_0
+#define AMAIR_EL12          S3_5_C10_C3_0
+#define VBAR_EL12           S3_5_C12_C0_0
+#define CONTEXTIDR_EL12     S3_5_C13_C0_1
+#define CNTKCTL_EL12        S3_5_C14_C1_0
+#define ZCR_EL12            S3_5_C1_C2_0
+
+/* op1 = 5 aliases of the EL0 timer registers that VHE remaps. */
+#define CNTP_TVAL_EL02      S3_5_C14_C2_0
+#define CNTP_CTL_EL02       S3_5_C14_C2_1
+#define CNTP_CVAL_EL02      S3_5_C14_C2_2
+#define CNTV_TVAL_EL02      S3_5_C14_C3_0
+#define CNTV_CTL_EL02       S3_5_C14_C3_1
+#define CNTV_CVAL_EL02      S3_5_C14_C3_2
+
+/*
+ * Read or write a guest EL1/EL0 register, picking the encoding that reaches the
+ * guest's copy rather than Xen's own.  Pass the register name without its
+ * exception-level suffix:
+ *
+ *   READ_SYSREG_EL1(TCR)          instead of READ_SYSREG(TCR_EL1)
+ *   WRITE_SYSREG_EL0(v, CNTV_CTL) instead of WRITE_SYSREG(v, CNTV_CTL_EL0)
+ *
+ * The _64 forms are identical here -- register_t is already 64-bit -- and exist
+ * so that a site upstream spells SYSREG64 keeps its width on ARM32.
+ *
+ * `reg` must only ever appear as a ## operand: several register names are
+ * themselves macros expanding to a comma-separated AArch32 coprocessor triple
+ * (see cpregs.h), which argument prescan would otherwise splice in as multiple
+ * arguments.  That is why these do not delegate to one another.
+ */
+#define READ_SYSREG_EL1(reg)                                    \
+    (el2_is_vhe() ? READ_SYSREG(reg ## _EL12)                   \
+                  : READ_SYSREG(reg ## _EL1))
+
+#define WRITE_SYSREG_EL1(v, reg)                                \
+    do {                                                        \
+        if ( el2_is_vhe() )                                     \
+            WRITE_SYSREG(v, reg ## _EL12);                      \
+        else                                                    \
+            WRITE_SYSREG(v, reg ## _EL1);                       \
+    } while ( 0 )
+
+#define READ_SYSREG_EL0(reg)                                    \
+    (el2_is_vhe() ? READ_SYSREG(reg ## _EL02)                   \
+                  : READ_SYSREG(reg ## _EL0))
+
+#define WRITE_SYSREG_EL0(v, reg)                                \
+    do {                                                        \
+        if ( el2_is_vhe() )                                     \
+            WRITE_SYSREG(v, reg ## _EL02);                      \
+        else                                                    \
+            WRITE_SYSREG(v, reg ## _EL0);                       \
+    } while ( 0 )
+
+#define READ_SYSREG64_EL1(reg)                                  \
+    (el2_is_vhe() ? READ_SYSREG64(reg ## _EL12)                 \
+                  : READ_SYSREG64(reg ## _EL1))
+
+#define WRITE_SYSREG64_EL1(v, reg)                              \
+    do {                                                        \
+        if ( el2_is_vhe() )                                     \
+            WRITE_SYSREG64(v, reg ## _EL12);                    \
+        else                                                    \
+            WRITE_SYSREG64(v, reg ## _EL1);                     \
+    } while ( 0 )
+
+#define READ_SYSREG64_EL0(reg)                                  \
+    (el2_is_vhe() ? READ_SYSREG64(reg ## _EL02)                 \
+                  : READ_SYSREG64(reg ## _EL0))
+
+#define WRITE_SYSREG64_EL0(v, reg)                              \
+    do {                                                        \
+        if ( el2_is_vhe() )                                     \
+            WRITE_SYSREG64(v, reg ## _EL02);                    \
+        else                                                    \
+            WRITE_SYSREG64(v, reg ## _EL0);                     \
+    } while ( 0 )
+
 /* Wrappers for accessing interrupt controller list registers. */
 #define ICH_LR_REG(index)          ICH_LR ## index ## _EL2
 #define WRITE_SYSREG_LR(v, index)  WRITE_SYSREG(v, ICH_LR_REG(index))
