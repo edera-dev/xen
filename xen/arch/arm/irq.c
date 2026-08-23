@@ -13,6 +13,7 @@
 #include <xen/spinlock.h>
 #include <xen/irq.h>
 #include <xen/init.h>
+#include <xen/keyhandler.h>
 #include <xen/errno.h>
 #include <xen/sched.h>
 
@@ -765,3 +766,60 @@ int platform_get_irq_byname(const struct dt_device_node *np, const char *name)
  * indent-tabs-mode: nil
  * End:
  */
+
+/*
+ * Dump what Xen believes about every interrupt it has a descriptor for.
+ *
+ * ARM had no equivalent of x86's 'i' key, which made "is this interrupt even
+ * routed, and to whom?" unanswerable from a running system -- on a new platform
+ * that is most of the question.  Reachable with the console switch (Ctrl-A three
+ * times by default) followed by 'i'.
+ *
+ * Only descriptors that are set up are listed; the space is sparse and mostly
+ * empty, and on a controller with extended SPIs it is over five thousand
+ * entries wide.
+ */
+static void cf_check dump_irqs(unsigned char key)
+{
+    unsigned int irq;
+
+    printk("Guest interrupt information:\n");
+
+    for ( irq = 0; irq < nr_irqs; irq++ )
+    {
+        struct irq_desc *desc = irq_to_desc(irq);
+        unsigned long flags;
+
+        if ( !desc )
+            continue;
+
+        spin_lock_irqsave(&desc->lock, flags);
+
+        if ( desc->status & IRQ_GUEST )
+        {
+            struct irq_guest *info = irq_get_guest_info(desc);
+
+            printk("  IRQ %4u %-12s type=%-4u status=%08x -> %pd virq %u\n",
+                   irq, desc->handler ? desc->handler->typename : "?",
+                   desc->arch.type, (unsigned int)desc->status,
+                   info->d, info->virq);
+        }
+        else if ( desc->action )
+            printk("  IRQ %4u %-12s type=%-4u status=%08x xen:%s\n",
+                   irq, desc->handler ? desc->handler->typename : "?",
+                   desc->arch.type, (unsigned int)desc->status,
+                   desc->action->name ?: "?");
+
+        spin_unlock_irqrestore(&desc->lock, flags);
+    }
+
+    printk("Interrupt space: %u descriptors\n", nr_irqs);
+}
+
+static int __init cf_check setup_dump_irqs(void)
+{
+    register_keyhandler('i', dump_irqs, "dump interrupt bindings", 1);
+
+    return 0;
+}
+__initcall(setup_dump_irqs);
