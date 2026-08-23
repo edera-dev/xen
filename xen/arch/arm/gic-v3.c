@@ -2056,6 +2056,42 @@ static const struct gic_hw_operations gicv3_ops = {
     .read_apr            = gicv3_read_apr,
 };
 
+#ifdef CONFIG_APPLE_AIC
+/*
+ * Per-CPU initialisation of the virtual CPU interface alone.
+ *
+ * Apple SoCs have no GIC distributor -- interrupts come from the AIC -- but the
+ * cores do implement the GICv3 EL2 virtualisation system registers, which is
+ * what lets a hypervisor inject virtual interrupts through list registers.
+ * Every function in gicv3_ops is a plain ICH_ or ICC_EL2 system register access,
+ * so Xen's injection engine is reusable verbatim; only the distributor half is
+ * missing, and that is the AIC's job.
+ *
+ * ID_AA64PFR0_EL1.GIC reads 0 on those cores, because the *physical* ICC_*
+ * interface genuinely is absent, so cpu_has_gicv3 cannot be used to discover
+ * any of this.  The Asahi kernel has the same problem and hands KVM a
+ * gic_kvm_info from its AIC driver for exactly this reason.
+ */
+void gicv3_vcpuif_init(void)
+{
+    gicv3_hyp_init();
+}
+
+/*
+ * Register the virtual CPU interface with no distributor behind it.  @maint_irq
+ * is the (pseudo) IRQ the maintenance interrupt arrives on; on Apple it is an
+ * AIC FIQ source rather than a GIC PPI.
+ */
+void __init gicv3_register_vcpuif(unsigned int maint_irq)
+{
+    gicv3_info.hw_version      = GIC_V3;
+    gicv3_info.maintenance_irq = maint_irq;
+
+    gicv3_vcpuif_init();
+    register_gic_ops(&gicv3_ops);
+}
+#endif /* CONFIG_APPLE_AIC */
+
 static int __init gicv3_dt_preinit(struct dt_device_node *node, const void *data)
 {
     gicv3_info.hw_version = GIC_V3;

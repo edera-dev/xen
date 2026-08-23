@@ -35,6 +35,29 @@ standard GICv3 list-register mechanism.** This is exactly what makes KVM VMs
 work on Asahi. It means Xen's mature **vGICv3** injection engine is reusable,
 not dead — contrary to a naive "no GIC ⇒ no injection" reading.
 
+**Confirmed on hardware (M2, t8112), with one important correction.** The EL2
+virtualisation registers are present and Xen's list-register injection engine
+is reusable as §1 claims -- but `ID_AA64PFR0_EL1.GIC` reads **0** on these
+cores, so `cpu_has_gicv3` is false and cannot be used to discover any of it:
+
+```
+(XEN) Extensions: FloatingPoint AdvancedSIMD        <- no "GICv3-SysReg"
+      ID_AA64PFR0_EL1 = 1101000010110111,  GIC field [27:24] = 0
+```
+
+That is self-consistent rather than a contradiction: the field describes the
+*physical* CPU interface (`ICC_*_EL1` for talking to a distributor), which
+genuinely is absent because there is no GIC.  The *virtualisation* registers
+(`ICH_*_EL2`, and the guest-facing `ICV_*`) are implemented anyway.  The Asahi
+kernel has exactly this problem and works around it by handing KVM a
+`gic_kvm_info` from its AIC driver (`irq-apple-aic.c` -- it reads and writes
+`SYS_ICH_HCR_EL2`/`SYS_ICH_MISR_EL2` and calls `vgic_set_kvm_info()`), rather
+than letting the GIC code probe for itself.
+
+Xen must do the same: register the virtual half from the AIC driver and never
+gate it on `cpu_has_gicv3`.  Anyone reading §1 and then checking the ID
+register will conclude the design is impossible; it is not.
+
 Two Apple-specific caveats from the flags above:
 - `no_hw_deactivation`: the CPU interface does not do hardware deactivation of
   physical interrupts (there is no distributor to deactivate at). Xen must run

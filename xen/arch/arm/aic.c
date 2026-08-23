@@ -179,7 +179,14 @@
 #define AIC_TMR_GUEST_VIRT      3
 #define AIC_CPU_PMU_E           4
 #define AIC_CPU_PMU_P           5
-#define AIC_NR_FIQ              6
+/*
+ * The vGIC maintenance interrupt is not an AIC event and is not described in
+ * the device tree; it is signalled by the CPU interface through ICH_MISR_EL2.
+ * Give it an FIQ index anyway so it can be requested and dispatched like any
+ * other per-CPU source, exactly as the Asahi driver does.
+ */
+#define AIC_VGIC_MI             6
+#define AIC_NR_FIQ              7
 
 /* Cell 0 of an AIC DT interrupt specifier. */
 #define AIC_SPEC_IRQ            0
@@ -574,9 +581,36 @@ static void aic_handle_fiq(struct cpu_user_regs *regs)
     }
 
     /*
-     * TODO: core PMU (SYS_IMP_APL_PMCR0_EL1 IMODE==FIQ && IACT), uncore PMU
-     * (SYS_IMP_APL_UPMCR0_EL1 / UPMSR), and the vGIC maintenance interrupt
-     * (is_hyp && ICH_HCR_EL2.En && ICH_MISR_EL2 != 0).
+     * vGIC maintenance.  Xen asks for this when it runs out of list registers
+     * for a vCPU; receiving it is what makes gic_inject() run again on the way
+     * back to the guest.  Deliver it as the pseudo IRQ named by
+     * gic_hw_ops->info->maintenance_irq so the normal handler runs.
+     */
+    if ( gic_hw_ops && (READ_SYSREG(ICH_HCR_EL2) & GICH_HCR_EN) &&
+         READ_SYSREG(ICH_MISR_EL2) )
+    {
+        do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_VGIC_MI, 1);
+
+        /*
+         * If it is still asserted nothing consumed it, and because an FIQ has
+         * no acknowledge register we would spin here forever.  Shut the
+         * interface down rather than livelock, and say so.
+         */
+        if ( unlikely((READ_SYSREG(ICH_HCR_EL2) & GICH_HCR_EN) &&
+                      READ_SYSREG(ICH_MISR_EL2)) )
+        {
+            printk_once(XENLOG_ERR
+                        "AIC: vGIC maintenance interrupt not handled "
+                        "(MISR=%#"PRIregister"), disabling the interface\n",
+                        READ_SYSREG(ICH_MISR_EL2));
+            WRITE_SYSREG(READ_SYSREG(ICH_HCR_EL2) & ~(register_t)GICH_HCR_EN,
+                         ICH_HCR_EL2);
+        }
+    }
+
+    /*
+     * TODO: core PMU (SYS_IMP_APL_PMCR0_EL1 IMODE==FIQ && IACT) and uncore PMU
+     * (SYS_IMP_APL_UPMCR0_EL1 / UPMSR).
      */
 }
 
@@ -630,6 +664,12 @@ static void aic_cpu_init(void)
 static int aic_secondary_init(void)
 {
     aic_cpu_init();
+
+    /*
+     * The GICv3 virtualisation registers are per-CPU, so every CPU that may
+     * run a guest needs its own interface enabled.
+     */
+    gicv3_vcpuif_init();
 
     return 0;
 }
@@ -919,10 +959,18 @@ static int __init aic_dt_preinit(struct dt_device_node *node, const void *data)
     dt_irq_xlate = aic_irq_xlate;
 
     /*
-     * NOTE: no register_gic_ops() here: the virtual (guest-facing) half
-     * stays unimplemented until the vGICv3 reuse work (plans/asahi/04), so
-     * gic_hw_ops is NULL on Apple and guests cannot be created yet.
+     * The guest-facing half is a GICv3 virtual CPU interface.  Apple SoCs have
+     * no GIC distributor, but the cores do implement the GICv3 EL2
+     * virtualisation system registers, so Xen's list-register injection engine
+     * works unchanged -- see gicv3_register_vcpuif() for why the ID register
+     * cannot be used to discover that.
      *
+     * The maintenance interrupt arrives as an AIC FIQ rather than a GIC PPI,
+     * which is why it gets an FIQ pseudo IRQ of its own.
+     */
+    gicv3_register_vcpuif(AIC_FIQ_PSEUDO_BASE + AIC_VGIC_MI);
+
+    /*
      * The AIC MMIO must be mapped as Device-nGnRnE on Apple Silicon; the
      * fabric does not tolerate nGnRE for these registers.
      * ioremap_nocache()'s mapping type must be confirmed on real hardware.
