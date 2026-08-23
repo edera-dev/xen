@@ -35,6 +35,7 @@ pages", "interrupt injection must be software‑only") turned out to be **false*
 | 07 | [platform-console-and-drivers](07-platform-console-and-drivers.md) | `platforms/apple.c`, s5l UART console, WDT reset, framebuffer |
 | 08 | [dom0-asahi-integration](08-dom0-asahi-integration.md) | dom0 DT generation, device‑ownership split, EL1 audit, toolstack |
 | 09 | [roadmap-testing-and-risks](09-roadmap-testing-and-risks.md) | Phases P0–P6, milestones, test strategy, risk register, estimate |
+| 10 | [bringup-runbook](10-bringup-runbook.md) | **How-to**: vdm cable, m1n1 proxy, `apple_defconfig`, the push loop, expected output per milestone |
 
 ## Reading orders
 
@@ -42,6 +43,7 @@ pages", "interrupt injection must be software‑only") turned out to be **false*
 - **Kernel/hypervisor engineer starting work** → 00 → 06 (VHE) → 03 → 04 → 02,
   then 01/07 for the console bring-up you'll build first.
 - **dom0 / distro integrator** → 08 → 05 → 01.
+- **Sitting down at the hardware right now** → **10**, then 06.
 
 ## The single most important sentences
 
@@ -68,8 +70,49 @@ tested; Apple hardware still needed to validate):
   controller through the physical half; EL2h FIQ vector wired to the
   dispatcher (doc 03 §7).
 
-Not started: forced-VHE EL2 execution (doc 06 — the critical path), vGICv3
-reuse for guest injection (doc 04), dom0 integration (doc 08), DART (doc 05).
+- `arch/arm/configs/apple_defconfig` and the hardware bring-up harness
+  (doc 10): m1n1 proxy push loop, machine DTB generation, expected console
+  output per milestone.
+
+Not started: vGICv3 reuse for guest injection (doc 04 — now the critical
+path, and the exact thing Xen stops on), dom0 module packing (doc 01 §3 A1),
+dom0 integration (doc 08), DART (doc 05), and the rest of forced VHE for guest
+state (doc 06 §1.2 items 3-5: `_EL12` accessors, `CPTR_EL2`, `CNTHCTL_EL2`).
+
+- Forced-VHE EL2 **boot** state (doc 06 §1.2 item 1): `head.S` probes
+  `HCR_EL2.E2H` (attempting to clear it first, so nVHE-capable CPUs keep
+  Xen's native path) and programs `TCR_EL2`/`SCTLR_EL2` in the matching
+  layout.  Xen lives in the low half of the EL2&0 regime, so no `TTBR1_EL2`
+  work was needed -- doc 06 §1.2 item 2 can be dropped.
+- **Descriptor `AP[1]` under forced VHE.**  `mfn_to_xen_entry()` set `AP[1]`
+  because it is RES1 "as the translation regime applies to only one exception
+  level".  With `E2H=1` the regime is EL2&0, which has an EL0, and `AP[1]=1`
+  marks the page EL0-accessible -- unusable for privileged execution on Apple
+  cores.  Now cleared at runtime in both `mmu/pt.c` and the hard-coded `PT_*`
+  values in `arm64/mmu/head.S`.  This was the single blocker between
+  `- Turning on paging -` and Xen's banner; see doc 10 §7 M2.
+
+**Confirmed booting on hardware (M2 MacBook Air, t8112-j413).**  Xen enables
+paging under forced VHE, reaches C, parses the loader DT, matches the Apple
+platform, probes the AIC (v8, 1152 IRQs), initialises the timer over AIC FIQs
+(`phys=18 hyp=16 virt=19`, 24 MHz), brings up **all 8 CPUs** through the
+spin-table path (P-cores need `hmp-unsafe=true`; their MIDR differs from the
+E-cores'), sets up stage 2 (`36-bit IPA/PA, 8-bit VMID, 3 levels`), completes
+`smp_call_function` over AIC fast IPIs, runs every initcall and patches
+alternatives.
+
+It then stops exactly where the design says it should: `create_dom0` needs a
+*virtual* interrupt controller, and only the AIC's physical half exists.
+`gic_hw_version()` returns `GIC_INVALID` and domain creation is refused.  That
+is doc 04.
+
+Hardware also confirms 4K granule support at **both** stage 1 and stage 2, so
+doc 02's Path A stands and no 16K rebuild is needed.  Non-VHE regression
+verified throughout under QEMU `virt,virtualization=on`.
+
+Still not adapted for VHE: guest EL1 context switch must move to the `_EL12`
+accessors, `CPTR_EL2` is written in its non-VHE layout, and `CNTHCTL_EL2`
+changes meaning (doc 06 §1.2 items 3-5).
 
 Line references are against the tree state at the time of writing (Xen
 `edera/4.21` lineage; Asahi kernel in the sibling checkout).
