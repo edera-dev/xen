@@ -964,7 +964,23 @@ produced an ESPI. Only the three-cell `interrupts` form is handled;
 `interrupts-extended` carries a phandle per entry and no node needing ESPI here
 uses it.
 
-**This is unverified on hardware.** It builds with the option on and off, and
+Two constraints the vGIC imposes, both of which cost a boot when missed:
+
+- **`nr_espi` must be a whole number of 32-interrupt ranks.**
+  `domain_vgic_init()` reconstructs the count by rounding the domain's
+  configured maximum INTID up to a multiple of 32 and adding `NR_LOCAL_IRQS`
+  back, so 164 came back as 192, failed `nr_espis > gic_number_espis()`, and dom0
+  creation died with `Error creating domain 0 (rc = -22)`. The AIC now publishes
+  192. Claiming the extra costs nothing: no event maps to them, since both
+  `aic_irq_xlate()` and `aic_read_irq()` range-check against the controller's
+  real event count.
+- **`GICD_TYPER.IDbits` has to cover the eSPI range.** The synthesised
+  distributor advertised `VGIC_V3_SYNTH_INTID_BITS` (10, max INTID 1023), which
+  cannot express an eSPI at 4139; the guest would be told its own interrupts
+  cannot exist. It is now widened to span the highest eSPI offered -- 13 bits
+  for INTID 4287.
+
+**The device-tree rewrite is unverified on hardware.** It builds with the option on and off, and
 QEMU regresses cleanly in both, but QEMU has no dom0 in this setup, so the DT
 rewrite has never actually run. Its only consumers are the USB controllers and
 their DARTs, and see the note below on device interrupts -- ESPI cannot be shown
