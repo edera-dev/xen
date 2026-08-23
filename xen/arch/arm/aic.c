@@ -58,6 +58,7 @@
 #include <xen/sched.h>
 #include <xen/smp.h>
 #include <xen/softirq.h>
+#include <xen/time.h>
 #include <xen/types.h>
 #include <xen/device_tree.h>
 #include <xen/libfdt/libfdt.h>
@@ -226,6 +227,9 @@ static struct intc_info aic_intc_info;
  * fast IPI: senders set bits here, the FIQ dispatcher demuxes them.
  */
 static DEFINE_PER_CPU(unsigned long, aic_ipi_pending);
+
+/* Counts received fast IPIs; only read by the boot-time self-test below. */
+static DEFINE_PER_CPU(unsigned int, aic_ipi_seen);
 
 static inline uint32_t aic_read(unsigned int reg)
 {
@@ -528,6 +532,7 @@ static void aic_handle_ipi(struct cpu_user_regs *regs)
     unsigned long pending = xchg(&this_cpu(aic_ipi_pending), 0);
 
     perfc_incr(ipis);
+    this_cpu(aic_ipi_seen)++;
 
     /*
      * Ensure any shared data written by the sender is read after its
@@ -944,6 +949,65 @@ static int aic_iomem_deny_access(struct domain *d)
 
     return rc;
 }
+
+/*
+ * Prove that a fast IPI actually lands on every other CPU.
+ *
+ * The first thing in boot to need a cross-CPU IPI is apply_alternatives_all(),
+ * whose stop_machine_run() pokes each CPU with GIC_SGI_EVENT_CHECK to get it
+ * out of wfi and into do_tasklet().  If one is lost, that spins forever with no
+ * output at all -- the boot just stops after the last initcall.
+ *
+ * on_selected_cpus() cannot be used to test this: it waits for the target to
+ * respond even with wait=0, so a lost IPI hangs the test the same way.  Send the
+ * SGI directly instead and watch the receiver's counter with a deadline, which
+ * reports per CPU rather than hanging, and shows at a glance whether a failure
+ * follows cluster boundaries (E-cores are cluster 0, P-cores cluster 1).
+ */
+static int __init aic_ipi_selftest(void)
+{
+    unsigned int cpu, me = smp_processor_id();
+    unsigned int lost = 0;
+
+    if ( !aic_intc_info.nr_lines )
+        return 0;
+
+    for_each_online_cpu ( cpu )
+    {
+        unsigned int before;
+        s_time_t deadline;
+        register_t mpidr;
+
+        if ( cpu == me )
+            continue;
+
+        mpidr = cpu_logical_map(cpu);
+        before = per_cpu(aic_ipi_seen, cpu);
+
+        send_SGI_one(cpu, GIC_SGI_EVENT_CHECK);
+
+        deadline = NOW() + MILLISECS(100);
+        while ( per_cpu(aic_ipi_seen, cpu) == before && NOW() < deadline )
+            cpu_relax();
+
+        if ( per_cpu(aic_ipi_seen, cpu) == before )
+            lost++;
+
+        printk("%sAIC: IPI to CPU%u (cluster %u, core %u) %s\n",
+               (per_cpu(aic_ipi_seen, cpu) == before) ? XENLOG_ERR : "",
+               cpu, (unsigned int)((mpidr >> 8) & 0xff),
+               (unsigned int)(mpidr & 0xff),
+               (per_cpu(aic_ipi_seen, cpu) == before) ? "LOST" : "ok");
+    }
+
+    if ( lost )
+        printk(XENLOG_ERR
+               "AIC: %u IPI target(s) unreachable; stop_machine_run(), and so "
+               "apply_alternatives_all(), will hang\n", lost);
+
+    return 0;
+}
+__initcall(aic_ipi_selftest);
 
 static const struct intc_hw_operations aic_intc_ops = {
     .info                = &aic_intc_info,
