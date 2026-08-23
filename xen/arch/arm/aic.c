@@ -60,6 +60,8 @@
 #include <xen/softirq.h>
 #include <xen/types.h>
 #include <xen/device_tree.h>
+#include <xen/libfdt/libfdt.h>
+#include <xen/xmalloc.h>
 #include <asm/device.h>
 #include <asm/gic.h>
 #include <asm/io.h>
@@ -754,14 +756,62 @@ static int aic_make_hwdom_dt_node(const struct domain *d,
                                   const struct dt_device_node *intc,
                                   void *fdt)
 {
-    /*
-     * dom0 is not given the AIC: it sees a synthetic vGICv3 backed by the
-     * hardware List Registers, with AIC interrupt specifiers translated to
-     * GIC ones (plans/asahi/08 section 2).  TODO with the vGICv3 reuse work.
-     */
-    printk(XENLOG_ERR "AIC: hwdom DT node generation not implemented yet\n");
+    unsigned int naddr = dt_n_addr_cells(intc);
+    unsigned int nsize = dt_n_size_cells(intc);
+    __be32 *reg, *cell;
+    unsigned int i, len;
+    int res;
 
-    return -ENODEV;
+    /*
+     * dom0 is not given the AIC.  It gets a GICv3 whose distributor and
+     * redistributors Xen emulates, at the synthesised addresses in
+     * d->arch.vgic -- there is no hardware GIC layout to inherit -- with
+     * interrupts injected through the list registers the cores implement.
+     *
+     * The device interrupt specifiers need no translation at all, which is why
+     * nothing else in dom0's tree is rewritten.  The AIC's 3-cell form is
+     * numerically identical to GICv3's: aic_irq_xlate() maps <AIC_IRQ n> to
+     * 32 + n exactly as gic_irq_xlate() maps <GIC_SPI n>, and <AIC_FIQ f> to
+     * 16 + f exactly as it maps <GIC_PPI f>.  That is not a coincidence --
+     * AIC_HWIRQ_BASE is NR_GIC_LOCAL_IRQS and AIC_FIQ_PSEUDO_BASE is the PPI
+     * base -- but it is worth stating, because it is what keeps this to one
+     * node instead of a rewrite of every device.
+     *
+     * The caller has already emitted this node's name, its phandle and
+     * #interrupt-cells = 3, so every device that referenced the AIC now refers
+     * to the GIC with no change.  The AIC's own children (the "affinities"
+     * node) and its reg/reg-names are dropped, which is correct: dom0 must not
+     * see the real controller, and iomem_deny_access() keeps its MMIO out of
+     * reach.
+     */
+    res = fdt_property_string(fdt, "compatible", "arm,gic-v3");
+    if ( res )
+        return res;
+
+    res = fdt_property_cell(fdt, "#redistributor-regions",
+                            d->arch.vgic.nr_regions);
+    if ( res )
+        return res;
+
+    /* reg is the distributor followed by each redistributor region. */
+    len = dt_cells_to_size(naddr + nsize) * (d->arch.vgic.nr_regions + 1);
+    reg = xmalloc_bytes(len);
+    if ( !reg )
+        return -FDT_ERR_XEN(ENOMEM);
+
+    cell = reg;
+    dt_child_set_range(&cell, naddr, nsize, d->arch.vgic.dbase,
+                       GUEST_GICV3_GICD_SIZE);
+
+    for ( i = 0; i < d->arch.vgic.nr_regions; i++ )
+        dt_child_set_range(&cell, naddr, nsize,
+                           d->arch.vgic.rdist_regions[i].base,
+                           d->arch.vgic.rdist_regions[i].size);
+
+    res = fdt_property(fdt, "reg", reg, len);
+    xfree(reg);
+
+    return res;
 }
 
 static int aic_iomem_deny_access(struct domain *d)
