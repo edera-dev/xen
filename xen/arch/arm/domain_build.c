@@ -1430,6 +1430,16 @@ int __init make_timer_node(const struct kernel_info *kinfo)
         irq[TIMER_PHYS_NONSECURE_PPI] = GUEST_TIMER_PHYS_NS_PPI;
         irq[TIMER_VIRT_PPI] = GUEST_TIMER_VIRT_PPI;
     }
+    /*
+     * A system without a Secure world has no secure physical timer interrupt
+     * (see init_dt_xen_time()), but the interrupts array is positional, so the
+     * entry cannot simply be dropped.  Use the architectural PPI number: the
+     * timer interrupt is emulated by Xen either way, and no OS running under
+     * Xen is expected to use this one.
+     */
+    if ( !irq[TIMER_PHYS_SECURE_PPI] )
+        irq[TIMER_PHYS_SECURE_PPI] = GUEST_TIMER_PHYS_S_PPI;
+
     dt_dprintk("  Secure interrupt %u\n", irq[TIMER_PHYS_SECURE_PPI]);
     set_interrupt(intrs[0], irq[TIMER_PHYS_SECURE_PPI],
                   0xf, DT_IRQ_TYPE_LEVEL_LOW);
