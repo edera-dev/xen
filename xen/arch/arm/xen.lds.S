@@ -37,6 +37,20 @@ SECTIONS
        *(.data.idmap)
        _idmap_end = .;
 
+#ifdef CONFIG_EARLY_PRINTK_PAGING_DEBUG
+       /*
+        * A page of its own for the paging-bringup fault catcher: VBAR_EL2
+        * needs 2KB alignment and a full vector table is 2KB, which will not
+        * fit in the single identity-mapped page alongside the boot code.
+        * head.S identity-maps this page separately.
+        */
+       . = ALIGN(PAGE_SIZE);
+       _idmap_vectors_start = .;
+       *(.text.idmap_vectors)
+       . = ALIGN(PAGE_SIZE);
+       _idmap_vectors_end = .;
+#endif
+
        *(.text.cold)
        *(.text.unlikely .text.*_unlikely .text.unlikely.*)
 

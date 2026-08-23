@@ -277,8 +277,13 @@
 #define SCTLR_EL2_VHE_RES1 (BIT(11, UL) | BIT(20, UL) | BIT(22, UL) |\
                             BIT(23, UL) | BIT(28, UL) | BIT(29, UL))
 
+#ifdef CONFIG_DEBUG_MMU_MINIMAL
+/* Bisection build: no I-cache either.  See Kconfig.debug. */
+#define SCTLR_EL2_VHE_SET  (SCTLR_EL2_VHE_RES1 | SCTLR_A64_ELx_SA)
+#else
 #define SCTLR_EL2_VHE_SET  (SCTLR_EL2_VHE_RES1 | SCTLR_A64_ELx_SA |\
                             SCTLR_Axx_ELx_I)
+#endif
 
 /* Only used a pre-processing time... */
 #define SCTLR_EL2_CLEAR (SCTLR_EL2_RES0     | SCTLR_Axx_ELx_M   |\
