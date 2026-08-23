@@ -471,6 +471,96 @@ static int __init handle_linux_pci_domain(struct kernel_info *kinfo,
     return fdt_property_cell(kinfo->fdt, "linux,pci-domain", segment);
 }
 
+
+#ifdef CONFIG_GICV3_ESPI
+/*
+ * Cell 0 of an "arm,gic-v3" interrupt specifier selects the INTID range:
+ * 0 SPI, 1 PPI, 2 ESPI, 3 EPPI.  Cell 1 is the index within it.
+ */
+#define GICV3_DT_SPEC_ESPI  2
+
+/*
+ * Rebuild an "interrupts" property whose entries no longer all describe plain
+ * SPIs.
+ *
+ * Where an interrupt controller has more lines than the GICv3 SPI range can
+ * hold, Xen maps the surplus into the extended SPI range (see the AIC driver).
+ * A domain's device tree cannot then carry the host's specifier verbatim: cell
+ * 0 selects the range, and Linux caps type 0 (SPI) at INTID 1019 -- it reports
+ * "SPI <n> out of range (use ESPI?)" and request_irq() fails.  So re-emit the
+ * affected entries as type 2 (ESPI) with the index within that range.
+ *
+ * Entries that are still SPIs keep their original cells, and a property with no
+ * ESPI at all is copied untouched, so this is inert unless a translation
+ * actually produced an extended SPI.
+ *
+ * Only the three-cell "interrupts" form is handled.  "interrupts-extended"
+ * carries a phandle per entry and no node needing ESPI on this hardware uses
+ * it; such a node would keep the host cells and fail as before.
+ */
+static int __init fixup_interrupts_espi(struct kernel_info *kinfo,
+                                        const struct dt_device_node *node,
+                                        const struct dt_property *prop)
+{
+    unsigned int i, nirq = dt_number_of_irq(node);
+    unsigned int intcells = 3;
+    bool any_espi = false;
+    __be32 *cells;
+    int res;
+
+    /* Only the layout this rewrite understands. */
+    if ( !nirq || prop->length != nirq * intcells * sizeof(*cells) )
+        return fdt_property(kinfo->fdt, prop->name, prop->value, prop->length);
+
+    for ( i = 0; i < nirq; i++ )
+    {
+        struct dt_irq irq;
+
+        if ( dt_device_get_irq(node, i, &irq) )
+            return fdt_property(kinfo->fdt, prop->name, prop->value,
+                                prop->length);
+
+        if ( is_espi(irq.irq) )
+            any_espi = true;
+    }
+
+    if ( !any_espi )
+        return fdt_property(kinfo->fdt, prop->name, prop->value, prop->length);
+
+    cells = xzalloc_array(__be32, nirq * intcells);
+    if ( !cells )
+        return -ENOMEM;
+
+    for ( i = 0; i < nirq; i++ )
+    {
+        const __be32 *orig = prop->value;
+        struct dt_irq irq;
+
+        orig += i * intcells;
+
+        if ( dt_device_get_irq(node, i, &irq) || !is_espi(irq.irq) )
+        {
+            memcpy(&cells[i * intcells], orig, intcells * sizeof(*cells));
+            continue;
+        }
+
+        cells[i * intcells + 0] = cpu_to_be32(GICV3_DT_SPEC_ESPI);
+        cells[i * intcells + 1] = cpu_to_be32(espi_intid_to_idx(irq.irq));
+        /* Trigger/level flags are unchanged by the range it lives in. */
+        cells[i * intcells + 2] = orig[2];
+
+        printk(XENLOG_INFO "%s: interrupt %u re-emitted as extended SPI %u\n",
+               dt_node_full_name(node), i, espi_intid_to_idx(irq.irq));
+    }
+
+    res = fdt_property(kinfo->fdt, prop->name, cells,
+                       nirq * intcells * sizeof(*cells));
+    xfree(cells);
+
+    return res;
+}
+#endif /* CONFIG_GICV3_ESPI */
+
 static int __init write_properties(struct domain *d, struct kernel_info *kinfo,
                                    const struct dt_device_node *node)
 {
@@ -568,6 +658,21 @@ static int __init write_properties(struct domain *d, struct kernel_info *kinfo,
             if ( dt_property_name_is_equal(prop, "iommu-map-mask") )
                 continue;
         }
+
+#ifdef CONFIG_GICV3_ESPI
+        /*
+         * An interrupt this platform maps into the extended SPI range must be
+         * described as one; the host's plain-SPI cells would not resolve.
+         */
+        if ( dt_property_name_is_equal(prop, "interrupts") &&
+             dt_number_of_irq(node) )
+        {
+            res = fixup_interrupts_espi(kinfo, node, prop);
+            if ( res )
+                return res;
+            continue;
+        }
+#endif
 
         res = fdt_property(kinfo->fdt, prop->name, prop_data, prop_len);
 

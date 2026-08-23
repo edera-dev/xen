@@ -5,6 +5,10 @@
 # console/DT machinery is up.  See plans/asahi/.
 CONFIG_APPLE=y
 CONFIG_APPLE_AIC=y
+# AIC events past the GICv3 SPI range (event >= 988) are mapped into the
+# GICv3.1 extended SPI range; without this the two USB controllers and their
+# DARTs have no routable interrupt.
+CONFIG_GICV3_ESPI=y
 CONFIG_HAS_S5L_UART=y
 
 # EARLY_PRINTK lives behind "Debugging Options", which needs DEBUG or EXPERT.

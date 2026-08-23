@@ -931,9 +931,48 @@ node advertising an ESPI range, and dom0's interrupt specifiers for those nodes
 rewritten to the ESPI form (`interrupt-cells` type 2). That is the real fix and
 is not done.
 
-### What is done instead
+### ESPI is now implemented (untested on hardware)
 
-`handle_node()` now withholds any device whose interrupt cannot be routed,
+AIC events are mapped into two ranges, together covering every event:
+
+```
+event <  988 : INTID = 32 + event                      (plain SPI, as before)
+event >= 988 : INTID = 4096 + (event - 988)            (GICv3.1 extended SPI)
+```
+
+988 is `1020 - AIC_HWIRQ_BASE`, since INTIDs 1020-1023 are reserved. On t8112
+with 1152 events that gives 164 extended SPIs. Worked examples:
+
+| device | AIC event | INTID | dom0 DT specifier |
+|---|---|---|---|
+| `nvme@27bcc0000` | 724 | 756 | unchanged, `<0 724 4>` |
+| `iommu@382f00000` | 1003 | 4111 | `<2 15 4>` |
+| `usb@382280000` | 1031 | 4139 | `<2 43 4>` |
+
+Xen's ESPI infrastructure turned out to be generic: `espi_desc[]` in `irq.c`,
+`is_espi()`/`espi_idx_to_intid()` in `asm/irq.h`, and `gic_number_espis()` simply
+returns `intc_hw_ops->info->nr_espi`. So publishing `nr_espi` from the AIC is
+enough for the vGIC to size the hardware domain's extended ranks.
+
+The part that is *not* generic is dom0's device tree. Cell 0 of an `arm,gic-v3`
+specifier selects the range (0 SPI, 1 PPI, 2 ESPI, 3 EPPI) and Linux caps type 0
+at INTID 1019, so the host's cells cannot be copied verbatim any more.
+`fixup_interrupts_espi()` re-emits only the entries that translated to an
+extended SPI, keeps the rest byte-for-byte, and copies the whole property
+untouched when nothing changed -- so it is inert unless a translation actually
+produced an ESPI. Only the three-cell `interrupts` form is handled;
+`interrupts-extended` carries a phandle per entry and no node needing ESPI here
+uses it.
+
+**This is unverified on hardware.** It builds with the option on and off, and
+QEMU regresses cleanly in both, but QEMU has no dom0 in this setup, so the DT
+rewrite has never actually run. Its only consumers are the USB controllers and
+their DARTs, and see the note below on device interrupts -- ESPI cannot be shown
+to work until *any* device interrupt reaches dom0.
+
+### What was done before that
+
+`handle_node()` withholds any device whose interrupt cannot be routed,
 rather than handing it over without one.
 
 The previous behaviour -- warn, skip the interrupt, expose the device anyway --
@@ -953,3 +992,45 @@ configuration.
 The cost is that dom0 has no USB until ESPI lands. The internal keyboard and
 trackpad are on SPI/HID rather than USB, and the debug console is the
 dockchannel, so this does not affect bring-up.
+
+## "ANS did not boot" -- the first real device interrupt
+
+The remaining blocker for a root filesystem:
+
+```
+nvme-apple 27bcc0000.nvme: RTKit: Initializing (protocol version 12)
+nvme-apple 27bcc0000.nvme: ANS did not boot
+nvme nvme0: Reset failure status: -62
+```
+
+The `blk_mq_release` WARN that follows is cleanup fallout from the failed reset,
+not a separate fault.
+
+The interrupts involved are all routable, so this is not the ESPI problem:
+
+| node | AIC events | INTIDs |
+|---|---|---|
+| `nvme@27bcc0000` | 724 | 756 |
+| `mbox@277408000` (`send-empty`, `send-not-empty`, `recv-empty`, `recv-not-empty`) | 717-720 | 749-752 |
+
+`apple_rtkit_boot()` waits about a second for the coprocessor to report itself
+running, and that reply arrives as the mailbox's `recv-not-empty` interrupt.
+
+What makes this the prime suspect: **it would be the first device interrupt this
+port has ever delivered.** Everything working so far avoids that path entirely --
+the console is a hypercall, the timers are FIQs, the IPIs are FIQs. No AIC SPI
+has yet been routed to a guest and injected through the vGIC, so
+`route_irq_to_guest()` -> AIC unmask/affinity -> `aic_read_irq()` -> `do_IRQ()`
+-> `vgic_inject_irq()` is entirely unexercised.
+
+Cheapest way to settle it, from the dracut shell (`rd.shell` is on the command
+line, so a root that never appears drops to one):
+
+```sh
+cat /proc/interrupts        # any non-zero count on a device row?
+```
+
+If every device row is zero, device interrupt delivery is the bug, and it
+subsumes both ANS and USB. If ANS's mailbox rows are counting, the problem is
+inside the RTKit handshake -- power domains (`ps_ans2`, `ps_apcie_st`), the SART,
+or shared-memory reachability -- and worth a separate look.
