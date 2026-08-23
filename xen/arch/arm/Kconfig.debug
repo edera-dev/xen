@@ -153,6 +153,39 @@ config EARLY_UART_SCIF
 config EARLY_PRINTK
 	bool
 
+config DEBUG_MMU_MINIMAL
+	bool "Enable the MMU with the weakest possible configuration"
+	depends on EARLY_PRINTK && MMU && ARM_64
+	default n
+	help
+	  Bring the MMU up with caches and shareability taken out of the
+	  picture: page table walks become Non-cacheable and Non-shareable,
+	  and neither the D-cache nor the I-cache is enabled with it.
+
+	  This is a bisection tool, not a supported configuration.  If paging
+	  works like this but not with the normal Write-Back Inner-Shareable
+	  setup, the problem is cache or coherency related rather than a bad
+	  translation table.  Xen will be extremely slow.
+
+	  Say N.
+
+config EARLY_PRINTK_PAGING_DEBUG
+	bool "Early printk, dump the MMU control registers before paging is on"
+	depends on EARLY_PRINTK && MMU
+	default n
+	help
+	  Print ID_AA64MMFR0_EL1, TCR_EL2, SCTLR_EL2, HCR_EL2, the page table
+	  base and the root page table entry immediately before SCTLR_EL2.M is
+	  set.
+
+	  This is the only way to debug a failure to enable paging: once the
+	  MMU is on, a fault has no console to report on (the vector base still
+	  belongs to the bootloader, whose code is no longer mapped), so the
+	  symptom of any mistake here is an indistinguishable silent hang right
+	  after "- Turning on paging -".
+
+	  Say N unless you are bringing up a new platform.
+
 config EARLY_UART_BASE_ADDRESS
 	depends on EARLY_PRINTK
 	hex "Early printk, physical base address of debug UART"

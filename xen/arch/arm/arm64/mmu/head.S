@@ -105,6 +105,34 @@
 .endm
 
 /*
+ * Software page-table walk of one level, for CONFIG_EARLY_PRINTK_PAGING_DEBUG.
+ *
+ * Prints the descriptor for the VA in x27 at the level selected by \shift,
+ * then descends: x28 (the table being walked) is replaced by the descriptor's
+ * output address.  Branches to label 9 if the descriptor is invalid, rather
+ * than descending into a bogus table -- on Apple Silicon physical address 0
+ * is not memory, so a blind descent through a zero descriptor takes an
+ * external abort and loses the report we came here to make.
+ *
+ * The descriptor is loaded twice instead of being held in a register, because
+ * print_reg clobbers x0-x4 and every other register here is live.
+ *
+ * Clobbers x0 - x4.  Preserves x27; updates x28.
+ */
+.macro pt_walk_level shift
+        lsr   x0, x27, #\shift
+        and   x0, x0, #0x1ff
+        ldr   x0, [x28, x0, lsl #3]
+        print_reg x0
+        PRINT_ID(" ")
+        lsr   x0, x27, #\shift
+        and   x0, x0, #0x1ff
+        ldr   x0, [x28, x0, lsl #3]
+        tbz   x0, #0, 9f
+        and   x28, x0, #0x0000fffffffff000
+.endm
+
+/*
  * Macro to create a mapping entry in \tbl to \phys. Only mapping in 3rd
  * level table (i.e page granularity) is supported.
  *
@@ -315,6 +343,16 @@ link_from_second_id:
 link_from_third_id:
         create_mapping_entry boot_third_id, x19, x19, x0, x1, x2
 
+#ifdef CONFIG_EARLY_PRINTK_PAGING_DEBUG
+        /*
+         * Identity-map the diagnostic vector page too.  It is inside the same
+         * 2MB region as _start (Xen is ~1.5MB and loaded 2MB-aligned), so it
+         * shares boot_third_id and needs no extra table.
+         */
+        adr_l x3, _idmap_vectors_start
+        create_mapping_entry boot_third_id, x3, x3, x0, x1, x2
+#endif
+
 #ifdef CONFIG_EARLY_PRINTK
         /* Add UART to the fixmap table */
         ldr   x0, =EARLY_UART_VIRTUAL_ADDRESS
@@ -358,13 +396,45 @@ FUNC_LOCAL(enable_mmu)
         msr   TTBR0_EL2, x4
         isb
 
+#ifdef CONFIG_EARLY_PRINTK_PAGING_DEBUG
+        /* Catch a fault on the first fetch with paging on, instead of wedging. */
+        adr_l x0, idmap_fault_vectors
+        msr   VBAR_EL2, x0
+        isb
+#endif
+
         mrs   x0, SCTLR_EL2
         orr   x0, x0, #SCTLR_Axx_ELx_M  /* Enable MMU */
+#ifndef CONFIG_DEBUG_MMU_MINIMAL
         orr   x0, x0, #SCTLR_Axx_ELx_C  /* Enable D-cache */
+#endif
         orr   x0, x0, x5                /* Enable extra flags */
         dsb   sy                     /* Flush PTE writes and finish reads */
         msr   SCTLR_EL2, x0          /* now paging is enabled */
         isb                          /* Now, flush the icache */
+
+#ifdef CONFIG_EARLY_PRINTK_PAGING_DEBUG
+        /*
+         * Reaching here means the first instruction fetch with paging on
+         * succeeded, so the identity mapping is sound.  Turn the MMU back off
+         * to report that, because x23 has not yet been switched to the fixmap
+         * virtual address and the *physical* UART is therefore still reachable.
+         *
+         * This is what splits the two otherwise indistinguishable silent
+         * hangs apart: if this line appears but "- Paging turned on -" does
+         * not, the MMU is fine and only the console's fixmap mapping is
+         * broken.  If neither appears, enabling the MMU itself failed.
+         */
+        mov   x22, x0                /* remember the paging-enabled SCTLR */
+        bic   x0, x0, #SCTLR_Axx_ELx_M
+        bic   x0, x0, #SCTLR_Axx_ELx_C
+        msr   SCTLR_EL2, x0
+        isb
+        PRINT_ID("- MMU on, idmap ok -\r\n")
+        flush_xen_tlb_local
+        msr   SCTLR_EL2, x22
+        isb
+#endif
 
 #ifdef CONFIG_EARLY_PRINTK
         /* Use a virtual address to access the UART. */
@@ -595,6 +665,58 @@ FUNC(switch_ttbr_id)
 
         ret
 END(switch_ttbr_id)
+
+#ifdef CONFIG_EARLY_PRINTK_PAGING_DEBUG
+/*
+ * Diagnostic EL2 vector table used only while paging is being brought up.
+ *
+ * A fault taken on the first instruction fetch after SCTLR_EL2.M is set is
+ * otherwise completely silent: VBAR_EL2 still belongs to the bootloader, whose
+ * code is not mapped by Xen's tables, so the CPU faults again inside its own
+ * fault handler and wedges.  Pointing VBAR_EL2 here first turns that silence
+ * into an ESR/FAR/ELR triple.
+ *
+ * This lives in its own page (see xen.lds.S) because VBAR_EL2 requires 2KB
+ * alignment and the table itself is 2KB -- it cannot share the single
+ * identity-mapped boot page.  head.S adds an identity mapping for it.
+ */
+.section .text.idmap_vectors, "ax", %progbits
+        .align 11
+FUNC(idmap_fault_vectors)
+        .rept 16
+        .align 7
+        b     idmap_fault
+        .endr
+END(idmap_fault_vectors)
+
+FUNC_LOCAL(idmap_fault)
+        /*
+         * Drop the MMU immediately.  After this the PC keeps its value and is
+         * once again a physical address, so the rest of this handler cannot
+         * fault and can reach the UART and the string literals directly --
+         * which is why it can use PRINT (.rodata.str) rather than PRINT_ID and
+         * costs the identity-mapped boot page nothing.
+         */
+        mrs   x0, SCTLR_EL2
+        bic   x0, x0, #SCTLR_Axx_ELx_M
+        bic   x0, x0, #SCTLR_Axx_ELx_C
+        msr   SCTLR_EL2, x0
+        isb
+
+        PRINT("- PAGING FAULT esr ")
+        mrs   x0, ESR_EL2
+        print_reg x0
+        PRINT(" far ")
+        mrs   x0, FAR_EL2
+        print_reg x0
+        PRINT(" elr ")
+        mrs   x0, ELR_EL2
+        print_reg x0
+        PRINT(" -\r\n")
+1:      wfe
+        b     1b
+END(idmap_fault)
+#endif /* CONFIG_EARLY_PRINTK_PAGING_DEBUG */
 
 /*
  * Local variables:
