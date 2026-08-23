@@ -125,6 +125,25 @@ void dump_hyp_walk(vaddr_t addr)
     dump_pt_walk(ttbr, addr, HYP_PT_ROOT_LEVEL, 1);
 }
 
+/*
+ * True when EL2 uses the EL2&0 translation regime rather than the single-level
+ * EL2 regime, i.e. HCR_EL2.E2H == 1.  Some implementations force this: on
+ * Apple Silicon E2H is RES1 (or RAO/WI on older cores), so Xen runs this way
+ * whether it asks to or not -- head.S probes it at boot.
+ *
+ * Fields that are RES1 or ignored when EL2 has no EL0 become meaningful in
+ * EL2&0; see the AP[1] discussion in mfn_to_xen_entry() below and
+ * plans/asahi/06-el2-vhe-and-cpu-bringup.md for the rest.
+ */
+static bool el2_is_vhe(void)
+{
+#ifdef CONFIG_ARM_64
+    return !!(READ_SYSREG(HCR_EL2) & HCR_E2H);
+#else
+    return false;
+#endif
+}
+
 lpae_t mfn_to_xen_entry(mfn_t mfn, unsigned int attr)
 {
     lpae_t e = (lpae_t) {
@@ -133,7 +152,7 @@ lpae_t mfn_to_xen_entry(mfn_t mfn, unsigned int attr)
             .table = 0,           /* Set to 1 for links and 4k maps */
             .ai = attr,
             .ns = 1,              /* Hyp mode is in the non-secure world */
-            .up = 1,              /* See below */
+            .up = !el2_is_vhe(),  /* See below */
             .ro = 0,              /* Assume read-write */
             .af = 1,              /* No need for access tracking */
             .ng = 1,              /* Makes TLB flushes easier */
@@ -142,10 +161,20 @@ lpae_t mfn_to_xen_entry(mfn_t mfn, unsigned int attr)
             .avail = 0,           /* Reference count for domheap mapping */
         }};
     /*
-     * For EL2 stage-1 page table, up (aka AP[1]) is RES1 as the translation
+     * For EL2 stage-1 page tables, up (aka AP[1]) is RES1 as the translation
      * regime applies to only one exception level (see D4.4.4 and G4.6.1
-     * in ARM DDI 0487B.a). If this changes, remember to update the
-     * hard-coded values in head.S too.
+     * in ARM DDI 0487B.a).
+     *
+     * That premise does not hold under forced VHE: with HCR_EL2.E2H == 1 the
+     * regime becomes EL2&0, which does have an EL0, and AP[1] == 1 then means
+     * "also accessible at EL0".  On Apple Silicon such a page cannot be used
+     * for privileged execution, so leaving AP[1] set makes the first
+     * instruction fetch after the MMU is enabled wedge the core -- with no
+     * exception taken, and therefore nothing to report it.  Hence the
+     * el2_is_vhe() above.
+     *
+     * The hard-coded PT_* values in arm64/mmu/head.S carry the same bit and
+     * are masked there at runtime for the same reason.
      */
 
     switch ( attr )

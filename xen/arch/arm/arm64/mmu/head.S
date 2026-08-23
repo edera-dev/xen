@@ -14,6 +14,13 @@
 #define PT_DEV    0xe71 /* nG=1 AF=1 SH=10 AP=01 NS=1 ATTR=100 T=0 P=1 */
 #define PT_DEV_L3 0xe73 /* nG=1 AF=1 SH=10 AP=01 NS=1 ATTR=100 T=1 P=1 */
 
+/*
+ * AP[1] out of the descriptor attributes above.  It is RES1 and ignored while
+ * EL2 has no EL0, but under forced VHE (HCR_EL2.E2H == 1) the regime becomes
+ * EL2&0 and AP[1] == 1 marks the page EL0-accessible, which on Apple Silicon
+ * makes it unusable for privileged execution.  See mfn_to_xen_entry().
+ */
+#define PT_AP1    0x040
 
 /* Convenience defines to get slot used by Xen mapping. */
 #define XEN_ZEROETH_SLOT    zeroeth_table_offset(XEN_VIRT_START)
@@ -109,6 +116,8 @@
  * tmp3:    scratch register
  * type:    mapping type. If not specified it will be normal memory (PT_MEM_L3)
  *
+ * Also uses x22 as the mask of attribute bits to drop (see create_page_tables).
+ *
  * Preserves \virt, \phys
  * Clobbers \tmp1, \tmp2, \tmp3
  *
@@ -120,6 +129,7 @@
         get_table_slot \tmp1, \virt, 3      /* \tmp1 := slot in \tlb */
 
         mov   \tmp2, #\type                 /* \tmp2 := right for section PT */
+        bic   \tmp2, \tmp2, x22             /*          - AP[1] under VHE */
         orr   \tmp2, \tmp2, \tmp3           /*          + PAGE_ALIGNED(phys) */
 
         adr_l \tmp3, \ptbl
@@ -180,6 +190,23 @@ FUNC_LOCAL(create_page_tables)
         b.lo  1b
         dsb   sy
 
+        /*
+         * Work out which descriptor attribute bits this translation regime
+         * cannot have.  With HCR_EL2.E2H == 1 the EL2 regime is EL2&0, which
+         * has an EL0, so AP[1] stops being RES1 and starts meaning "also
+         * accessible at EL0" -- and an EL0-accessible page is not usable for
+         * privileged execution on Apple Silicon.  Leaving it set wedges the
+         * core on the first instruction fetch after paging is enabled, with no
+         * exception taken and so nothing to report it.
+         *
+         * x22 is the mask to BIC out of every page/block descriptor built
+         * below.  Table descriptors ignore bits 11:2, so they need nothing.
+         */
+        mrs   x0, HCR_EL2
+        mov   x22, xzr
+        tbz   x0, #HCR_E2H_BIT, 1f
+        mov   x22, #PT_AP1
+1:
 
         /* Prepare the page-tables for mapping Xen */
         ldr   x0, =XEN_VIRT_START
@@ -219,6 +246,7 @@ FUNC_LOCAL(create_page_tables)
         lsr   x2, x19, #THIRD_SHIFT  /* Base address for 4K mapping */
         lsl   x2, x2, #THIRD_SHIFT
         mov   x3, #PT_MEM_L3         /* x2 := Section map */
+        bic   x3, x3, x22            /*       - AP[1] under VHE */
         orr   x2, x2, x3
 
         /* ... map of vaddr(start) in boot_third */
