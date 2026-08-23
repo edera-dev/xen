@@ -30,8 +30,13 @@ static inline void gic_set_lr(int lr, struct pending_irq *p,
 
     clear_bit(GIC_IRQ_GUEST_PRISTINE_LPI, &p->status);
 
+    /*
+     * Withhold the physical INTID where the CPU interface cannot act on it;
+     * gic_update_one_lr() deactivates those in software instead.
+     */
     gic_hw_ops->update_lr(lr, p->irq, p->priority,
-                          p->desc ? p->desc->irq : INVALID_IRQ, state);
+                          (p->desc && !intc_hw_ops->sw_deactivate_guest_irq)
+                          ? p->desc->irq : INVALID_IRQ, state);
 
     set_bit(GIC_IRQ_GUEST_VISIBLE, &p->status);
     clear_bit(GIC_IRQ_GUEST_QUEUED, &p->status);
@@ -212,7 +217,19 @@ static void gic_update_one_lr(struct vcpu *v, int i)
         clear_bit(i, &this_cpu(lr_mask));
 
         if ( p->desc != NULL )
+        {
+            /*
+             * The guest is done with it.  Where the list register carried no
+             * physical INTID, nothing has deactivated the physical interrupt
+             * and it is still masked from when it was read, so do it here or it
+             * is delivered exactly once and never again.
+             */
+            if ( intc_hw_ops->sw_deactivate_guest_irq &&
+                 test_bit(_IRQ_INPROGRESS, &p->desc->status) )
+                intc_hw_ops->deactivate_irq(p->desc);
+
             clear_bit(_IRQ_INPROGRESS, &p->desc->status);
+        }
         clear_bit(GIC_IRQ_GUEST_VISIBLE, &p->status);
         clear_bit(GIC_IRQ_GUEST_ACTIVE, &p->status);
         p->lr = GIC_INVALID_LR;
