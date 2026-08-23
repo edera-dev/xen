@@ -1,0 +1,16 @@
+# Apple Silicon (M1/M2) bring-up configuration.
+#
+# Single-platform build with the s5l early-printk console hard-wired to the
+# SoC UART, which is the only debugging channel available before Xen's
+# console/DT machinery is up.  See plans/asahi/.
+CONFIG_APPLE=y
+CONFIG_APPLE_AIC=y
+CONFIG_HAS_S5L_UART=y
+
+# EARLY_PRINTK lives behind "Debugging Options", which needs DEBUG or EXPERT.
+CONFIG_DEBUG=y
+CONFIG_DEBUG_INFO=y
+
+# apple,s5l-uart on t8103 (M1) and t8112 (M2): serial@235200000
+CONFIG_EARLY_UART_CHOICE_S5L=y
+CONFIG_EARLY_UART_BASE_ADDRESS=0x235200000
