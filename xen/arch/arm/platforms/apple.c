@@ -200,10 +200,46 @@ static void apple_reset(void)
     mdelay(150);
 }
 
+/*
+ * Devices withheld from the hardware domain.
+ *
+ * The display pipeline hangs dom0 on a stage-2 fault.  iBoot programs the
+ * display DART's TTBR and *locks* it, so Linux cannot install its own
+ * translation tables and instead copies its entries into iBoot's existing L1
+ * table: apple_dart_hw_map_locked_ttbr() reads the physical address straight
+ * out of the TTBR register and memremap()s it, then
+ * apple_dart_hw_sync_locked() writes through that mapping
+ * (drivers/iommu/apple-dart.c).
+ *
+ * That page lives in a firmware carveout which appears in neither the memory
+ * node nor /reserved-memory -- dom0 learns of it only by reading the hardware
+ * -- so it has no p2m entry and the write takes a level-3 stage-2 translation
+ * fault.  Xen injects the abort, the oops kills modprobe while it holds
+ * module_mutex, and every later module load deadlocks behind it.
+ *
+ * The DART *probe* is harmless; it is attaching a consumer to the IOMMU group
+ * that reaches the locked TTBR.  So it is enough to withhold the consumers,
+ * which also keeps this independent of any particular SoC's node addresses.
+ * simple-framebuffer is a separate node and still works, so dom0 keeps a
+ * console on the panel.
+ *
+ * Remove this once Xen maps the locked DART tables into the hardware domain --
+ * that needs Xen to read the TTBRs itself, i.e. enough of a DART driver to know
+ * each variant's register layout.  See plans/asahi/05.
+ */
+static const struct dt_device_match apple_blacklist_dev[] __initconst =
+{
+    DT_MATCH_COMPATIBLE("apple,display-subsystem"),
+    DT_MATCH_COMPATIBLE("apple,dcp"),
+    DT_MATCH_COMPATIBLE("apple,dcpext"),
+    { /* sentinel */ },
+};
+
 PLATFORM_START(apple, "APPLE")
     .compatible  = apple_dt_compat,
     .init        = apple_init,
     .reset       = apple_reset,
+    .blacklist_dev = apple_blacklist_dev,
     /*
      * Apple RAM is based high (0x8_00000000) and devices sit behind DARTs with
      * an output address size of 36-42 bits; widen the default DMA mask so the
