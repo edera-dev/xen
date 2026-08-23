@@ -563,23 +563,42 @@ static void aic_handle_fiq(struct cpu_user_regs *regs)
     }
 
     /*
-     * Xen's own timer.  Under forced VHE (E2H=1) the CNTP_CTL_EL0 accessor
-     * reaches CNTHP_CTL_EL2, i.e. the hypervisor timer Xen programs.
-     * TODO: dispatch through do_IRQ() to the pseudo IRQ registered by
-     * time.c instead of raising the softirq directly (plans/asahi/04
-     * section 6).
+     * There are four timer FIQ sources, and which register names them depends
+     * on the exception level they belong to.  Under forced VHE (E2H=1) the
+     * unsuffixed accessors reach EL2's own timers and the _EL02 ones reach the
+     * guest's, so:
+     *
+     *   CNTP_CTL_EL0   -> CNTHP_CTL_EL2, the timer Xen programs  (AIC FIQ 0)
+     *   CNTV_CTL_EL0   -> CNTHV_CTL_EL2, EL2 virtual, unused     (AIC FIQ 1)
+     *   CNTP_CTL_EL02  -> the guest's physical timer             (AIC FIQ 2)
+     *   CNTV_CTL_EL02  -> the guest's virtual timer              (AIC FIQ 3)
+     *
+     * Apple's device tree names FIQ 0 "hyp-phys" and FIQ 3 "virt", which is
+     * exactly how time.c looks them up, so both can go through do_IRQ() to the
+     * handlers it registered.  An FIQ has no acknowledge register, so anything
+     * left asserted on the way out would re-enter immediately; every source
+     * therefore has to be masked or disabled by the time we return.
      */
     if ( TMR_FIRING(READ_SYSREG(CNTP_CTL_EL0)) )
-    {
-        /* Mask the source and let the core timer code run via softirq. */
-        WRITE_SYSREG(READ_SYSREG(CNTP_CTL_EL0) | TMR_CTL_IMASK, CNTP_CTL_EL0);
-        raise_softirq(TIMER_SOFTIRQ);
-    }
+        do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_TMR_HV_PHYS, 1);
 
     if ( TMR_FIRING(READ_SYSREG(CNTV_CTL_EL0)) )
     {
+        /* Xen never arms this one; mask it so it cannot storm. */
         WRITE_SYSREG(READ_SYSREG(CNTV_CTL_EL0) | TMR_CTL_IMASK, CNTV_CTL_EL0);
-        /* TODO: inject the guest virtual timer via the vGIC (doc 04). */
+    }
+
+    if ( TMR_FIRING(READ_SYSREG(CNTV_CTL_EL02)) )
+        do_IRQ(regs, AIC_FIQ_PSEUDO_BASE + AIC_TMR_GUEST_VIRT, 1);
+
+    if ( TMR_FIRING(READ_SYSREG(CNTP_CTL_EL02)) )
+    {
+        /*
+         * Xen emulates the guest physical timer in software and leaves the
+         * hardware one disabled, so this should not fire.  Mask it rather than
+         * livelock if a guest manages to arm it.
+         */
+        WRITE_SYSREG(READ_SYSREG(CNTP_CTL_EL02) | TMR_CTL_IMASK, CNTP_CTL_EL02);
     }
 
     /*
@@ -629,8 +648,15 @@ static void aic_quiesce_fiq_sources(void)
     WRITE_SYSREG(READ_SYSREG(CNTP_CTL_EL0) | TMR_CTL_IMASK, CNTP_CTL_EL0);
     WRITE_SYSREG(READ_SYSREG(CNTV_CTL_EL0) | TMR_CTL_IMASK, CNTV_CTL_EL0);
 
-    /* Disable guest-timer FIQs (EL2 register) until a guest wants them. */
-    WRITE_SYSREG(0, SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2);
+    /*
+     * Route the guest virtual timer's FIQ to us: vtimer_interrupt() consumes it
+     * and injects the interrupt into the guest through the vGIC, and without
+     * this a guest never receives a tick.  It stays gated by CNTV_CTL_EL02's
+     * own enable bit, which virt_timer_{save,restore}() manage per vCPU, so
+     * leaving the route open costs nothing while no guest has armed it.  The
+     * guest physical timer is emulated, so its FIQ stays off.
+     */
+    WRITE_SYSREG(VM_TMR_FIQ_ENABLE_V, SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2);
 
     /* Turn off the core PMU FIQ. */
     WRITE_SYSREG((READ_SYSREG(SYS_IMP_APL_PMCR0_EL1) & ~(register_t)PMCR0_IMODE_MASK) |
