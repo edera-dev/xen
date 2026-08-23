@@ -805,3 +805,45 @@ bite here: Linux under Xen uses the *virtual* counter (`arch_timer: cp15 timer
 running at 24.00MHz (virt)`), which those bits do not gate. A guest reading the
 *physical* counter from EL1 would still trap, so the bug is latent rather than
 fixed.
+
+## A stall just before "alternatives: Patching"
+
+If the last line is `Adding cpu <N> to runqueue 0`, note what the next line is in
+a good boot:
+
+```
+(XEN) Adding cpu 7 to runqueue 0
+(XEN) alternatives: Patching with alt table ... -> ...
+(XEN) *** LOADING DOMAIN 0 ***
+```
+
+That `Patching` message is printed **inside** `__apply_alternatives_multi_stop`,
+which `apply_alternatives_all()` runs via `stop_machine_run(..., NR_CPUS)`
+(`arch/arm/alternative.c`). It therefore only appears once all 8 CPUs have
+rendezvoused. Its absence narrows the stall to one of two places:
+
+1. an initcall after the cpupool one (`Adding cpu ...` comes from a cpupool
+   initcall, so more may follow), or
+2. `vmap_contig()` / the `stop_machine_run()` rendezvous itself -- which on this
+   platform means IPIs, and AIC IPIs are FIQ-delivered.
+
+`CONFIG_DEBUG_INITCALL_TRACE` separates the two: it prints every initcall before
+running it, so either the hanging initcall names itself, or all of them complete
+and the stall is provably in `apply_alternatives_all()`. It is enabled in
+`apple_defconfig`.
+
+Things worth ruling out before theorising, both of which were checked and were
+*not* the cause here:
+
+- **Module placement.** `push-xen.py` gets module addresses from m1n1's
+  allocator, so they shift with the size of everything allocated before them; a
+  blob growing by a megabyte can land on top of something else, and the result is
+  Xen stopping at an arbitrary point with no message. The script now prints every
+  region and refuses to boot on an overlap. In the failing case there was none:
+  the kernel ended at `0x812020a00` and the ramdisk began at `0x812030000`.
+- **`dom0_mem`.** It is only consumed by `construct_dom0()`, which runs *after*
+  `apply_alternatives_all()`, so it cannot affect this phase.
+
+Note also that `mkpayload.sh` only applies `apple_defconfig` when `CONFIG_APPLE`
+is unset, so a newly added option in that defconfig does **not** reach an
+existing tree. Enable it with `scripts/config` or start from a clean config.
