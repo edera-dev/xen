@@ -14,6 +14,7 @@
 #define PT_DEV    0xe71 /* nG=1 AF=1 SH=10 AP=01 NS=1 ATTR=100 T=0 P=1 */
 #define PT_DEV_L3 0xe73 /* nG=1 AF=1 SH=10 AP=01 NS=1 ATTR=100 T=1 P=1 */
 
+
 /* Convenience defines to get slot used by Xen mapping. */
 #define XEN_ZEROETH_SLOT    zeroeth_table_offset(XEN_VIRT_START)
 #define XEN_FIRST_SLOT      first_table_offset(XEN_VIRT_START)
@@ -139,6 +140,47 @@
  * Clobbers x0 - x4
  */
 FUNC_LOCAL(create_page_tables)
+        /*
+         * Invalidate the boot page tables from the D-cache before populating
+         * them.
+         *
+         * Everything below writes the descriptors with the MMU off, so those
+         * writes are Device-nGnRnE: they go straight to memory and do *not*
+         * invalidate any cache line covering the same address.  The hardware
+         * page-table walker, however, reads the tables as Normal Write-Back
+         * Cacheable (TCR_EL2.IRGN0/ORGN0 are set to WBWA in cpu_init).  So any
+         * stale line the bootloader left behind shadows the descriptors we
+         * just wrote, and the first walk after the MMU comes up sees whatever
+         * used to be in that memory instead.
+         *
+         * The symptom is brutal: a software walk of the tables reads perfectly
+         * valid descriptors (Device reads bypass the cache and see memory)
+         * while the hardware walk faults, and there is no console left to
+         * report it because the fault happens on the instruction after
+         * SCTLR_EL2.M is set.
+         *
+         * Linux does exactly this, for exactly this reason, before populating
+         * init_pg_dir.  Xen got away without it only because the bootloaders
+         * it has run under leave the caches empty; m1n1 on Apple Silicon does
+         * not.
+         *
+         * Clobbers x0 - x4.
+         */
+        adr_l x0, _boot_page_tables_start
+        adr_l x1, _boot_page_tables_end
+        mrs   x2, CTR_EL0
+        ubfx  x2, x2, #16, #4        /* x2 := DminLine, log2 of words */
+        mov   x3, #4
+        lsl   x2, x3, x2             /* x2 := D-cache line size in bytes */
+        sub   x3, x2, #1
+        bic   x0, x0, x3             /* align the start down to a line */
+1:      dc    ivac, x0               /* invalidate, NOT clean+invalidate: a */
+        add   x0, x0, x2             /* writeback would put the stale line   */
+        cmp   x0, x1                 /* back over the descriptors we write   */
+        b.lo  1b
+        dsb   sy
+
+
         /* Prepare the page-tables for mapping Xen */
         ldr   x0, =XEN_VIRT_START
         create_table_entry boot_pgtable, boot_first, x0, 0, x1, x2, x3
