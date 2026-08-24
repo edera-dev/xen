@@ -1330,3 +1330,35 @@ Deciding whether to advertise eSPIs to a guest should consult the virtual
 interface's capabilities as well, and if extended ranges are unsupported the
 honest options are to not claim them -- returning to withholding the USB nodes --
 or to map those events into the regular SPI range instead.
+
+## The write failure needs compression, so it is not ours
+
+With `systemd-remount-fs` masked so `nodatacow` actually survived into the
+read-write phase, the same workload produces **no btrfs write errors and no
+BUG**. Writes really happened -- `systemd-journal-flush` and
+`systemd-random-seed` both completed, and both write to the btrfs root.
+
+That is the discriminator. The fault requires the *compressed* write path, which
+matches the code: `fs/btrfs/zstd.c:575` releases an output folio when compression
+fails and `end_bbio_compressed_write()` releases the same folios again
+(`compression.c:242`, `:302`), so the folio lands on `compr_pool.list` twice and
+`list_add` reports `new == next`. On a 16K-page kernel that is recent btrfs code.
+
+Nothing in the storage path below btrfs is implicated: reads worked throughout,
+uncompressed writes work, the ANS boots, and nvme's interrupt (INTID 756) is
+delivered normally. Worth confirming bare-metal before filing anything upstream,
+but the port is not the suspect any more.
+
+### Two unrelated things in that boot
+
+`systemd-cryptsetup@fedora-81535f8c` failed: crypttab asks for the *same* LUKS
+volume dracut already unlocked, under a different name, and the passphrase was
+rejected. The echoed bullets came out as `•••��•••`, which was a bug in
+push-xen.py rather than lost input: it decoded each read chunk on its own, so a
+UTF-8 sequence split across reads became U+FFFD. Fixed with an incremental
+decoder. Whether the passphrase itself was also corrupted is not yet known -- if
+it recurs, the dockchannel RX FIFO depth against the 10ms poll is the thing to
+look at.
+
+`systemd-growfs-root` also failed, which is expected with `nodatacow` and not
+worth chasing.
