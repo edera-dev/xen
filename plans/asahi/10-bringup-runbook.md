@@ -1078,9 +1078,32 @@ is that `early_puts` is the whole console, which is output only. dom0's `hvc0`
 takes its input from Xen's console, so there is nothing to forward: the dracut
 prompt cannot be typed into, and neither can Xen's own keyhandlers.
 
-The fix is a real dockchannel console driver with an RX path, registered as a
-proper `uart_driver` so `dtuart=` can point at it. Until then, both diagnostics
-below have to be non-interactive.
+**Fixed**: `xen/drivers/char/apple-dockchannel.c` is a real `uart_driver` for the
+FIFO, with receive.
+
+Two things make it unlike every other console driver in the tree:
+
+- **It cannot be probed.** The dockchannel has no node in the Linux-style device
+  tree -- it exists only in Apple's ADT, which Xen does not parse -- so
+  `DT_DEVICE_START` is not an option. It is registered from `apple_init()`
+  instead, which `platform_init()` calls after `vm_init()` (so `ioremap` works)
+  and before `console_init_preirq()` (so it is in place when the console picks a
+  port). Registering under `SERHND_DTUART` is what lets the ARM default
+  `console=dtuart` find it with no node to resolve.
+- **Receive is polled**, on a 10ms timer with a 64-byte budget per tick. The
+  FIFO's interrupt is described in the ADT and not the device tree, so its AIC
+  event number is not knowable here, and guessing it is not worth the risk for a
+  debug console.
+
+Note that `dtuart=/nonexistent` in the default bootargs is still needed, now for
+a different reason: without it `dt_uart_init()` resolves `/chosen/stdout-path` to
+the s5l UART and registers *that* under `SERHND_DTUART`, taking the console back
+to the SBU pins.
+
+The register offsets are relative to the data window (controller base + 0x4000,
+which is what `CONFIG_EARLY_UART_BASE_ADDRESS` holds for this backend) and match
+m1n1's `src/dockchannel_uart.c`: `TX8` 0x04, `TX_FREE` 0x14, `RX8` 0x1c,
+`RX_COUNT` 0x2c. The received byte is in bits 15:8 of `RX8`, not 7:0.
 
 Xen has an `'i'` keyhandler on ARM (it was x86-only). Once there is console
 input it is reachable by pressing the console-switch key three times -- Ctrl-A
@@ -1155,3 +1178,24 @@ nothing to act on it) and `gic_update_one_lr()` calls
 `intc_hw_ops->deactivate_irq()` -- already implemented as `aic_deactivate_irq()`,
 which unmasks the event -- once the guest is finished with it. GICv2 and GICv3
 leave the flag false and are untouched.
+
+## dom0 reaches its root disk
+
+With software deactivation of guest interrupts in place, the ANS coprocessor
+boots and the disk enumerates:
+
+```
+nvme-apple 27bcc0000.nvme: RTKit: Initializing (protocol version 12)
+nvme-apple 27bcc0000.nvme: RTKit: syslog message: cmd.c:6438:  boot mode normal
+nvme nvme0: passthrough uses implicit buffer lengths
+ nvme0n1: p1 p2 p3 p4 p5 p6 p7
+dracut: luksOpen /dev/nvme0n1p6 luks-81535f8c-fb81-45a0-b32d-a27c578fd08e
+Enter passphrase for /dev/nvme0n1p6:
+```
+
+Both USB controllers also joined IOMMU groups 6 and 7 in the same boot, so the
+extended-SPI path carries real device interrupts and not just registrations.
+
+What that leaves is the passphrase prompt, which is why the dockchannel console
+driver above had to exist: everything else was in place and the machine was
+waiting for a keystroke that had nowhere to arrive from.
