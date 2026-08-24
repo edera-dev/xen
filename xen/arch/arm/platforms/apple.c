@@ -25,6 +25,7 @@
  */
 
 #include <xen/init.h>
+#include <xen/serial.h>
 #include <xen/delay.h>
 #include <xen/device_tree.h>
 #include <xen/lib.h>
@@ -143,6 +144,22 @@ static int __init apple_init(void)
 {
     register_t midr = READ_SYSREG(MIDR_EL1);
     struct dt_device_node *wdt;
+
+#if defined(CONFIG_HAS_APPLE_DOCKCHANNEL) && defined(CONFIG_EARLY_UART_DOCKCHANNEL)
+    /*
+     * Give Xen a real console on the dockchannel, not just early printk.
+     *
+     * platform_init() runs after vm_init() (so ioremap works) and before
+     * console_init_preirq() (so the registration is in place when the console
+     * picks its port).  Registering under SERHND_DTUART is what lets the ARM
+     * default console=dtuart find a device that has no device-tree node.
+     *
+     * Until this existed the console was output only, early printk having no
+     * receive path, which also left dom0's hvc0 with nothing to read: neither a
+     * guest prompt nor Xen's own key handlers could be typed into.
+     */
+    apple_dockchannel_console_init(CONFIG_EARLY_UART_BASE_ADDRESS);
+#endif
 
     printk("Apple Silicon platform (MIDR=%#lx implementor=%#x partnum=%#x)\n",
            (unsigned long)midr,

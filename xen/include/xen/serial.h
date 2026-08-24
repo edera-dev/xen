@@ -90,6 +90,15 @@ struct uart_driver {
     const struct vuart_info *(*vuart_info)(struct serial_port *port);
 };
 
+#ifdef CONFIG_HAS_APPLE_DOCKCHANNEL
+/*
+ * Registered from platform code rather than probed: the dockchannel has no
+ * device-tree node.  `base` is the data window, i.e. the controller base plus
+ * 0x4000.
+ */
+void apple_dockchannel_console_init(paddr_t base);
+#endif
+
 /* 'Serial handles' are composed from the following fields. */
 #define SERHND_IDX      (3<<0) /* COM1, COM2, DBGP, XHCI, DTUART?         */
 # define SERHND_COM1    (0<<0)
