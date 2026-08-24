@@ -1362,3 +1362,47 @@ look at.
 
 `systemd-growfs-root` also failed, which is expected with `nodatacow` and not
 worth chasing.
+
+## The compressed-write corruption is Xen's, and there is a reproducer
+
+Settled by A/B on identical kernel, initramfs and disk:
+
+| | uncompressed | `compress=zstd:1` |
+|---|---|---|
+| under Xen | passes | **fails in ~6s** |
+| bare-metal | passes | passes |
+
+Reproducer, from `rd.break=pre-mount`:
+
+```sh
+mount -o compress=zstd:1 /dev/mapper/luks-... /m/root
+/m/root/bin/dd if=/dev/zero bs=1M count=200 of=/m/root/test conv=fsync
+```
+
+No systemd, no udev, no plymouth. That makes iteration cheap, which matters
+because armchair diagnosis has a poor record on this one.
+
+Note the bare-metal half only became possible after `boot-native.py` and the
+self-running test hook: Linux has no dockchannel console driver, so a native
+boot on this cable has neither console nor keyboard. Asking for that comparison
+six times before checking whether it could produce output wasted several cycles.
+
+### Ruled out so far
+
+- **`SPSR_EL1`/`ELR_EL1` aliasing** (`85aa6b20fd`) -- a genuine bug in the same
+  family, fixed, but the failure is unchanged. Not this.
+- **Guest page-table walking.** `guest_walk.c` reads only guest registers and
+  all are converted; `AT S1E1R` from EL2 with `TGE == 0` uses the EL1&0 regime,
+  so it walks the guest's tables; `PAR_EL1` correctly left alone (no `PAR_EL12`).
+- **Context switch.** `ctxt_switch_from`/`to` and `p2m_save_state`/
+  `p2m_restore_state` convert exactly the VHE-redirected set. `TPIDR_EL1`,
+  `CSSELR_EL1`, `PAR_EL1` and `SP_EL1` are correctly *not* converted -- none is
+  in the redirection set and none has an `_EL12` alias.
+- **Trapped cache maintenance.** `HCR_EL2 = 0x4807c663f` has `TPCP = 0`,
+  `TPU = 0`: dom0's DMA cache maintenance runs untrapped. `FWB` (bit 46) is also
+  clear, so stage-2 does not force write-back over the guest's non-cacheable
+  DMA-coherent mappings.
+- **Mismatched cache geometry between P and E cores.** Linux does not report
+  `Mismatched cache type (CTR_EL0)` in its detected features, so the line size
+  is uniform and `hmp-unsafe` is not corrupting cache maintenance that way.
+- **vCPU concurrency.** `dom0_max_vcpus=1` reproduces identically.
