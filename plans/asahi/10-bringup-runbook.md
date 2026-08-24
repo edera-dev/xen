@@ -1199,3 +1199,51 @@ extended-SPI path carries real device interrupts and not just registrations.
 What that leaves is the passphrase prompt, which is why the dockchannel console
 driver above had to exist: everything else was in place and the machine was
 waiting for a keystroke that had nowhere to arrive from.
+
+## Fedora Asahi Remix boots under Xen
+
+With the dockchannel console driver in place the LUKS passphrase can be typed,
+and dom0 reaches a real root filesystem on the internal NVMe:
+
+```
+BTRFS info (device dm-0): first mount of filesystem 89cb3d63-...
+dracut: Mounted root filesystem /dev/mapper/luks-81535f8c-...
+dracut: Switching root
+systemd[1]: systemd 259.8-1.fc44 running in system mode
+Welcome to Fedora Linux Asahi Remix 44 (KDE Plasma Desktop Edition)!
+```
+
+That is the bring-up goal met: Xen at EL2 on an M2, dom0 on the machine's own
+encrypted root, with an interactive console.
+
+### Open: writes fail, and btrfs completes bios twice
+
+The first sustained write load produces
+
+```
+BTRFS error (device dm-0): bdev /dev/mapper/luks-... errs: wr 1..10
+list_add double add: new=ffffff7fc05883c8, prev=..., next=ffffff7fc05883c8
+kernel BUG at lib/list_debug.c:35!
+  btrfs_free_compr_folio+0xc4/0x108
+  end_bbio_compressed_write+0xdc/0x280
+  btrfs_bio_end_io / simple_end_io_work
+```
+
+`btrfs_free_compr_folio()` ends in `list_add(&folio->lru, &compr_pool.list)`, and
+`new == next` in that report means the folio is already on the list -- the same
+bbio completed **twice**. The `wr` counters and the BUG are therefore two views
+of one fault, not two faults, and the BUG is btrfs being unforgiving about it
+rather than the cause.
+
+Reads are fine: the filesystem mounted, and userspace got as far as starting
+services. So this is specific to write completion.
+
+The sharpest cheap experiment is `--xen-extra dom0_max_vcpus=1`. Apple NVMe has
+a single completion queue; if two vCPUs are both running its handler for the same
+queue, one vCPU makes that impossible and the double completion should vanish.
+That discriminates a concurrency fault from a data or DMA one in a single boot,
+and it bears on the interrupt work above: injecting the same event twice, or
+unmasking it before the guest has finished with it, would produce exactly this.
+
+`systemd.unit=rescue.target` keeps the write load low enough to stay interactive
+while investigating.
