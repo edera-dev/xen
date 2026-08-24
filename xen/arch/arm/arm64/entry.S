@@ -40,7 +40,20 @@
         .macro  entry_guest, compat
 
         add     x21, sp, #UREGS_SPSR_el1
+        /*
+         * The guest's own SPSR_EL1/ELR_EL1, not Xen's.  Under forced VHE
+         * (HCR_EL2.E2H == 1) an _EL1 name used from EL2 addresses EL2's own
+         * register -- which here holds the state this very exception just
+         * saved -- so the guest's copy has to be named _EL12.  Getting this
+         * wrong loses the return state of a guest that was inside its own EL1
+         * handler when it trapped, and it resumes at the wrong PC with the
+         * wrong PSTATE.
+         */
+        alternative_if ARM64_HAS_VHE
+        mrs     x23, SPSR_EL12
+        alternative_else
         mrs     x23, SPSR_el1
+        alternative_endif
         str     x23, [x21]
 
         .if \compat == 0 /* Aarch64 mode */
@@ -51,7 +64,11 @@
 
         add     x21, sp, #UREGS_SP_el1
         mrs     x22, SP_el1
+        alternative_if ARM64_HAS_VHE
+        mrs     x23, ELR_EL12
+        alternative_else
         mrs     x23, ELR_el1
+        alternative_endif
         stp     x22, x23, [x21]
 
         .else            /* Aarch32 mode */
@@ -74,7 +91,11 @@
 
         add     x21, sp, #UREGS_SPSR_el1
         ldr     x23, [x21]
+        alternative_if ARM64_HAS_VHE
+        msr     SPSR_EL12, x23
+        alternative_else
         msr     SPSR_el1, x23
+        alternative_endif
 
         .if \compat == 0 /* Aarch64 mode */
 
@@ -85,7 +106,11 @@
         add     x21, sp, #UREGS_SP_el1
         ldp     x22, x23, [x21]
         msr     SP_el1, x22
+        alternative_if ARM64_HAS_VHE
+        msr     ELR_EL12, x23
+        alternative_else
         msr     ELR_el1, x23
+        alternative_endif
 
         .else            /* Aarch32 mode */
 
