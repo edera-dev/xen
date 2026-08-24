@@ -1238,7 +1238,32 @@ rather than the cause.
 Reads are fine: the filesystem mounted, and userspace got as far as starting
 services. So this is specific to write completion.
 
-The sharpest cheap experiment is `--xen-extra dom0_max_vcpus=1`. Apple NVMe has
+`dom0_max_vcpus=1` was tried and made **no difference** -- the failure is
+identical -- so this is not two vCPUs racing on the single completion queue, and
+the interrupt path is exonerated: `/proc/interrupts` shows nvme-apple (INTID 756)
+at 147 and the ANS mailbox (752) at 41, with no lost or duplicated deliveries
+visible.
+
+The ordering is unambiguous: `wr 1` at 20.453066, the BUG at 20.459109. Writes
+fail first; the double-free is btrfs's error path.
+
+And that path has a candidate that involves nothing of ours:
+`fs/btrfs/zstd.c:575` releases an output folio when compression fails, while
+`end_bbio_compressed_write()` releases the same folios again on completion
+(`fs/btrfs/compression.c:242`, `:302`). The root filesystem is mounted
+`compress=zstd, level 1`, the kernel is a 16K-page build, and btrfs's
+sector-smaller-than-page handling is recent code.
+
+So the next question is one of ownership, not of Xen internals:
+
+1. **Boot the same kernel bare-metal**, via m1n1 without Xen. If the identical
+   BUG appears, this is not the port's bug and chasing it here wastes cycles.
+2. If it only happens under Xen, disable compression next
+   (`rootflags=subvol=root,nodatacow`) to establish whether the fault needs the
+   compressed write path at all. That splits "btrfs error path" from "the write
+   genuinely failed at the device", and only the latter points back at us.
+
+The original discriminating experiment was Apple NVMe has
 a single completion queue; if two vCPUs are both running its handler for the same
 queue, one vCPU makes that impossible and the double completion should vanish.
 That discriminates a concurrency fault from a data or DMA one in a single boot,
