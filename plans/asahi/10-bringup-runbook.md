@@ -1272,3 +1272,61 @@ unmasking it before the guest has finished with it, would produce exactly this.
 
 `systemd.unit=rescue.target` keeps the write load low enough to stay interactive
 while investigating.
+
+## Two corrections from the nodatacow attempt
+
+### The compression test did not actually run
+
+dracut honoured `rootflags=...,nodatacow`, but `systemd-remount-fs` then restored
+the filesystem's own options from `/etc/fstab` before any real write happened:
+
+```
+BTRFS info (device dm-0): setting nodatacow          <- dracut, ro
+...
+BTRFS info (device dm-0 state M): setting datacow    <- systemd, rw
+BTRFS info (device dm-0 state M): use zstd compression, level 1
+```
+
+So compression was back on and the failure is unchanged. `rootflags` cannot
+settle this; the remount has to be prevented or overridden:
+
+```
+systemd.mask=systemd-remount-fs.service
+```
+
+and then, from the rescue shell (which is now interactive):
+
+```sh
+mount -o remount,rw,nodatacow /
+dd if=/dev/zero of=/root/t bs=1M count=64 conv=fsync
+```
+
+The bare-metal comparison remains the test that settles ownership, and has not
+been run.
+
+### Extended SPIs are advertised inconsistently -- and have never been delivered
+
+```
+GICv3: 192 Extended SPIs implemented
+WARNING: drivers/irqchip/irq-gic-v3.c:1285
+Distributor has extended ranges, but CPU0 doesn't
+```
+
+`gic_cpu_init()` warns when the distributor reports eSPIs while
+`ICC_CTLR_EL1.ExtRange` is clear. For a guest that bit comes from the **hardware**
+virtual CPU interface, derived from `ICH_VTR_EL2` -- Xen does not emulate it, and
+Apple's interface does not advertise extended ranges. So the synthesised
+distributor claims something the CPU interface does not support.
+
+This tempers the earlier claim that eSPI "works end to end". What was actually
+demonstrated is that dom0 *registers* handlers on eSPI INTIDs (4143, 4224) and
+that the device-tree rewrite resolves. Their `/proc/interrupts` counts are still
+**zero**: no eSPI has ever been delivered, because nothing is using USB. Whether
+an eSPI vINTID can reach a guest through a list register on this hardware is
+therefore unproven, and this warning is a reason to doubt it.
+
+Xen reads only `NRLRGS` and `PRIBITS` out of `ICH_VTR_EL2` (`gic-v3.c:1047`).
+Deciding whether to advertise eSPIs to a guest should consult the virtual
+interface's capabilities as well, and if extended ranges are unsupported the
+honest options are to not claim them -- returning to withholding the USB nodes --
+or to map those events into the regular SPI range instead.
