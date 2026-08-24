@@ -79,8 +79,9 @@
 #define ARM_WORKAROUND_BHB_LOOP_38 18
 #define ARM_WORKAROUND_BHB_LOOP_132 19
 #define ARM_WORKAROUND_BHB_CLEAR_INSN 20
+#define ARM64_HAS_VHE 21
 
-#define ARM_NCAPS           21
+#define ARM_NCAPS           22
 
 #ifndef __ASSEMBLER__
 

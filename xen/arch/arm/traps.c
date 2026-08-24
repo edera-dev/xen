@@ -159,6 +159,23 @@ static int __init parse_serrors_behavior(const char *str)
 }
 custom_param("serrors", parse_serrors_behavior);
 
+/*
+ * Record whether EL2 is running in the EL2&0 regime, so assembly that touches
+ * guest EL1 state can pick the right encoding without testing HCR_EL2 on every
+ * guest entry and exit.  Apple cores force HCR_EL2.E2H to 1, and there an _EL1
+ * name used from EL2 addresses EL2's own register: the guest's copy is only
+ * reachable as _EL12.  Alternatives are patched after do_initcalls() and no
+ * guest runs before that, so an initcall is early enough.
+ */
+static int __init update_vhe_cpu_caps(void)
+{
+    if ( el2_is_vhe() )
+        cpus_set_cap(ARM64_HAS_VHE);
+
+    return 0;
+}
+__initcall(update_vhe_cpu_caps);
+
 static int __init update_serrors_cpu_caps(void)
 {
     if ( serrors_op != SERRORS_DIVERSE )
