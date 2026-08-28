@@ -32,8 +32,15 @@
 
 #define OPT_CONSOLE_STR "dtuart"
 
+/*
+ * The vMPIDR mapping (see vcpuid_to_vaffinity()) uses AFF0[3:0] and AFF1,
+ * so 4096 vCPUs are representable.  The practical limit is the guest
+ * redistributor address space: each vCPU needs GICV3_GICR_SIZE (128K) of
+ * it, and 4096 of those would need 512M, which does not fit in the guest
+ * memory layout.  1024 vCPUs need 128M, which does.
+ */
 #ifdef CONFIG_ARM_64
-#define MAX_VIRT_CPUS 128u
+#define MAX_VIRT_CPUS 1024u
 #else
 #define MAX_VIRT_CPUS 8u
 #endif
