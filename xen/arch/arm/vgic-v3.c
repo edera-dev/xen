@@ -1769,18 +1769,22 @@ static int vgic_v3_vcpu_init(struct vcpu *v)
 static inline unsigned int vgic_v3_max_rdist_count(struct domain *d)
 {
     /*
-     * Normally there is only one GICv3 redistributor region.
      * The GICv3 DT binding provisions for multiple regions, since there are
      * platforms out there which need those (multi-socket systems).
      * For domain using the host memory layout, we have to live with the MMIO
      * layout the hardware provides, so we have to copy the multiple regions
      * - as the first region may not provide enough space to hold all
      * redistributors we need.
-     * All the other domains will get a constructed memory map, so we can go
-     * with the architected single redistributor region.
+     * All the other domains will get a constructed memory map, where the
+     * first region is enough for GUEST_GICV3_GICR0_COUNT vCPUs.  Only expose
+     * the second region to domains which do not fit in the first one, so
+     * that the layout seen by smaller domains stays unchanged.
      */
-    return domain_use_host_layout(d) ? vgic_v3_hw.nr_rdist_regions :
-                                       GUEST_GICV3_RDIST_REGIONS;
+    if ( domain_use_host_layout(d) )
+        return vgic_v3_hw.nr_rdist_regions;
+
+    return (d->max_vcpus > GUEST_GICV3_GICR0_COUNT)
+           ? GUEST_GICV3_RDIST_REGIONS : 1;
 }
 
 static int vgic_v3_domain_init(struct domain *d)
@@ -1842,14 +1846,29 @@ static int vgic_v3_domain_init(struct domain *d)
     {
         d->arch.vgic.dbase = GUEST_GICV3_GICD_BASE;
 
-        /* A single Re-distributor region is mapped for the guest. */
-        BUILD_BUG_ON(GUEST_GICV3_RDIST_REGIONS != 1);
+        /* Two Re-distributor regions are described for the guest. */
+        BUILD_BUG_ON(GUEST_GICV3_RDIST_REGIONS != 2);
 
-        /* The first redistributor should contain enough space for all CPUs */
-        BUILD_BUG_ON((GUEST_GICV3_GICR0_SIZE / GICV3_GICR_SIZE) < MAX_VIRT_CPUS);
+        /* Both regions together must have room for every vCPU. */
+        BUILD_BUG_ON((GUEST_GICV3_GICR0_COUNT + GUEST_GICV3_GICR1_COUNT) <
+                     MAX_VIRT_CPUS);
+
+        /* Keep the advertised counts in step with the advertised sizes. */
+        BUILD_BUG_ON(GUEST_GICV3_GICR0_COUNT !=
+                     (GUEST_GICV3_GICR0_SIZE / GICV3_GICR_SIZE));
+        BUILD_BUG_ON(GUEST_GICV3_GICR1_COUNT !=
+                     (GUEST_GICV3_GICR1_SIZE / GICV3_GICR_SIZE));
+
         d->arch.vgic.rdist_regions[0].base = GUEST_GICV3_GICR0_BASE;
         d->arch.vgic.rdist_regions[0].size = GUEST_GICV3_GICR0_SIZE;
         d->arch.vgic.rdist_regions[0].first_cpu = 0;
+
+        if ( d->arch.vgic.nr_regions > 1 )
+        {
+            d->arch.vgic.rdist_regions[1].base = GUEST_GICV3_GICR1_BASE;
+            d->arch.vgic.rdist_regions[1].size = GUEST_GICV3_GICR1_SIZE;
+            d->arch.vgic.rdist_regions[1].first_cpu = GUEST_GICV3_GICR0_COUNT;
+        }
 
         d->arch.vgic.intid_bits = vgic_v3_hw.intid_bits;
     }
