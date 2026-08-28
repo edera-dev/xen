@@ -2015,7 +2015,7 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
  * -ERESTART.  Both domains are expected to be paused for the operation (the
  * fork already holds the parent paused; the child has not yet been resumed).
  *
- * The child's p2m is locked across a run of frames rather than once per frame.
+ * Both p2ms are locked across a run of frames rather than once per frame.
  * Reaching mem_sharing_fork_page() through get_gfn() costs three walks of the
  * child's p2m for one frame -- one to find the hole, one inside
  * add_to_physmap()'s get_two_gfns(), and one to read back what was just put
@@ -2025,9 +2025,17 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
  * So look the child's entry up once, call the fork-in page directly, and pay the
  * lock and the flush per run instead of per frame.
  *
- * Holding the lock across the run is safe for the same reason the operation is:
- * the child is paused and not yet reachable by anything else. It is dropped
- * before every preemption, because a continuation returns to the caller.
+ * The parent's p2m is held for the run for the same reason. Its lock is
+ * recursive, so nominate_page()'s lookup and add_to_physmap()'s insert stop
+ * acquiring anything -- they find it held already and only count the recursion --
+ * and the deferred TLB flush each of their unlocks would have performed happens
+ * once at the end of the run instead of twice per frame.
+ *
+ * Holding both across the run is safe for the same reason the operation is: both
+ * domains are paused, and the child is not reachable by anything else yet. The
+ * order is the child's and then the parent's, which is the order get_gfn()
+ * already nested them in. Both are dropped before every preemption, because a
+ * continuation returns to the caller.
  */
 int mem_sharing_fork_complete(struct domain *d)
 {
@@ -2045,6 +2053,7 @@ int mem_sharing_fork_complete(struct domain *d)
     max_pfn = pp2m->max_mapped_pfn;
 
     p2m_lock(cp2m);
+    p2m_lock(pp2m);
 
     for ( gfn = msd->next_gfn_to_materialize; gfn <= max_pfn; gfn++ )
     {
@@ -2117,20 +2126,24 @@ int mem_sharing_fork_complete(struct domain *d)
             if ( hypercall_preempt_check() )
             {
                 msd->next_gfn_to_materialize = gfn + 1;
+                p2m_unlock(pp2m);
                 p2m_unlock(cp2m);
                 goto out;
             }
             count = 0;
             /*
-             * Bound how long the run holds the lock even when the call is not
-             * preempted, so the deferred TLB flush the unlock performs happens
+             * Bound how long the run holds the locks even when the call is not
+             * preempted, so the deferred TLB flush each unlock performs happens
              * a few times over a guest rather than once at the end of it.
              */
+            p2m_unlock(pp2m);
             p2m_unlock(cp2m);
             p2m_lock(cp2m);
+            p2m_lock(pp2m);
         }
     }
 
+    p2m_unlock(pp2m);
     p2m_unlock(cp2m);
 
     /*
