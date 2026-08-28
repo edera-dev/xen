@@ -776,13 +776,22 @@ static int make_gicv3_its_node(libxl__gc *gc, void *fdt)
 
 }
 
-static int make_gicv3_node(libxl__gc *gc, void *fdt, bool vpci_enabled)
+static int make_gicv3_node(libxl__gc *gc, void *fdt, bool vpci_enabled,
+                           unsigned int max_vcpus)
 {
     int res;
     const uint64_t gicd_base = GUEST_GICV3_GICD_BASE;
     const uint64_t gicd_size = GUEST_GICV3_GICD_SIZE;
     const uint64_t gicr0_base = GUEST_GICV3_GICR0_BASE;
     const uint64_t gicr0_size = GUEST_GICV3_GICR0_SIZE;
+    const uint64_t gicr1_base = GUEST_GICV3_GICR1_BASE;
+    const uint64_t gicr1_size = GUEST_GICV3_GICR1_SIZE;
+    /*
+     * Xen only emulates the second redistributor region for domains which
+     * have more vCPUs than the first region can describe, so only advertise
+     * it in that case.
+     */
+    const bool two_rdist_regions = max_vcpus > GUEST_GICV3_GICR0_COUNT;
     const char *name = GCSPRINTF("interrupt-controller@%"PRIx64, gicd_base);
 
     res = fdt_begin_node(fdt, name);
@@ -806,10 +815,24 @@ static int make_gicv3_node(libxl__gc *gc, void *fdt, bool vpci_enabled)
     res = fdt_property(fdt, "interrupt-controller", NULL, 0);
     if (res) return res;
 
-    res = fdt_property_regs(gc, fdt, GUEST_ROOT_ADDRESS_CELLS, GUEST_ROOT_SIZE_CELLS,
-                            2,
-                            gicd_base, gicd_size,
-                            gicr0_base, gicr0_size);
+    if (two_rdist_regions) {
+        res = fdt_property_cell(fdt, "#redistributor-regions",
+                                GUEST_GICV3_RDIST_REGIONS);
+        if (res) return res;
+
+        res = fdt_property_regs(gc, fdt, GUEST_ROOT_ADDRESS_CELLS,
+                                GUEST_ROOT_SIZE_CELLS,
+                                3,
+                                gicd_base, gicd_size,
+                                gicr0_base, gicr0_size,
+                                gicr1_base, gicr1_size);
+    } else {
+        res = fdt_property_regs(gc, fdt, GUEST_ROOT_ADDRESS_CELLS,
+                                GUEST_ROOT_SIZE_CELLS,
+                                2,
+                                gicd_base, gicd_size,
+                                gicr0_base, gicr0_size);
+    }
     if (res) return res;
 
     res = fdt_property_cell(fdt, "linux,phandle", GUEST_PHANDLE_GIC);
@@ -1428,7 +1451,8 @@ next_resize:
                                  GUEST_GICC_BASE, GUEST_GICC_SIZE) );
             break;
         case LIBXL_GIC_VERSION_V3:
-            FDT( make_gicv3_node(gc, fdt, d_config->num_pcidevs) );
+            FDT( make_gicv3_node(gc, fdt, d_config->num_pcidevs,
+                                 info->max_vcpus) );
             break;
         default:
             LOG(ERROR, "Unknown GIC version %s",
