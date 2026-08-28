@@ -278,7 +278,7 @@ sysctl                             do       do       do       do       do
 domctl                             do       do       do       do       do
 #endif
 #ifdef CONFIG_KEXEC
-kexec_op                           compat   do       -        -        -
+kexec_op                           compat   do       compat   do       -
 #endif
 tmem_op                            -        -        -        -        -
 #ifdef CONFIG_ARGO
