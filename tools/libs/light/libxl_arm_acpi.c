@@ -84,6 +84,9 @@ static int libxl__estimate_madt_size(libxl__gc *gc,
                 ACPI_MADT_GICC_SIZE_v5 * info->max_vcpus +
                 sizeof(struct acpi_madt_generic_distributor) +
                 sizeof(struct acpi_madt_generic_redistributor);
+        /* Domains too big for the first redistributor region get a second. */
+        if (info->max_vcpus > GUEST_GICV3_GICR0_COUNT)
+            *size += sizeof(struct acpi_madt_generic_redistributor);
         break;
     default:
         LOG(ERROR, "Unknown GIC version");
@@ -323,6 +326,13 @@ static int make_acpi_madt(libxl__gc *gc, struct xc_dom_image *dom,
         table += sizeof(struct acpi_madt_generic_distributor);
         make_acpi_madt_gicr(table, GUEST_GICV3_GICR0_BASE,
                             GUEST_GICV3_GICR0_SIZE);
+
+        /* Must match the region count advertised by Xen and by the DT. */
+        if (info->max_vcpus > GUEST_GICV3_GICR0_COUNT) {
+            table += sizeof(struct acpi_madt_generic_redistributor);
+            make_acpi_madt_gicr(table, GUEST_GICV3_GICR1_BASE,
+                                GUEST_GICV3_GICR1_SIZE);
+        }
         break;
     default:
         LOG(ERROR, "Unknown GIC version");
