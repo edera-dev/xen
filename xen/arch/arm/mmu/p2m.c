@@ -202,7 +202,7 @@ void p2m_save_state(struct vcpu *p)
 void p2m_restore_state(struct vcpu *n)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(n->domain);
-    uint8_t *last_vcpu_ran;
+    uint16_t *last_vcpu_ran;
 
     if ( is_idle_vcpu(n) )
         return;
@@ -1498,6 +1498,8 @@ void p2m_final_teardown(struct domain *d)
 
     radix_tree_destroy(&p2m->mem_access_settings, NULL);
 
+    XFREE(p2m->last_vcpu_ran);
+
     p2m->domain = NULL;
 }
 
@@ -1529,6 +1531,12 @@ int p2m_init(struct domain *d)
         !iommu_has_feature(d, IOMMU_FEAT_COHERENT_WALK);
 
     /*
+     * "Trivial" initialisation is now complete.  Set the backpointer so
+     * p2m_teardown() and friends know to do something.
+     */
+    p2m->domain = d;
+
+    /*
      * Make sure that the type chosen to is able to store the an vCPU ID
      * between 0 and the maximum of virtual CPUS supported as long as
      * the INVALID_VCPU_ID.
@@ -1536,14 +1544,13 @@ int p2m_init(struct domain *d)
     BUILD_BUG_ON((1 << (sizeof(p2m->last_vcpu_ran[0]) * 8)) < MAX_VIRT_CPUS);
     BUILD_BUG_ON((1 << (sizeof(p2m->last_vcpu_ran[0])* 8)) < INVALID_VCPU_ID);
 
-    for_each_possible_cpu(cpu)
-       p2m->last_vcpu_ran[cpu] = INVALID_VCPU_ID;
+    p2m->last_vcpu_ran = xmalloc_array(typeof(*p2m->last_vcpu_ran),
+                                       nr_cpu_ids);
+    if ( !p2m->last_vcpu_ran )
+        return -ENOMEM;
 
-    /*
-     * "Trivial" initialisation is now complete.  Set the backpointer so
-     * p2m_teardown() and friends know to do something.
-     */
-    p2m->domain = d;
+    for ( cpu = 0; cpu < nr_cpu_ids; cpu++ )
+        p2m->last_vcpu_ran[cpu] = INVALID_VCPU_ID;
 
     rc = p2m_alloc_vmid(d);
     if ( rc )
