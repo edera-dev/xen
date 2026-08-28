@@ -117,8 +117,13 @@ struct p2m_domain {
     /* back pointer to domain */
     struct domain *domain;
 
-    /* Keeping track on which CPU this p2m was used and for which vCPU */
-    uint8_t last_vcpu_ran[NR_CPUS];
+    /*
+     * Keeping track on which CPU this p2m was used and for which vCPU.
+     * Dynamically allocated for nr_cpu_ids entries: sizing this by NR_CPUS
+     * would make struct domain (which must fit in a single page) grow with
+     * the build-time CPU limit rather than with the CPUs actually present.
+     */
+    uint16_t *last_vcpu_ran;
 };
 
 /*
