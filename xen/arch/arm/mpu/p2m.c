@@ -65,18 +65,23 @@ int p2m_init(struct domain *d)
     /* mem_access is NOT supported on MPU system. */
     p2m->mem_access_enabled = false;
 
-    /* Ensure that the type chosen is large enough for MAX_VIRT_CPUS. */
-    BUILD_BUG_ON((1 << (sizeof(p2m->last_vcpu_ran[0]) * 8)) < MAX_VIRT_CPUS);
-    BUILD_BUG_ON((1 << (sizeof(p2m->last_vcpu_ran[0]) * 8)) < INVALID_VCPU_ID);
-
-    for_each_possible_cpu(cpu)
-        p2m->last_vcpu_ran[cpu] = INVALID_VCPU_ID;
-
     /*
      * "Trivial" initialization is now complete. Set the backpointer so that
      * p2m_teardown() and related functions know to do something.
      */
     p2m->domain = d;
+
+    /* Ensure that the type chosen is large enough for MAX_VIRT_CPUS. */
+    BUILD_BUG_ON((1 << (sizeof(p2m->last_vcpu_ran[0]) * 8)) < MAX_VIRT_CPUS);
+    BUILD_BUG_ON((1 << (sizeof(p2m->last_vcpu_ran[0]) * 8)) < INVALID_VCPU_ID);
+
+    p2m->last_vcpu_ran = xmalloc_array(typeof(*p2m->last_vcpu_ran),
+                                       nr_cpu_ids);
+    if ( !p2m->last_vcpu_ran )
+        return -ENOMEM;
+
+    for ( cpu = 0; cpu < nr_cpu_ids; cpu++ )
+        p2m->last_vcpu_ran[cpu] = INVALID_VCPU_ID;
 
     rc = p2m_alloc_vmid(d);
     if ( rc )
@@ -111,6 +116,8 @@ void p2m_final_teardown(struct domain *d)
     p2m->root = NULL;
 
     p2m_free_vmid(d);
+
+    XFREE(p2m->last_vcpu_ran);
 
     p2m->domain = NULL;
 }
