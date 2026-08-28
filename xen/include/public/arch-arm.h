@@ -544,7 +544,7 @@ typedef uint64_t xen_callback_t;
 #define GUEST_RAM_BANK_SIZES   { GUEST_RAM0_SIZE, GUEST_RAM1_SIZE }
 
 /* Current supported guest VCPUs */
-#define GUEST_MAX_VCPUS 128
+#define GUEST_MAX_VCPUS 1024
 
 /* Interrupts */
 
