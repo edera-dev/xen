@@ -190,6 +190,14 @@ ARM only has one guest type at the moment
     Status, Arm32: Supported up to 12 GiB
     Status, Arm64: Supported up to 1 TiB
 
+### Virtual CPUs
+
+    Status, Arm32: Supported up to 8
+    Status, Arm64: Supported up to 1024
+
+On Arm64 a guest using a vGICv2 is limited to 8 vCPUs by that
+architecture; the limit above applies to guests using a vGICv3.
+
 ## Hypervisor file system
 
 ### Build info
