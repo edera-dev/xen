@@ -453,10 +453,36 @@ typedef uint64_t xen_callback_t;
 #define GUEST_GICV3_GICD_BASE      xen_mk_ullong(0x03001000)
 #define GUEST_GICV3_GICD_SIZE      xen_mk_ullong(0x00010000)
 
-#define GUEST_GICV3_RDIST_REGIONS  1
+/*
+ * The maximum number of redistributor regions a guest may be given.  A
+ * domain small enough to fit in the first region alone is only given that
+ * one; see GUEST_GICV3_GICR1_BASE below.
+ */
+#define GUEST_GICV3_RDIST_REGIONS  2
 
 #define GUEST_GICV3_GICR0_BASE     xen_mk_ullong(0x03020000) /* vCPU0..127 */
 #define GUEST_GICV3_GICR0_SIZE     xen_mk_ullong(0x01000000)
+
+/*
+ * Redistributors for vCPU128..1023.
+ *
+ * A second region is used rather than enlarging the first one for two
+ * reasons: GICR0 is immediately followed by the vITS, so it cannot grow in
+ * place, and keeping GICR0 exactly where it is leaves the memory layout of
+ * guests with at most 128 vCPUs unchanged.  This region is only advertised
+ * to domains which actually have more than 128 vCPUs.
+ */
+#define GUEST_GICV3_GICR1_BASE     xen_mk_ullong(0x08000000) /* vCPU128..1023 */
+#define GUEST_GICV3_GICR1_SIZE     xen_mk_ullong(0x07000000)
+
+/*
+ * Number of redistributors held by each region.  Each redistributor takes
+ * 128K of address space (GICV3_GICR_SIZE), so these are the region sizes
+ * above divided by 128K.  Their sum is the largest number of vCPUs this
+ * layout can describe.
+ */
+#define GUEST_GICV3_GICR0_COUNT    128
+#define GUEST_GICV3_GICR1_COUNT    896
 
 /*
  * 256 MB is reserved for VPCI configuration space based on calculation
