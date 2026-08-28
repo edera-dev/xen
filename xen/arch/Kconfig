@@ -13,6 +13,7 @@ config NR_CPUS
 	default "8" if RCAR3
 	default "4" if QEMU
 	default "4" if MPSOC
+	default "256" if ARM_64
 	default "128"
 	help
 	  Controls the build-time size of various arrays and bitmaps
@@ -22,6 +23,12 @@ config NR_CPUS
 	  For CPU cores which support Simultaneous Multi-Threading or similar
 	  technologies, this the number of logical threads which Xen will
 	  support.
+
+	  Note that this is a build-time upper bound, not the number of CPUs
+	  that will be used: the per-CPU data of CPUs which are not present is
+	  never allocated.  Raising it does however grow every cpumask_t (and
+	  therefore a number of structures embedding one), so platforms with a
+	  known-small CPU count are better off lowering it.
 
 config NR_NUMA_NODES
 	int "Maximum number of NUMA nodes supported"
