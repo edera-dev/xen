@@ -9,6 +9,7 @@
 #include <xen/mm.h>
 #include <xen/lib.h>
 #include <xen/iommu.h>
+#include <xen/vpci.h>
 #include <xen/sched.h>
 #include <xen/iocap.h>
 #include <xen/mm-frame.h>
@@ -156,11 +157,27 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
                                struct domain *d)
 {
     int ret;
-    device_t *pdev;
+    const device_t *pdev;
     struct physdev_pci_device dev = reattach->dev;
+    pci_sbdf_t sbdf = PCI_SBDF(dev.seg, dev.bus, dev.devfn);
 
     pcidevs_lock();
-    pdev = pci_get_pdev(d, PCI_SBDF(dev.seg, dev.bus, dev.devfn));
+
+    /*
+     * The hardware domain sees machine addresses, so its BDFs are the real
+     * ones. Anyone else sees whatever vPCI handed it, and has no way of
+     * knowing where the device really lives, so translate before looking it
+     * up. A domain without vPCI (a PV guest driving pcifront) gets no
+     * mapping here and so cannot name its devices at all.
+     */
+    if ( !is_hardware_domain(d) )
+    {
+        read_lock(&d->pci_lock);
+        pdev = vpci_get_pdev_by_guest_sbdf(d, sbdf);
+        read_unlock(&d->pci_lock);
+    }
+    else
+        pdev = pci_get_pdev(d, sbdf);
 
     if ( !pdev )
     {
@@ -168,7 +185,7 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
         return -ENODEV;
     }
 
-    ret = iommu_reattach_context(d, d, pdev, reattach->ctx_no);
+    ret = iommu_reattach_context(d, d, (device_t *)pdev, reattach->ctx_no);
 
     pcidevs_unlock();
     return ret;
@@ -380,6 +397,7 @@ static long do_iommu_subop(int subop, XEN_GUEST_HANDLE_PARAM(void) arg,
 
             ret = init_op(&init, d);
             gdprintk(XENLOG_INFO, PVIOMMU_PREFIX "init -> %ld\n", ret);
+            break;
         }
 
         case IOMMU_alloc_context:
