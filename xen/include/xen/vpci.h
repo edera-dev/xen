@@ -22,6 +22,17 @@
 /* Assign vPCI to device by adding handlers. */
 int __must_check vpci_assign_device(struct pci_dev *pdev);
 
+#ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
+const struct pci_dev *vpci_get_pdev_by_guest_sbdf(const struct domain *d,
+                                                  pci_sbdf_t guest_sbdf);
+#else
+static inline const struct pci_dev *vpci_get_pdev_by_guest_sbdf(
+    const struct domain *d, pci_sbdf_t guest_sbdf)
+{
+    return NULL;
+}
+#endif
+
 /* Remove all handlers and free vpci related structures. */
 void vpci_deassign_device(struct pci_dev *pdev);
 
