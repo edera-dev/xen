@@ -1430,6 +1430,27 @@ int apply_context_single(struct domain *domain, struct iommu_context *ctx,
     ret = iommu_flush_iotlb_dsi(iommu, prev_did, !prev_dom);
 
     /*
+     * dids are recycled between domains and VT-d is free to cache non-present
+     * translations, so whatever a previous owner of this did left behind has to
+     * go as well. Without this a device handed to a fresh domain faults with
+     * "PTE Read access is not set" while a walk of its page tables plainly
+     * shows the address mapped.
+     */
+    if ( did != prev_did )
+    {
+        int crc = iommu_flush_context_device(iommu, did, PCI_BDF(bus, devfn),
+                                             DMA_CCMD_MASK_NOBIT, 0);
+        int irc = iommu_flush_iotlb_dsi(iommu, did, 0);
+
+        if ( crc > 0 || irc > 0 )
+            iommu_flush_write_buffer(iommu);
+        if ( crc < 0 && rc >= 0 )
+            rc = crc;
+        if ( irc < 0 && ret >= 0 )
+            ret = irc;
+    }
+
+    /*
      * The current logic for returns:
      *   - positive  invoke iommu_flush_write_buffer to flush cache.
      *   - zero      on success.
