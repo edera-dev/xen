@@ -644,7 +644,7 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
     if ( nested_virt && !hvm_nested_virt_supported() )
     {
         dprintk(XENLOG_INFO, "Nested virt requested but not available\n");
-        return -EINVAL;        
+        return -EINVAL;
     }
 
     if ( nested_virt && !hap )
@@ -906,9 +906,6 @@ int arch_domain_create(struct domain *d,
     if ( (rc = init_domain_irq_mapping(d)) != 0 )
         goto fail;
 
-    if ( (rc = iommu_domain_init(d, config->iommu_opts)) != 0 )
-        goto fail;
-
     psr_domain_init(d);
 
     if ( is_hvm_domain(d) )
@@ -926,6 +923,9 @@ int arch_domain_create(struct domain *d,
     }
     else
         ASSERT_UNREACHABLE(); /* Not HVM and not PV? */
+
+    if ( (rc = iommu_domain_init(d, config->iommu_opts)) != 0 )
+        goto fail;
 
     if ( (rc = tsc_set_info(d, XEN_CPUID_TSC_MODE_DEFAULT, 0, 0, 0)) != 0 )
     {
@@ -2499,7 +2499,7 @@ int domain_relinquish_resources(struct domain *d)
 
     PROGRESS(iommu_pagetables):
 
-        ret = iommu_free_pgtables(d);
+        ret = iommu_free_pgtables(d, iommu_default_context(d));
         if ( ret )
             return ret;
 
