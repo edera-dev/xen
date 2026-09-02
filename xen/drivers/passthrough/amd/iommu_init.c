@@ -23,7 +23,7 @@
 
 #include "iommu.h"
 
-static int __initdata nr_amd_iommus;
+unsigned int nr_amd_iommus = 0;
 static bool __initdata pci_init;
 
 static struct tasklet amd_iommu_irq_tasklet;
@@ -596,7 +596,6 @@ static void iommu_check_event_log(struct amd_iommu *iommu)
                    sizeof(event_entry_t), parse_event_log_entry);
 
     spin_lock_irqsave(&iommu->lock, flags);
-    
     /* Check event overflow. */
     entry = readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET);
     if ( entry & IOMMU_STATUS_EVENT_LOG_OVERFLOW )
@@ -652,9 +651,8 @@ static void iommu_check_ppr_log(struct amd_iommu *iommu)
 
     iommu_read_log(iommu, &iommu->ppr_log,
                    sizeof(ppr_entry_t), parse_ppr_log_entry);
-    
-    spin_lock_irqsave(&iommu->lock, flags);
 
+    spin_lock_irqsave(&iommu->lock, flags);
     /* Check event overflow. */
     entry = readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET);
     if ( entry & IOMMU_STATUS_PPR_LOG_OVERFLOW )
@@ -910,6 +908,7 @@ static void enable_iommu(struct amd_iommu *iommu)
     set_iommu_translation_control(iommu, IOMMU_CONTROL_ENABLED);
 
     iommu->enabled = 1;
+    iommu->index = nr_amd_iommus;
 
     spin_unlock_irqrestore(&iommu->lock, flags);
 
@@ -1321,6 +1320,51 @@ static int __init cf_check amd_iommu_setup_device_table(
     return 0;
 }
 
+static void cf_check amd_dump_domain_iommu_contexts(struct domain *d)
+{
+    unsigned int i, iommu_no;
+    struct domain_iommu *hd = dom_iommu(d);
+    struct iommu_context *ctx;
+    struct pci_dev *pdev;
+
+    if (d == dom_io)
+        printk("d[IO] contexts\n");
+    else
+        printk("d%hu contexts\n", d->domain_id);
+
+    for (i = 0; i < (1 + hd->other_contexts.count); ++i)
+    {
+        if ( (ctx = iommu_get_context(d, i)) )
+        {
+            printk(" Context %d (%"PRI_mfn")\n", i,
+                   mfn_x(page_to_mfn(ctx->arch.amd.root_table)));
+
+            for (iommu_no = 0; iommu_no < nr_amd_iommus; iommu_no++)
+                printk("  IOMMU %u (used=%lu; did=%hu)\n", iommu_no,
+                       ctx->arch.amd.iommu_dev_cnt[iommu_no],
+                       ctx->arch.amd.didmap[iommu_no]);
+
+            list_for_each_entry(pdev, &ctx->devices, context_list)
+            {
+                printk("  - %pp\n", &pdev->sbdf);
+            }
+
+            iommu_put_context(ctx);
+        }
+    }
+}
+
+static void cf_check amd_dump_iommu_contexts(unsigned char key)
+{
+    struct domain *d;
+
+    for_each_domain(d)
+        if (is_iommu_enabled(d))
+            amd_dump_domain_iommu_contexts(d);
+
+    amd_dump_domain_iommu_contexts(dom_io);
+}
+
 /* Check whether SP5100 SATA Combined mode is on */
 static bool __init amd_sp5100_erratum28(void)
 {
@@ -1492,6 +1536,7 @@ int __init amd_iommu_init(bool xt)
         register_keyhandler('V', &amd_iommu_dump_intremap_tables,
                             "dump IOMMU intremap tables", 0);
 
+    register_keyhandler('X', amd_dump_iommu_contexts, "dump iommu contexts", 1);
     return 0;
 
 error_out:
@@ -1544,7 +1589,7 @@ static void invalidate_all_domain_pages(void)
 
     for_each_domain( d )
         if ( is_iommu_enabled(d) )
-            amd_iommu_flush_all_pages(d);
+            amd_iommu_flush_all_pages(d, iommu_default_context(d));
 }
 
 static int cf_check _invalidate_all_devices(
@@ -1600,7 +1645,7 @@ void cf_check amd_iommu_resume(void)
     for_each_amd_iommu ( iommu )
     {
        /*
-        * To make sure that iommus have not been touched 
+        * To make sure that iommus have not been touched
         * before re-enablement
         */
         disable_iommu(iommu);
