@@ -58,6 +58,7 @@ bool __read_mostly iommu_snoop = true;
 
 static unsigned int __read_mostly nr_iommus;
 static unsigned int __ro_after_init min_pt_levels = UINT_MAX;
+static unsigned int __ro_after_init min_mgaw = UINT_MAX;
 
 static struct tasklet vtd_fault_tasklet;
 
@@ -1163,6 +1164,14 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
     iommu->nr_pt_levels = agaw_to_level(agaw);
     if ( min_pt_levels > iommu->nr_pt_levels )
         min_pt_levels = iommu->nr_pt_levels;
+
+    /*
+     * SAGAW above only says which page table depths the unit implements. How
+     * wide an address it will actually accept is MGAW, which can be narrower,
+     * and is what a guest has to stay inside.
+     */
+    if ( min_mgaw > cap_mgaw(iommu->cap) )
+        min_mgaw = cap_mgaw(iommu->cap);
 
     if ( !ecap_coherent(iommu->ecap) )
         iommu_non_coherent = true;
@@ -2611,8 +2620,28 @@ static int cf_check intel_iommu_remove_devfn(struct domain *d, struct pci_dev *p
 static uint64_t cf_check intel_iommu_get_max_iova(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
+    unsigned int level = agaw_to_level(hd->arch.vtd.agaw);
+    unsigned int width;
 
-    return (1LLU << agaw_to_width(hd->arch.vtd.agaw)) - 1;
+    /*
+     * Every domain gets DEFAULT_DOMAIN_ADDRESS_WIDTH regardless of what the
+     * hardware can address, so clamp before reporting an aperture to a guest.
+     * Dom0 never noticed: its IOVAs come from Xen and never exceed physical
+     * memory. A guest allocates from the top of whatever it is told and would
+     * fault with "Access beyond MGAW".
+     */
+    if ( level > min_pt_levels )
+        level = min_pt_levels;
+
+    width = agaw_to_width(level_to_agaw(level));
+
+    if ( width > min_mgaw )
+        width = min_mgaw;
+
+    if ( width >= BITS_PER_LLONG )
+        return ~0ULL;
+
+    return (1ULL << width) - 1;
 }
 
 static void cf_check vtd_quiesce(void)
