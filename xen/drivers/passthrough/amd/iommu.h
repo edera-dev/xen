@@ -109,6 +109,13 @@ struct amd_iommu {
 
     int enabled;
 
+    /*
+     * Set when the command buffer is found never to advance its head pointer.
+     * Invalidation then cannot be issued at all, so it is skipped rather than
+     * waited on; only correct for an IOMMU that does not cache translations.
+     */
+    bool cmd_buffer_dead;
+
     unsigned int index;
 
     struct list_head ats_devices;
