@@ -114,6 +114,12 @@ static void flush_command_buffer(struct amd_iommu *iommu,
                    readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET),
                    readl(iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET),
                    readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET));
+            printk(XENLOG_WARNING
+                   "AMD IOMMU %pp: event log head %#x tail %#x\n",
+                   &iommu->sbdf,
+                   readl(iommu->mmio_base + IOMMU_EVENT_LOG_HEAD_OFFSET),
+                   readl(iommu->mmio_base + IOMMU_EVENT_LOG_TAIL_OFFSET));
+            iommu_check_event_log(iommu);
             if ( !(readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET) &
                    IOMMU_RING_BUFFER_PTR_MASK) )
                 iommu->cmd_buffer_dead = true;
