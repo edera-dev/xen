@@ -56,6 +56,7 @@ struct arch_iommu_context
             struct page_info *root_table;
             domid_t *didmap; /* per-iommu DID (valid only if related iommu_dev_cnt > 0) */
             unsigned long *iommu_dev_cnt; /* counter of devices per iommu */
+            unsigned int paging_mode; /* levels of this context's page tables */
         } amd;
     };
 };
