@@ -428,6 +428,16 @@ void amd_iommu_flush_intremap(struct amd_iommu *iommu, uint16_t bdf)
     flush_command_buffer(iommu, 0);
 }
 
+void amd_iommu_probe_cmd_buffer(struct amd_iommu *iommu)
+{
+    printk(XENLOG_INFO "AMD IOMMU %pp: probing command buffer\n",
+           &iommu->sbdf);
+    flush_command_buffer(iommu, 0);
+    if ( !iommu->cmd_buffer_dead )
+        printk(XENLOG_INFO "AMD IOMMU %pp: command buffer works\n",
+               &iommu->sbdf);
+}
+
 void amd_iommu_flush_all_caches(struct amd_iommu *iommu)
 {
     invalidate_iommu_all(iommu);
