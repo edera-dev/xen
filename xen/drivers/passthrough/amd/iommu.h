@@ -320,6 +320,7 @@ extern struct hpet_sbdf {
 extern unsigned int amd_iommu_acpi_info;
 extern unsigned int amd_iommu_max_paging_mode;
 extern unsigned int amd_iommu_guest_pt_levels;
+extern unsigned int amd_iommu_dump_bdf;
 extern int amd_iommu_min_paging_mode;
 
 extern void *shared_intremap_table;
