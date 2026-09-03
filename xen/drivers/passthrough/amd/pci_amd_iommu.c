@@ -352,6 +352,10 @@ unsigned int __read_mostly amd_iommu_max_paging_mode = IOMMU_MAX_PT_LEVELS;
  * The hardware domain is left alone: its identity mappings cover host RAM, and
  * a mapping that falls outside the tables reaches domain_crash().
  */
+/* Device to trace page table updates for, 0 to trace none. */
+unsigned int __read_mostly amd_iommu_dump_bdf;
+integer_param("amd-iommu-dump-bdf", amd_iommu_dump_bdf);
+
 unsigned int __read_mostly amd_iommu_guest_pt_levels;
 integer_param("amd-iommu-guest-pt-levels", amd_iommu_guest_pt_levels);
 int __read_mostly amd_iommu_min_paging_mode = 1;
