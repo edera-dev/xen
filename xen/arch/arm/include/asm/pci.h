@@ -104,6 +104,13 @@ struct pci_host_bridge *
 pci_host_common_probe(struct dt_device_node *dev,
                       const struct pci_ecam_ops *ops,
                       const struct pci_ecam_ops *child_ops);
+#ifdef CONFIG_ACPI
+struct pci_host_bridge *pci_host_acpi_probe(uint16_t segment,
+                                            paddr_t mcfg_addr,
+                                            uint8_t busn_start,
+                                            uint8_t busn_end,
+                                            const struct pci_ecam_ops *ops);
+#endif
 int pci_init_bridge(pci_sbdf_t sbdf);
 int pci_generic_config_read(struct pci_host_bridge *bridge, pci_sbdf_t sbdf,
                             uint32_t reg, uint32_t len, uint32_t *value);
