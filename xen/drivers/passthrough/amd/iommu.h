@@ -270,6 +270,7 @@ void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
                             domid_t domid);
 void amd_iommu_flush_intremap(struct amd_iommu *iommu, uint16_t bdf);
 void amd_iommu_flush_all_caches(struct amd_iommu *iommu);
+void amd_iommu_probe_cmd_buffer(struct amd_iommu *iommu);
 
 /* find iommu for bdf */
 struct amd_iommu *find_iommu_for_device(pci_sbdf_t sbdf);
