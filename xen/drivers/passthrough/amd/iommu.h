@@ -28,6 +28,7 @@
 #include <xen/domain_page.h>
 #include <xen/iommu.h>
 #include <xen/msi.h>
+#include <xen/acpi.h>
 
 #include <asm/msi.h>
 #include <asm/apicdef.h>
@@ -153,6 +154,23 @@ int iterate_ivrs_entries(int (*handler)(const struct amd_iommu *iommu,
 extern bool iommuv2_enabled;
 
 struct acpi_ivrs_hardware;
+
+/*
+ * The fixed portion of an IVHD block is shorter for type 0x10, which lacks the
+ * EFR image and the reserved field that follow it.
+ */
+static inline size_t
+get_ivhd_header_size(const struct acpi_ivrs_hardware *ivhd_block)
+{
+    switch ( ivhd_block->header.type )
+    {
+    case ACPI_IVRS_TYPE_HARDWARE:
+        return offsetof(struct acpi_ivrs_hardware, efr_image);
+    case ACPI_IVRS_TYPE_HARDWARE_11H:
+        return sizeof(struct acpi_ivrs_hardware);
+    }
+    return 0;
+}
 
 #define for_each_amd_iommu(amd_iommu) \
     list_for_each_entry(amd_iommu, \
