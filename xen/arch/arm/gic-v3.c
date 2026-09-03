@@ -1801,7 +1801,15 @@ gic_acpi_parse_cpu_redistributor(struct acpi_subtable_header *header,
     u32 size;
 
     processor = (struct acpi_madt_generic_interrupt *)header;
-    if ( !(processor->flags & ACPI_MADT_ENABLED) )
+
+    /*
+     * Firmware is allowed to describe CPUs which are not enabled, and only an
+     * enabled GICC entry with a valid GICR base address describes a
+     * redistributor.  Skip anything else rather than registering a bogus
+     * region; this must stay in step with gic_acpi_get_madt_cpu_num().
+     */
+    if ( !(processor->flags & ACPI_MADT_ENABLED) ||
+         !processor->gicr_base_address )
         return 0;
 
     size = gic_dist_supports_dvis() ? 4 * SZ_64K : 2 * SZ_64K;
@@ -1817,9 +1825,17 @@ gic_acpi_get_madt_cpu_num(struct acpi_subtable_header *header,
     struct acpi_madt_generic_interrupt *cpuif;
 
     cpuif = (struct acpi_madt_generic_interrupt *)header;
-    if ( BAD_MADT_GICC_ENTRY(cpuif, end) || !cpuif->gicr_base_address )
+    if ( BAD_MADT_GICC_ENTRY(cpuif, end) )
         return -EINVAL;
 
+    /*
+     * Returning an error here would abort the whole MADT scan, so only a
+     * malformed entry may do so.  A well formed entry which does not describe
+     * a redistributor (a disabled CPU, or one whose redistributor is
+     * described by a GICR subtable) is not an error: it merely does not
+     * contribute a region.  The count is therefore an upper bound on the
+     * number of regions gic_acpi_parse_cpu_redistributor() will add.
+     */
     return 0;
 }
 
@@ -1873,7 +1889,7 @@ static void __init gicv3_acpi_init(void)
         count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
                                       gic_acpi_get_madt_cpu_num, 0);
         if (count <= 0)
-            panic("GICv3: No valid GICR entries exists\n");
+            panic("GICv3: No valid GICC entries exists\n");
 
         gicr_table = false;
     }
@@ -1892,7 +1908,7 @@ static void __init gicv3_acpi_init(void)
         /* Parse Re-distributor entries described in CPU interface table */
         count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
                                       gic_acpi_parse_cpu_redistributor, count);
-    if ( count <= 0 )
+    if ( count <= 0 || !gicv3.rdist_count )
         panic("GICv3: Can't get Redistributor entry\n");
 
     /* Collect CPU base addresses */
