@@ -42,6 +42,14 @@ int iort_map_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
  */
 int iort_get_msi_base(uint16_t segment, uint32_t rid, paddr_t *base);
 
+/*
+ * Size, and then build, the IORT handed to the hardware domain.  It omits the
+ * SMMU nodes so that the domain does not drive hardware Xen owns, while still
+ * describing the ITS, which Linux needs in order to have an MSI domain at all.
+ */
+int iort_hwdom_size(uint32_t *size);
+int iort_make_hwdom_table(void *base, size_t size, uint32_t *len);
+
 /* Invoke @cb for every SMMUv3 node in the table, stopping on a non-zero return. */
 int iort_for_each_smmu_v3(int (*cb)(const struct acpi_iort_node *node,
                                     void *arg), void *arg);
