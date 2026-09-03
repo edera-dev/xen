@@ -102,12 +102,16 @@ endchoice
 source "arch/Kconfig"
 
 config ACPI
-	bool "ACPI (Advanced Configuration and Power Interface) Support (UNSUPPORTED)" if UNSUPPORTED
+	bool "ACPI (Advanced Configuration and Power Interface) Support"
 	depends on ARM_64 && ARM_EFI
+	default y
 	help
-
 	  Advanced Configuration and Power Interface (ACPI) support for Xen is
 	  an alternative to device tree on ARM64. This requires UEFI.
+
+	  Xen only uses ACPI when the platform supplies no device tree, or when
+	  acpi=force is given on the command line, so building this in does not
+	  change the behaviour of a device tree platform.
 
 config ARM_EFI
 	bool "UEFI boot service support"
@@ -144,8 +148,16 @@ config GICV3_ESPI
 	  architecture.
 
 config HAS_ITS
-        bool "GICv3 ITS MSI controller support (UNSUPPORTED)" if UNSUPPORTED
+        bool "GICv3 ITS MSI controller support"
         depends on GICV3 && !NEW_VGIC && !ARM_32
+        default y
+        help
+          Support for the GICv3 Interrupt Translation Service, which a GICv3
+          system needs in order to deliver MSIs.  Without it Xen never enables
+          LPIs, so no MSI capable device can raise an interrupt.
+
+          Note that, unlike ACPI, this takes effect wherever the hardware has
+          an ITS, including device tree platforms.
 
 config OVERLAY_DTB
 	bool "DTB overlay support (UNSUPPORTED)" if UNSUPPORTED
