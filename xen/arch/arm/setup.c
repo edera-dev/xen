@@ -51,6 +51,7 @@
 #include <asm/setup.h>
 #include <xsm/xsm.h>
 #include <asm/acpi.h>
+#include <asm/iort.h>
 
 /*
  * Sanitized version of cpuinfo containing only features available on all
@@ -374,6 +375,8 @@ void asmlinkage __init noreturn start_xen(unsigned long fdt_paddr)
     init_IRQ();
 
     platform_init();
+
+    iort_init();
 
     preinit_xen_time();
 
