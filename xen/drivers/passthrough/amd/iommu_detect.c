@@ -63,7 +63,12 @@ void __init get_iommu_features(struct amd_iommu *iommu)
     if ( !(amd_iommu_acpi_info & ACPI_IVRS_EFR_SUP) )
     {
         if ( !iommu_has_cap(iommu, PCI_CAP_EFRSUP_SHIFT) )
+        {
+            /* No register to read, so nothing says whether it caches. */
+            if ( amd_iommu_flush_on_map < 0 )
+                amd_iommu_flush_on_map = true;
             return;
+        }
 
         iommu->features.raw =
             readq(iommu->mmio_base + IOMMU_EXT_FEATURE_MMIO_OFFSET);
@@ -71,6 +76,15 @@ void __init get_iommu_features(struct amd_iommu *iommu)
         if ( 4 + iommu->features.flds.hats < amd_iommu_max_paging_mode )
             amd_iommu_max_paging_mode = 4 + iommu->features.flds.hats;
     }
+
+    /*
+     * An IOMMU that caches entries it did not find present needs invalidating
+     * after one is installed. The extended feature register says whether it
+     * does; with no register to read, nothing says either way and the safe
+     * answer is to invalidate.
+     */
+    if ( amd_iommu_flush_on_map < 0 )
+        amd_iommu_flush_on_map = !iommu->features.raw;
 
     /* Don't log the same set of features over and over. */
     first = list_first_entry(&amd_iommu_head, struct amd_iommu, list);
