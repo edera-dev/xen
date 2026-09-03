@@ -128,3 +128,14 @@ paddr_t __init acpi_get_table_offset(struct membank tbl_add[],
 
     return offset;
 }
+
+unsigned int __init acpi_get_madt_gicc_length(void)
+{
+    const struct acpi_subtable_header *header;
+
+    header = acpi_table_get_entry_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT, 0);
+    if ( !header )
+        return 0;
+
+    return header->length;
+}
