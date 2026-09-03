@@ -64,6 +64,13 @@ static void set_iommu_ht_flags(struct amd_iommu *iommu)
     /* Force coherent */
     iommu->ctrl.coherent = true;
 
+    /*
+     * Bound how long the IOMMU waits for an invalidation to complete. Zero
+     * means wait indefinitely, which Linux never programs -- it always sets
+     * one second -- so an emulated IOMMU may not expect it.
+     */
+    iommu->ctrl.inv_timeout = IOMMU_CONTROL_INV_TIMEOUT_1S;
+
     writeq(iommu->ctrl.raw, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
 }
 
