@@ -21,6 +21,8 @@
 #include <xen/lib.h>
 
 #include <asm/device.h>
+#include <asm/iommu_fwspec.h>
+#include <asm/iort.h>
 
 /*
  * Deferred probe list is used to keep track of devices for which driver
@@ -48,11 +50,53 @@ void __init iommu_set_ops(const struct iommu_ops *ops)
     iommu_ops = ops;
 }
 
+#ifdef CONFIG_ACPI
+static int __init iommu_acpi_probe_smmu(const struct acpi_iort_node *node,
+                                        void *arg)
+{
+    unsigned int *num_iommus = arg;
+    int rc;
+
+    rc = acpi_device_init(DEVICE_IOMMU, node, ACPI_IORT_NODE_SMMU_V3);
+    if ( !rc )
+        (*num_iommus)++;
+    /*
+     * -EBADF means no driver claimed this node, which is not fatal: the
+     * system may simply have been built without that driver.
+     */
+    else if ( rc != -EBADF && rc != -ENODEV )
+        return rc;
+
+    return 0;
+}
+
+/* Instantiate every SMMU the IORT describes. */
+static int __init iommu_acpi_hardware_setup(void)
+{
+    unsigned int num_iommus = 0;
+    int rc;
+
+    rc = iort_for_each_smmu_v3(iommu_acpi_probe_smmu, &num_iommus);
+    if ( rc )
+        return rc;
+
+    return num_iommus ? 0 : -ENODEV;
+}
+#else
+static int __init iommu_acpi_hardware_setup(void)
+{
+    return -ENODEV;
+}
+#endif
+
 int __init iommu_hardware_setup(void)
 {
     struct dt_device_node *np, *tmp;
     int rc;
     unsigned int num_iommus = 0;
+
+    if ( !acpi_disabled )
+        return iommu_acpi_hardware_setup();
 
     dt_for_each_device_node(dt_host, np)
     {
@@ -153,6 +197,57 @@ bool arch_iommu_use_permitted(const struct domain *d)
     return true;
 }
 
+#if defined(CONFIG_HAS_PCI) && defined(CONFIG_ACPI)
+/*
+ * The IORT counterpart of iommu_add_dt_pci_sideband_ids(): translate the
+ * device's requester ID into the StreamID its SMMU sees, and hand both to the
+ * driver.
+ */
+static int iommu_add_iort_pci_sideband_ids(struct pci_dev *pdev)
+{
+    const struct iommu_ops *ops = iommu_get_ops();
+    struct device *dev = pci_to_dev(pdev);
+    unsigned int devfn = pdev->devfn;
+    int rc;
+
+    if ( !iommu_enabled )
+        return 1;
+
+    if ( !ops || !ops->acpi_xlate )
+        return -EINVAL;
+
+    if ( dev_iommu_fwspec_get(dev) )
+        return -EEXIST;
+
+    do {
+        const struct acpi_iort_node *node;
+        uint32_t streamid;
+
+        rc = iort_map_rid(pdev->seg, PCI_BDF(pdev->bus, devfn),
+                          ACPI_IORT_NODE_SMMU_V3, &streamid, &node);
+        if ( rc )
+            /*
+             * A device the IORT does not route to an SMMU is not an error;
+             * it simply is not translated.
+             */
+            return (rc == -ENODEV) ? 1 : rc;
+
+        rc = ops->acpi_xlate(dev, node, streamid);
+        if ( rc < 0 )
+        {
+            iommu_fwspec_free(dev);
+            return -EINVAL;
+        }
+
+        devfn += pdev->phantom_stride;
+    }
+    while ( (devfn != pdev->devfn) &&
+            (PCI_SLOT(devfn) == PCI_SLOT(pdev->devfn)) );
+
+    return rc;
+}
+#endif
+
 int iommu_add_pci_sideband_ids(struct pci_dev *pdev)
 {
     int ret = -EOPNOTSUPP;
@@ -160,6 +255,10 @@ int iommu_add_pci_sideband_ids(struct pci_dev *pdev)
 #ifdef CONFIG_HAS_PCI
     if ( acpi_disabled )
         ret = iommu_add_dt_pci_sideband_ids(pdev);
+#ifdef CONFIG_ACPI
+    else
+        ret = iommu_add_iort_pci_sideband_ids(pdev);
+#endif
 #endif
 
     return ret;
