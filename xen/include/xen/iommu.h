@@ -384,6 +384,13 @@ struct iommu_ops {
      * that device (device IDs, etc).
      */
     int (*dt_xlate)(device_t *dev, const struct dt_phandle_args *args);
+    /*
+     * Bind @dev to the IOMMU described by IORT node @node, with the sideband
+     * ID the IORT translated for it.  The ACPI counterpart of dt_xlate, but
+     * the driver also establishes the fwspec, since only it can map an IORT
+     * node back to the device it probed.
+     */
+    int (*acpi_xlate)(device_t *dev, const void *node, uint32_t id);
 #endif
     /* Inhibit all interrupt generation, to be used at shutdown. */
     void (*quiesce)(void);
