@@ -67,111 +67,69 @@ static void set_iommu_ht_flags(struct amd_iommu *iommu)
     writeq(iommu->ctrl.raw, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
 }
 
+/*
+ * The device table, command buffer and log base registers are architecturally
+ * 64 bits wide and Linux programs each with a single 8-byte access.  Emulated
+ * IOMMUs may only decode that width, and a pair of 32-bit writes also leaves
+ * the register briefly holding a base with a zero length field, so write the
+ * whole thing at once.
+ */
+static void set_iommu_base_reg(struct amd_iommu *iommu, unsigned int offset,
+                               paddr_t maddr, uint64_t extra)
+{
+    writeq((maddr & PADDR_MASK & PAGE_MASK) | extra,
+           iommu->mmio_base + offset);
+}
+
 static void register_iommu_dev_table_in_mmio_space(struct amd_iommu *iommu)
 {
-    u64 addr_64, addr_lo, addr_hi;
-    u32 entry;
-
     ASSERT( iommu->dev_table.buffer );
 
-    addr_64 = (u64)virt_to_maddr(iommu->dev_table.buffer);
-    addr_lo = addr_64 & DMA_32BIT_MASK;
-    addr_hi = addr_64 >> 32;
-
-    entry = 0;
-    iommu_set_addr_lo_to_reg(&entry, addr_lo >> PAGE_SHIFT);
-    set_field_in_reg_u32((iommu->dev_table.alloc_size / PAGE_SIZE) - 1,
-                         entry, IOMMU_DEV_TABLE_SIZE_MASK,
-                         IOMMU_DEV_TABLE_SIZE_SHIFT, &entry);
-    writel(entry, iommu->mmio_base + IOMMU_DEV_TABLE_BASE_LOW_OFFSET);
-
-    entry = 0;
-    iommu_set_addr_hi_to_reg(&entry, addr_hi);
-    writel(entry, iommu->mmio_base + IOMMU_DEV_TABLE_BASE_HIGH_OFFSET);
+    set_iommu_base_reg(iommu, IOMMU_DEV_TABLE_BASE_LOW_OFFSET,
+                       virt_to_maddr(iommu->dev_table.buffer),
+                       (iommu->dev_table.alloc_size / PAGE_SIZE) - 1);
 }
 
 static void register_iommu_cmd_buffer_in_mmio_space(struct amd_iommu *iommu)
 {
-    u64 addr_64;
-    u32 addr_lo, addr_hi;
     u32 power_of2_entries;
-    u32 entry;
 
     ASSERT( iommu->cmd_buffer.buffer );
-
-    addr_64 = virt_to_maddr(iommu->cmd_buffer.buffer);
-    addr_lo = addr_64;
-    addr_hi = addr_64 >> 32;
-
-    entry = 0;
-    iommu_set_addr_lo_to_reg(&entry, addr_lo >> PAGE_SHIFT);
-    writel(entry, iommu->mmio_base + IOMMU_CMD_BUFFER_BASE_LOW_OFFSET);
 
     power_of2_entries = get_order_from_bytes(iommu->cmd_buffer.size) +
         PAGE_SHIFT - IOMMU_CMD_BUFFER_ENTRY_ORDER;
 
-    entry = 0;
-    iommu_set_addr_hi_to_reg(&entry, addr_hi);
-    set_field_in_reg_u32(power_of2_entries, entry,
-                         IOMMU_CMD_BUFFER_LENGTH_MASK,
-                         IOMMU_CMD_BUFFER_LENGTH_SHIFT, &entry);
-    writel(entry, iommu->mmio_base+IOMMU_CMD_BUFFER_BASE_HIGH_OFFSET);
+    set_iommu_base_reg(iommu, IOMMU_CMD_BUFFER_BASE_LOW_OFFSET,
+                       virt_to_maddr(iommu->cmd_buffer.buffer),
+                       (uint64_t)power_of2_entries << 56);
 }
 
 static void register_iommu_event_log_in_mmio_space(struct amd_iommu *iommu)
 {
-    u64 addr_64;
-    u32 addr_lo, addr_hi;
     u32 power_of2_entries;
-    u32 entry;
 
     ASSERT( iommu->event_log.buffer );
-
-    addr_64 = virt_to_maddr(iommu->event_log.buffer);
-    addr_lo = addr_64;
-    addr_hi = addr_64 >> 32;
-
-    entry = 0;
-    iommu_set_addr_lo_to_reg(&entry, addr_lo >> PAGE_SHIFT);
-    writel(entry, iommu->mmio_base + IOMMU_EVENT_LOG_BASE_LOW_OFFSET);
 
     power_of2_entries = get_order_from_bytes(iommu->event_log.size) +
                         IOMMU_EVENT_LOG_POWER_OF2_ENTRIES_PER_PAGE;
 
-    entry = 0;
-    iommu_set_addr_hi_to_reg(&entry, addr_hi);
-    set_field_in_reg_u32(power_of2_entries, entry,
-                        IOMMU_EVENT_LOG_LENGTH_MASK,
-                        IOMMU_EVENT_LOG_LENGTH_SHIFT, &entry);
-    writel(entry, iommu->mmio_base+IOMMU_EVENT_LOG_BASE_HIGH_OFFSET);
+    set_iommu_base_reg(iommu, IOMMU_EVENT_LOG_BASE_LOW_OFFSET,
+                       virt_to_maddr(iommu->event_log.buffer),
+                       (uint64_t)power_of2_entries << 56);
 }
 
 static void register_iommu_ppr_log_in_mmio_space(struct amd_iommu *iommu)
 {
-    u64 addr_64;
-    u32 addr_lo, addr_hi;
     u32 power_of2_entries;
-    u32 entry;
 
     ASSERT ( iommu->ppr_log.buffer );
-
-    addr_64 = virt_to_maddr(iommu->ppr_log.buffer);
-    addr_lo = addr_64;
-    addr_hi = addr_64 >> 32;
-
-    entry = 0;
-    iommu_set_addr_lo_to_reg(&entry, addr_lo >> PAGE_SHIFT);
-    writel(entry, iommu->mmio_base + IOMMU_PPR_LOG_BASE_LOW_OFFSET);
 
     power_of2_entries = get_order_from_bytes(iommu->ppr_log.size) +
                         IOMMU_PPR_LOG_POWER_OF2_ENTRIES_PER_PAGE;
 
-    entry = 0;
-    iommu_set_addr_hi_to_reg(&entry, addr_hi);
-    set_field_in_reg_u32(power_of2_entries, entry,
-                        IOMMU_PPR_LOG_LENGTH_MASK,
-                        IOMMU_PPR_LOG_LENGTH_SHIFT, &entry);
-    writel(entry, iommu->mmio_base + IOMMU_PPR_LOG_BASE_HIGH_OFFSET);
+    set_iommu_base_reg(iommu, IOMMU_PPR_LOG_BASE_LOW_OFFSET,
+                       virt_to_maddr(iommu->ppr_log.buffer),
+                       (uint64_t)power_of2_entries << 56);
 }
 
 
