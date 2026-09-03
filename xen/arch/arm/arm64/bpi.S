@@ -96,6 +96,8 @@ END(__mitigate_spectre_bhb_clear_insn_start)
 mitigate_spectre_bhb_loop 8
 mitigate_spectre_bhb_loop 24
 mitigate_spectre_bhb_loop 32
+mitigate_spectre_bhb_loop 38
+mitigate_spectre_bhb_loop 132
 smccc_workaround 1, #ARM_SMCCC_ARCH_WORKAROUND_1_FID
 smccc_workaround 3, #ARM_SMCCC_ARCH_WORKAROUND_3_FID
 
