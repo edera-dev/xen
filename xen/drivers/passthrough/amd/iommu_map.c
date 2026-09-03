@@ -615,8 +615,13 @@ int cf_check amd_iommu_flush_iotlb_pages(
         ASSERT(flush_flags);
     }
 
-    /* Unless a PTE was modified, no flush is required */
-    if ( !(flush_flags & IOMMU_FLUSHF_modified) )
+    /*
+     * An IOMMU that caches only entries it found present needs no invalidation
+     * after a new one is installed. One that instead shadows these tables does
+     * -- it would otherwise never learn the entry exists -- and the extended
+     * feature register says which, when it can be read at all.
+     */
+    if ( !(flush_flags & IOMMU_FLUSHF_modified) && !amd_iommu_flush_on_map )
         return 0;
 
     /* If so requested or if the range wraps then just flush everything. */
