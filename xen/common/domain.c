@@ -1182,16 +1182,25 @@ void __init setup_system_domains(void)
     {
         unsigned int n = max(arch_hwdom_irqs(dom_xen), nr_static_irqs);
 
-        if ( extra_hwdom_irqs > n - nr_static_irqs )
+        /*
+         * On x86 this runs before init_irq_data(), leaving nr_irqs zero and no
+         * usable ceiling to check against -- clamping here would silently zero
+         * whatever was asked for. domain_create() bounds nr_pirqs by nr_irqs
+         * once it is known, so skip the check rather than apply a bogus one.
+         */
+        if ( n > nr_static_irqs )
         {
-            extra_hwdom_irqs = n - nr_static_irqs;
-            printk(XENLOG_WARNING "hwdom IRQs bounded to %u\n", n);
-        }
-        if ( extra_domU_irqs >
-             max(DEFAULT_EXTRA_DOMU_IRQS, n - nr_static_irqs) )
-        {
-            extra_domU_irqs = n - nr_static_irqs;
-            printk(XENLOG_WARNING "domU IRQs bounded to %u\n", n);
+            if ( extra_hwdom_irqs > n - nr_static_irqs )
+            {
+                extra_hwdom_irqs = n - nr_static_irqs;
+                printk(XENLOG_WARNING "hwdom IRQs bounded to %u\n", n);
+            }
+            if ( extra_domU_irqs >
+                 max(DEFAULT_EXTRA_DOMU_IRQS, n - nr_static_irqs) )
+            {
+                extra_domU_irqs = n - nr_static_irqs;
+                printk(XENLOG_WARNING "domU IRQs bounded to %u\n", n);
+            }
         }
     }
 #endif
