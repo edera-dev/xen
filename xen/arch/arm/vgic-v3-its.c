@@ -32,6 +32,7 @@
 #include <asm/current.h>
 #include <asm/mmio.h>
 #include <asm/gic_v3_defs.h>
+#include <asm/iort.h>
 #include <asm/gic_v3_its.h>
 #include <asm/vgic.h>
 #include <asm/vgic-emul.h>
@@ -278,11 +279,24 @@ static uint64_t its_cmd_mask_field(uint64_t *its_cmd, unsigned int word,
 }
 
 #ifdef CONFIG_HAS_PCI
-static uint32_t dt_msi_map_id(uint32_t id_in)
+/*
+ * Translate a requester ID into the DeviceID the ITS sees, using whichever of
+ * the two firmware descriptions is in use: the host bridge's "msi-map"
+ * property, or the IORT's ID mappings.
+ */
+static uint32_t msi_map_id(uint32_t id_in)
 {
     uint32_t id_out = id_in;
     const struct pci_host_bridge *bridge;
     int rc;
+
+    if ( !acpi_disabled )
+    {
+        rc = iort_map_rid(PCI_SEG(id_in), id_in, ACPI_IORT_NODE_ITS_GROUP,
+                          &id_out, NULL);
+
+        return rc ? rc : id_out;
+    }
 
     bridge = pci_find_host_bridge(PCI_SEG(id_in), PCI_BUS(id_in));
     if ( unlikely(!bridge) )
@@ -318,7 +332,7 @@ static uint32_t its_get_host_devid(struct domain *d, uint32_t guest_devid)
             if ( pdev->vpci->guest_sbdf.sbdf == sbdf.sbdf )
 #endif
             {
-                host_devid = dt_msi_map_id(pdev->sbdf.sbdf);
+                host_devid = msi_map_id(pdev->sbdf.sbdf);
                 break;
             }
         }
