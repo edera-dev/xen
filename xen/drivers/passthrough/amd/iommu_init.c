@@ -1433,8 +1433,27 @@ static int __init amd_iommu_prepare_one(struct amd_iommu *iommu)
                "AMD-Vi: IOMMU %pp enabled by firmware (ctrl %016lx)\n",
                &iommu->sbdf, iommu->ctrl.raw);
 
-    iommu->ctrl.raw = 0;
-    writeq(0, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
+    /*
+     * Disable everything Xen goes on to configure, but keep the rest of the
+     * register as found. Linux only ever read-modify-writes this register, so
+     * bits outside the fields a driver manages -- vendor specific ones, or
+     * anything an emulation sets for itself -- have never had to survive being
+     * cleared.
+     */
+    iommu->ctrl.iommu_en = false;
+    iommu->ctrl.cmd_buf_en = false;
+    iommu->ctrl.event_log_en = false;
+    iommu->ctrl.event_int_en = false;
+    iommu->ctrl.com_wait_int_en = false;
+    iommu->ctrl.ppr_log_en = false;
+    iommu->ctrl.ppr_int_en = false;
+    iommu->ctrl.ppr_en = false;
+    iommu->ctrl.gt_en = false;
+    iommu->ctrl.ga_en = false;
+    iommu->ctrl.ga_log_en = false;
+    iommu->ctrl.ga_int_en = false;
+
+    writeq(iommu->ctrl.raw, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
 
     return 0;
 }
