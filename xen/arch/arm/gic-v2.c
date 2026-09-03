@@ -1169,6 +1169,15 @@ gic_acpi_parse_madt_cpu(struct acpi_subtable_header *header,
     if ( BAD_MADT_GICC_ENTRY(processor, end) )
         return -EINVAL;
 
+    /*
+     * Firmware may describe CPUs which are not enabled, and commonly zeroes
+     * the GIC addresses and the maintenance interrupt in those entries.
+     * Comparing them against the enabled entries below would abort the whole
+     * MADT scan, so skip them, as acpi_map_gic_cpu_interface() does.
+     */
+    if ( !(processor->flags & ACPI_MADT_ENABLED) )
+        return 0;
+
     /* Read from APIC table and fill up the GIC variables */
     if ( cpu_base_assigned == 0 )
     {
