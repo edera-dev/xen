@@ -423,6 +423,16 @@ void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
     if ( dte && !dte[bdf].tv )
         return;
 
+    /*
+     * Likewise skip an entry deeper than the shape guests are capped to. Xen
+     * derives the hardware domain's depth from the address width and lands on
+     * five levels where Linux programs three, and an IOMMU that has only seen
+     * Linux may reject the command naming such an entry.
+     */
+    if ( dte && amd_iommu_guest_pt_levels &&
+         dte[bdf].paging_mode > amd_iommu_guest_pt_levels )
+        return;
+
     invalidate_dev_table_entry(iommu, bdf);
     flush_command_buffer(iommu, 0);
 
