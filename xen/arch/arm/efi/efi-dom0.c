@@ -34,6 +34,39 @@
 /* Constant to indicate "Xen" in unicode u16 format */
 static const CHAR16 xen_efi_fw_vendor[] = {0x0058, 0x0065, 0x006E, 0x0000};
 
+/*
+ * Linux uses this table to record memory it needs to stay reserved across a
+ * kexec.  Its EFI stub installs it, but a hardware domain is loaded by Xen
+ * rather than by that stub, so without this nothing provides it.
+ *
+ * The GICv3 ITS driver is the one that notices: gic_reserve_range() calls
+ * efi_mem_reserve_persistent() whenever EFI_CONFIG_TABLES is set, which it is,
+ * because Xen hands the hardware domain an EFI system table for the ACPI RSDP.
+ * With no memreserve table every such call fails, and the driver warns once for
+ * the LPI property table and once per CPU for the LPI pending tables.
+ */
+#define LINUX_EFI_MEMRESERVE_TABLE_GUID \
+    { 0x888eb0c6, 0x8ede, 0x4ff5, {0xa8, 0xf0, 0x9a, 0xee, 0x5c, 0xb9, 0x77, 0xc2} }
+
+struct linux_efi_memreserve {
+    int32_t size;           /* Number of entries the array can hold */
+    int32_t count;          /* Entries used; an atomic_t on the Linux side */
+    uint64_t next;          /* PA of the next instance, 0 to end the list */
+    struct {
+        uint64_t base;
+        uint64_t size;
+    } entry[];
+};
+
+/* Match the single page Linux's own stub allocates for this. */
+#define EFI_MEMRESERVE_SIZE     PAGE_SIZE
+#define EFI_MEMRESERVE_ENTRIES                                            \
+    ((EFI_MEMRESERVE_SIZE - sizeof(struct linux_efi_memreserve)) /        \
+     sizeof(((const struct linux_efi_memreserve *)NULL)->entry[0]))
+
+/* ACPI 2.0 RSDP, and the Linux memreserve table above. */
+#define EFI_NR_CONFIG_TABLES    2
+
 size_t __init estimate_efi_size(unsigned int mem_nr_banks)
 {
     size_t size;
@@ -46,7 +79,9 @@ size_t __init estimate_efi_size(unsigned int mem_nr_banks)
     if ( !acpi_disabled )
         acpi_mem_nr_banks = bootinfo_get_acpi()->nr_banks;
 
-    size = ROUNDUP(est_size + ect_size + fw_vendor_size, 8);
+    size = ROUNDUP(est_size + ect_size * EFI_NR_CONFIG_TABLES + fw_vendor_size,
+                   8);
+    size += ROUNDUP(EFI_MEMRESERVE_SIZE, 8);
     /* plus 1 for new created tables */
     size += ROUNDUP(emd_size * (mem_nr_banks + acpi_mem_nr_banks + 1), 8);
 
@@ -60,10 +95,12 @@ void __init acpi_create_efi_system_table(struct domain *d,
     u8 *base_ptr;
     EFI_CONFIGURATION_TABLE *efi_conf_tbl;
     EFI_SYSTEM_TABLE *efi_sys_tbl;
+    struct linux_efi_memreserve *memreserve;
 
     table_addr = d->arch.efi_acpi_gpa
                  + acpi_get_table_offset(tbl_add, TBL_EFIT);
-    table_size = sizeof(EFI_SYSTEM_TABLE) + sizeof(EFI_CONFIGURATION_TABLE)
+    table_size = sizeof(EFI_SYSTEM_TABLE)
+                 + sizeof(EFI_CONFIGURATION_TABLE) * EFI_NR_CONFIG_TABLES
                  + sizeof(xen_efi_fw_vendor);
     base_ptr = d->arch.efi_acpi_table
                + acpi_get_table_offset(tbl_add, TBL_EFIT);
@@ -75,23 +112,36 @@ void __init acpi_create_efi_system_table(struct domain *d,
     efi_sys_tbl->Hdr.HeaderSize = table_size;
 
     efi_sys_tbl->FirmwareRevision = 1;
-    efi_sys_tbl->NumberOfTableEntries = 1;
+    efi_sys_tbl->NumberOfTableEntries = EFI_NR_CONFIG_TABLES;
     offset += sizeof(EFI_SYSTEM_TABLE);
     memcpy(base_ptr + offset, xen_efi_fw_vendor, sizeof(xen_efi_fw_vendor));
     efi_sys_tbl->FirmwareVendor = (CHAR16 *)(table_addr + offset);
 
     offset += sizeof(xen_efi_fw_vendor);
     efi_conf_tbl = (EFI_CONFIGURATION_TABLE *)(base_ptr + offset);
-    efi_conf_tbl->VendorGuid = (EFI_GUID)ACPI_20_TABLE_GUID;
-    efi_conf_tbl->VendorTable = (VOID *)tbl_add[TBL_RSDP].start;
+    efi_conf_tbl[0].VendorGuid = (EFI_GUID)ACPI_20_TABLE_GUID;
+    efi_conf_tbl[0].VendorTable = (VOID *)tbl_add[TBL_RSDP].start;
     efi_sys_tbl->ConfigurationTable = (EFI_CONFIGURATION_TABLE *)(table_addr
                                                                   + offset);
+
+    /*
+     * The memreserve table follows the configuration tables, and so is not
+     * covered by Hdr.HeaderSize.  That is deliberate: the hardware domain
+     * writes to it, which would otherwise invalidate the CRC32 below.
+     */
+    memreserve = (struct linux_efi_memreserve *)(base_ptr + table_size);
+    memreserve->size = EFI_MEMRESERVE_ENTRIES;
+    memreserve->count = 0;
+    memreserve->next = 0;
+    efi_conf_tbl[1].VendorGuid = (EFI_GUID)LINUX_EFI_MEMRESERVE_TABLE_GUID;
+    efi_conf_tbl[1].VendorTable = (VOID *)(table_addr + table_size);
+
     xz_crc32_init();
     efi_sys_tbl->Hdr.CRC32 = xz_crc32((uint8_t *)efi_sys_tbl,
                                       efi_sys_tbl->Hdr.HeaderSize, 0);
 
     tbl_add[TBL_EFIT].start = table_addr;
-    tbl_add[TBL_EFIT].size = table_size;
+    tbl_add[TBL_EFIT].size = table_size + EFI_MEMRESERVE_SIZE;
 }
 
 static void __init fill_efi_memory_descriptor(EFI_MEMORY_DESCRIPTOR *desc,
