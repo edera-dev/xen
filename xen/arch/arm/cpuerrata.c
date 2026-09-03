@@ -155,6 +155,10 @@ extern char __mitigate_spectre_bhb_loop_start_24[],
             __mitigate_spectre_bhb_loop_end_24[];
 extern char __mitigate_spectre_bhb_loop_start_32[],
             __mitigate_spectre_bhb_loop_end_32[];
+extern char __mitigate_spectre_bhb_loop_start_38[],
+            __mitigate_spectre_bhb_loop_end_38[];
+extern char __mitigate_spectre_bhb_loop_start_132[],
+            __mitigate_spectre_bhb_loop_end_132[];
 
 static int enable_smccc_arch_workaround_1(void *data)
 {
@@ -230,12 +234,31 @@ static int enable_spectre_bhb_workaround(void *data)
                                     __mitigate_spectre_bhb_clear_insn_end,
                                      "use clearBHB instruction");
 
-    /* Apply solution depending on hwcaps set on arm_errata */
-    if ( cpus_have_cap(ARM_WORKAROUND_BHB_LOOP_8) )
+    /*
+     * Apply solution depending on hwcaps set on arm_errata.
+     *
+     * The capabilities are system wide, so on a system mixing cores with
+     * different requirements more than one of them can be set.  A longer
+     * sequence subsumes a shorter one, so pick the longest that any core
+     * present asked for, which is what Linux tracks as max_bhb_k.
+     */
+    if ( cpus_have_cap(ARM_WORKAROUND_BHB_LOOP_132) )
         return !install_bp_hardening_vec(entry,
-                                         __mitigate_spectre_bhb_loop_start_8,
-                                         __mitigate_spectre_bhb_loop_end_8,
-                                         "use 8 loops workaround");
+                                         __mitigate_spectre_bhb_loop_start_132,
+                                         __mitigate_spectre_bhb_loop_end_132,
+                                         "use 132 loops workaround");
+
+    if ( cpus_have_cap(ARM_WORKAROUND_BHB_LOOP_38) )
+        return !install_bp_hardening_vec(entry,
+                                         __mitigate_spectre_bhb_loop_start_38,
+                                         __mitigate_spectre_bhb_loop_end_38,
+                                         "use 38 loops workaround");
+
+    if ( cpus_have_cap(ARM_WORKAROUND_BHB_LOOP_32) )
+        return !install_bp_hardening_vec(entry,
+                                         __mitigate_spectre_bhb_loop_start_32,
+                                         __mitigate_spectre_bhb_loop_end_32,
+                                         "use 32 loops workaround");
 
     if ( cpus_have_cap(ARM_WORKAROUND_BHB_LOOP_24) )
         return !install_bp_hardening_vec(entry,
@@ -243,11 +266,11 @@ static int enable_spectre_bhb_workaround(void *data)
                                          __mitigate_spectre_bhb_loop_end_24,
                                          "use 24 loops workaround");
 
-    if ( cpus_have_cap(ARM_WORKAROUND_BHB_LOOP_32) )
+    if ( cpus_have_cap(ARM_WORKAROUND_BHB_LOOP_8) )
         return !install_bp_hardening_vec(entry,
-                                         __mitigate_spectre_bhb_loop_start_32,
-                                         __mitigate_spectre_bhb_loop_end_32,
-                                         "use 32 loops workaround");
+                                         __mitigate_spectre_bhb_loop_start_8,
+                                         __mitigate_spectre_bhb_loop_end_8,
+                                         "use 8 loops workaround");
 
     if ( cpus_have_cap(ARM_WORKAROUND_BHB_SMCC_3) )
     {
@@ -696,6 +719,46 @@ static const struct arm_cpu_capabilities arm_errata[] = {
     {
         .capability = ARM_WORKAROUND_BHB_LOOP_32,
         MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V1),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_24,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A76AE),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_32,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A78AE),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_32,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_X1C),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_38,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A715),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_38,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A720),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_38,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A720AE),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_132,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_X3),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .capability = ARM_WORKAROUND_BHB_LOOP_132,
+        MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V2),
         .enable = enable_spectre_bhb_workaround,
     },
 
