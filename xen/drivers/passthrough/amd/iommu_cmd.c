@@ -108,12 +108,23 @@ static void flush_command_buffer(struct amd_iommu *iommu,
              */
             printk(XENLOG_WARNING
                    "AMD IOMMU %pp: %scompletion wait timed out "
-                   "(head %#x tail %#x status %#x)\n",
+                   "(head %#x tail %#x status %#x store %#"PRIpaddr")\n",
                    &iommu->sbdf,
                    timeout_base ? "iotlb " : "",
                    readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET),
                    readl(iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET),
-                   readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET));
+                   readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET),
+                   addr);
+            {
+                const uint32_t *ring = iommu->cmd_buffer.buffer;
+                unsigned int i;
+
+                for ( i = 0; i < 2; ++i )
+                    printk(XENLOG_WARNING
+                           "AMD IOMMU %pp: ring[%u] %08x %08x %08x %08x\n",
+                           &iommu->sbdf, i, ring[i * 4], ring[i * 4 + 1],
+                           ring[i * 4 + 2], ring[i * 4 + 3]);
+            }
             printk(XENLOG_WARNING
                    "AMD IOMMU %pp: event log head %#x tail %#x\n",
                    &iommu->sbdf,
