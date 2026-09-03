@@ -113,7 +113,9 @@
 #define GFP_KERNEL		0
 
 /* Device logger functions */
-#define dev_name(dev)	dt_node_full_name((dev)->of_node)
+/* An SMMU found through the IORT has no device tree node to be named after. */
+#define dev_name(dev)	((dev)->of_node ? dt_node_full_name((dev)->of_node) \
+					: "acpi")
 #define dev_dbg(dev, fmt, ...)			\
 	printk(XENLOG_DEBUG "SMMUv3: %s: " fmt, dev_name(dev), ## __VA_ARGS__)
 #define dev_notice(dev, fmt, ...)		\
@@ -2398,17 +2400,36 @@ static void acpi_smmu_get_options(u32 model, struct arm_smmu_device *smmu)
 	dev_notice(smmu->dev, "option mask 0x%x\n", smmu->options);
 }
 
+/*
+ * Xen has no platform device layer, so an SMMU found through the IORT is
+ * represented by a bare struct device with no of_node, carrying the node it
+ * was built from alongside.  arm_smmu_device_probe() tells the two apart by
+ * of_node being NULL.
+ */
+struct arm_smmu_acpi_dev {
+	struct device dev;
+	const struct acpi_iort_node *node;
+};
+
+static const struct acpi_iort_node *arm_smmu_acpi_node(const struct device *dev)
+{
+	return container_of(dev, const struct arm_smmu_acpi_dev, dev)->node;
+}
+
+static const struct acpi_iort_smmu_v3 *arm_smmu_acpi_data(
+	const struct device *dev)
+{
+	return (const struct acpi_iort_smmu_v3 *)
+	       arm_smmu_acpi_node(dev)->node_data;
+}
+
 static int arm_smmu_device_acpi_probe(struct platform_device *pdev,
 				      struct arm_smmu_device *smmu)
 {
-	struct acpi_iort_smmu_v3 *iort_smmu;
-	struct device *dev = smmu->dev;
-	struct acpi_iort_node *node;
-
-	node = *(struct acpi_iort_node **)dev_get_platdata(dev);
+	const struct acpi_iort_smmu_v3 *iort_smmu;
 
 	/* Retrieve SMMUv3 specific data */
-	iort_smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
+	iort_smmu = arm_smmu_acpi_data(smmu->dev);
 
 	acpi_smmu_get_options(iort_smmu->model, smmu);
 
@@ -2474,12 +2495,22 @@ static void arm_smmu_free_structures(struct arm_smmu_device *smmu)
 		xfree(smmu->strtab_cfg.l1_desc);
 }
 
+#ifdef CONFIG_ACPI
+static void __init arm_smmu_acpi_set_irq(int *dest, u32 gsiv)
+{
+	if (!gsiv)
+		return;
+
+	irq_set_type(gsiv, IRQ_TYPE_EDGE_RISING);
+	*dest = gsiv;
+}
+#endif
+
 static int __init arm_smmu_device_probe(struct platform_device *pdev)
 {
 	int irq, ret;
 	paddr_t ioaddr, iosize;
 	struct arm_smmu_device *smmu;
-	struct dt_device_node *np = dev_to_dt(pdev);
 
 	smmu = xzalloc(struct arm_smmu_device);
 	if (!smmu)
@@ -2490,16 +2521,31 @@ static int __init arm_smmu_device_probe(struct platform_device *pdev)
 		ret = arm_smmu_device_dt_probe(pdev, smmu);
 		if (ret)
 			goto out_free_smmu;
-	} else {
-		ret = arm_smmu_device_acpi_probe(pdev, smmu);
+
+		/* Base address */
+		ret = dt_device_get_paddr(dev_to_dt(pdev), 0, &ioaddr, &iosize);
 		if (ret)
 			goto out_free_smmu;
 	}
+#ifdef CONFIG_ACPI
+	else {
+		ret = arm_smmu_device_acpi_probe(pdev, smmu);
+		if (ret)
+			goto out_free_smmu;
 
-	/* Base address */
-	ret = dt_device_get_paddr(np, 0, &ioaddr, &iosize);
-	if (ret)
+		/*
+		 * The IORT gives a base address but no size, so assume the two
+		 * 64kB pages the architecture defines, as Linux does.
+		 */
+		ioaddr = arm_smmu_acpi_data(pdev)->base_address;
+		iosize = SZ_128K;
+	}
+#else
+	else {
+		ret = -ENODEV;
 		goto out_free_smmu;
+	}
+#endif
 
 	if (iosize < arm_smmu_resource_size(smmu)) {
 		dev_err(pdev, "MMIO region too small (%lx)\n", iosize);
@@ -2530,22 +2576,41 @@ static int __init arm_smmu_device_probe(struct platform_device *pdev)
 
 	/* Interrupt lines */
 
-	irq = platform_get_irq_byname(np, "combined");
-	if (irq > 0)
-		smmu->combined_irq = irq;
-	else {
-		irq = platform_get_irq_byname(np, "eventq");
-		if (irq > 0)
-			smmu->evtq.q.irq = irq;
+	if (pdev->of_node) {
+		struct dt_device_node *np = dev_to_dt(pdev);
 
-		irq = platform_get_irq_byname(np, "priq");
+		irq = platform_get_irq_byname(np, "combined");
 		if (irq > 0)
-			smmu->priq.q.irq = irq;
+			smmu->combined_irq = irq;
+		else {
+			irq = platform_get_irq_byname(np, "eventq");
+			if (irq > 0)
+				smmu->evtq.q.irq = irq;
 
-		irq = platform_get_irq_byname(np, "gerror");
-		if (irq > 0)
-			smmu->gerr_irq = irq;
+			irq = platform_get_irq_byname(np, "priq");
+			if (irq > 0)
+				smmu->priq.q.irq = irq;
+
+			irq = platform_get_irq_byname(np, "gerror");
+			if (irq > 0)
+				smmu->gerr_irq = irq;
+		}
 	}
+#ifdef CONFIG_ACPI
+	else {
+		const struct acpi_iort_smmu_v3 *iort_smmu =
+			arm_smmu_acpi_data(pdev);
+
+		/*
+		 * The IORT has no combined interrupt, and describes each line
+		 * by its GSIV, which on Arm is the interrupt number Xen uses.
+		 * They are all edge triggered.
+		 */
+		arm_smmu_acpi_set_irq(&smmu->evtq.q.irq, iort_smmu->event_gsiv);
+		arm_smmu_acpi_set_irq(&smmu->priq.q.irq, iort_smmu->pri_gsiv);
+		arm_smmu_acpi_set_irq(&smmu->gerr_irq, iort_smmu->gerr_gsiv);
+	}
+#endif
 	/* Probe the h/w */
 	ret = arm_smmu_device_hw_probe(smmu);
 	if (ret) {
@@ -2588,6 +2653,33 @@ out_free_smmu:
 
 	return ret;
 }
+
+#ifdef CONFIG_ACPI
+static int arm_smmu_acpi_xlate(struct device *dev, const void *node, uint32_t id)
+{
+	struct arm_smmu_device *smmu, *found = NULL;
+	int rc;
+
+	spin_lock(&arm_smmu_devices_lock);
+	list_for_each_entry(smmu, &arm_smmu_devices, devices) {
+		if (!smmu->dev->of_node &&
+		    arm_smmu_acpi_node(smmu->dev) == node) {
+			found = smmu;
+			break;
+		}
+	}
+	spin_unlock(&arm_smmu_devices_lock);
+
+	if (!found)
+		return -ENODEV;
+
+	rc = iommu_fwspec_init(dev, found->dev);
+	if (rc)
+		return rc;
+
+	return iommu_fwspec_add_ids(dev, &id, 1);
+}
+#endif
 
 static const struct dt_device_match arm_smmu_of_match[] = {
 	{ .compatible = "arm,smmu-v3", },
@@ -2881,6 +2973,11 @@ static const struct iommu_ops arm_smmu_iommu_ops = {
 	.map_page		= arm_iommu_map_page,
 	.unmap_page		= arm_iommu_unmap_page,
 	.dt_xlate		= arm_smmu_dt_xlate,
+#ifdef CONFIG_ACPI
+#ifdef CONFIG_ACPI
+	.acpi_xlate		= arm_smmu_acpi_xlate,
+#endif
+#endif
 	.add_device		= arm_smmu_add_device,
 };
 
@@ -2917,3 +3014,46 @@ DT_DEVICE_START(smmuv3, "ARM SMMU V3", DEVICE_IOMMU)
 .dt_match = arm_smmu_of_match,
 .init = arm_smmu_dt_init,
 DT_DEVICE_END
+
+#ifdef CONFIG_ACPI
+static __init int arm_smmu_acpi_init(const void *data)
+{
+	struct arm_smmu_acpi_dev *adev;
+	const struct arm_smmu_device *smmu;
+	int rc;
+
+	adev = xzalloc(struct arm_smmu_acpi_dev);
+	if (!adev)
+		return -ENOMEM;
+
+	/*
+	 * of_node stays NULL: that is what tells arm_smmu_device_probe() to
+	 * take its resources from the IORT rather than from a device tree.
+	 * Nothing hands this device to the hardware domain, which does not see
+	 * the SMMU at all because its IORT is rebuilt without one.
+	 */
+	adev->node = data;
+
+	rc = arm_smmu_device_probe(&adev->dev);
+	if (rc) {
+		xfree(adev);
+		return rc;
+	}
+
+	iommu_set_ops(&arm_smmu_iommu_ops);
+
+	smmu = arm_smmu_get_by_dev(&adev->dev);
+
+	/* It would be a bug not to find the SMMU we just added. */
+	BUG_ON(!smmu);
+
+	platform_features &= smmu->features;
+
+	return 0;
+}
+
+ACPI_DEVICE_START(asmmuv3, "ARM SMMU V3", DEVICE_IOMMU)
+.class_type = ACPI_IORT_NODE_SMMU_V3,
+.init = arm_smmu_acpi_init,
+ACPI_DEVICE_END
+#endif
