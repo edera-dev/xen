@@ -705,6 +705,12 @@ struct acpi_iort_smmu_v3 {
 
 /* Masks for Flags field above */
 
+/* Values for Model field above */
+
+#define ACPI_IORT_SMMU_V3_GENERIC           0x00000000	/* Generic SMMUv3 */
+#define ACPI_IORT_SMMU_V3_HISILICON_HI161X  0x00000001	/* HiSilicon Hi161x SMMUv3 */
+#define ACPI_IORT_SMMU_V3_CAVIUM_CN99XX     0x00000002	/* Cavium CN99xx SMMUv3 */
+
 #define ACPI_IORT_SMMU_V3_COHACC_OVERRIDE   (1)
 #define ACPI_IORT_SMMU_V3_HTTU_OVERRIDE     (1<<1)
 
