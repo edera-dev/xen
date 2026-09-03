@@ -287,6 +287,9 @@ struct amd_iommu_dte {
 /* Control Register */
 #define IOMMU_CONTROL_MMIO_OFFSET			0x18
 
+/* Control register invalidation timeout encodings. */
+#define IOMMU_CONTROL_INV_TIMEOUT_1S            4
+
 union amd_iommu_control {
     uint64_t raw;
     struct {
