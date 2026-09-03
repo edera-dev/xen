@@ -541,7 +541,7 @@ static void cf_check parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
                code_str, entry[0], entry[1], entry[2], entry[3]);
 }
 
-static void iommu_check_event_log(struct amd_iommu *iommu)
+void iommu_check_event_log(struct amd_iommu *iommu)
 {
     u32 entry;
     unsigned long flags;
