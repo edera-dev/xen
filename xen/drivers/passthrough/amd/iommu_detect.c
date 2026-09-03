@@ -224,6 +224,13 @@ int __init amd_iommu_detect_one_acpi(
         goto out;
 
     iommu->domid_map = iommu_init_domid(DOMID_INVALID);
+    if ( iommu->domid_map )
+        /*
+         * Never hand out DomainID 0. Linux allocates from 1 upwards and
+         * treats 0 as its unallocated/error placeholder, so an emulated
+         * IOMMU may reject a command or device table entry naming it.
+         */
+        __set_bit(0, iommu->domid_map);
     rt = -ENOMEM;
     if ( !iommu->domid_map )
         goto out;
