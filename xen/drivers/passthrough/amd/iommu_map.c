@@ -453,6 +453,30 @@ int cf_check amd_iommu_map_page(
         perfc_incr(iommu_pt_coalesces);
     }
 
+    if ( unlikely(amd_iommu_dump_bdf) )
+    {
+        /*
+         * Walk the entry back from the device table the way the IOMMU does,
+         * to show what it would actually find for this address.
+         */
+        static unsigned int reported;
+        const struct amd_iommu *iommu =
+            find_iommu_for_device(PCI_SBDF(0, amd_iommu_dump_bdf));
+
+        /*
+         * Only trace contexts created for a device: the hardware domain's
+         * identity mappings would otherwise use up the budget during boot,
+         * long before anything interesting is mapped.
+         */
+        if ( iommu && ctx->id && reported < 8 )
+        {
+            reported++;
+            printk("%pd: mapped dfn %"PRI_dfn" -> mfn %"PRI_mfn"\n",
+                   d, dfn_x(dfn), mfn_x(mfn));
+            amd_iommu_print_entries(iommu, amd_iommu_dump_bdf, dfn);
+        }
+    }
+
     *flush_flags |= IOMMU_FLUSHF_added;
     if ( old.pr )
     {
