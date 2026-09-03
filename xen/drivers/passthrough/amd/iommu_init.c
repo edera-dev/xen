@@ -77,8 +77,17 @@ static void set_iommu_ht_flags(struct amd_iommu *iommu)
 static void set_iommu_base_reg(struct amd_iommu *iommu, unsigned int offset,
                                paddr_t maddr, uint64_t extra)
 {
-    writeq((maddr & PADDR_MASK & PAGE_MASK) | extra,
-           iommu->mmio_base + offset);
+    uint64_t val = (maddr & PADDR_MASK & PAGE_MASK) | extra, back;
+
+    writeq(val, iommu->mmio_base + offset);
+
+    /* An IOMMU that does not store what we program cannot be driven. */
+    back = readq(iommu->mmio_base + offset);
+    if ( back != val )
+        AMD_IOMMU_WARN("reg %#x: wrote %016lx read back %016lx\n",
+                       offset, val, back);
+    else
+        AMD_IOMMU_DEBUG("reg %#x: %016lx\n", offset, val);
 }
 
 static void register_iommu_dev_table_in_mmio_space(struct amd_iommu *iommu)
