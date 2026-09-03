@@ -287,6 +287,152 @@ int iort_for_each_smmu_v3(int (*cb)(const struct acpi_iort_node *node,
 }
 
 /*
+ * Build the IORT the hardware domain gets to see.
+ *
+ * The host table is not handed over as-is because it describes the SMMUs,
+ * and the hardware domain would then bind its own driver to hardware Xen
+ * owns.  The device tree path avoids that by never giving the domain the
+ * IOMMU node; there is no equivalent here, so the table is rebuilt without
+ * the SMMU nodes and with each root complex mapped straight at its ITS.
+ *
+ * Dropping the table altogether is not an option: without an IORT Linux has
+ * no MSI domain for a PCI device and MSIs stop working entirely.
+ *
+ * Composing two ID mappings only stays expressible as one mapping while the
+ * range remains contiguous through the chain, which is checked below.  It
+ * holds for every layout seen so far, and when it does not the caller falls
+ * back to passing the firmware table through unchanged.
+ */
+static int iort_hwdom_walk(void *base, size_t size, uint32_t *len_out)
+{
+    const struct acpi_iort_node *node;
+    struct acpi_table_iort *out = base;
+    uint32_t offset, its_out_offset = 0;
+    unsigned int nodes = 0;
+    const struct acpi_iort_node *its_src = NULL;
+
+    offset = sizeof(*out);
+
+    /* Copy the ITS groups first so the root complexes can point at them. */
+    iort_for_each_node(node)
+    {
+        if ( node->type != ACPI_IORT_NODE_ITS_GROUP )
+            continue;
+
+        if ( base )
+        {
+            if ( offset + node->length > size )
+                return -ENOSPC;
+            memcpy((char *)base + offset, node, node->length);
+        }
+
+        /* Only the first group is referenced; see the mapping loop below. */
+        if ( !its_src )
+        {
+            its_src = node;
+            its_out_offset = offset;
+        }
+
+        offset += node->length;
+        nodes++;
+    }
+
+    if ( !its_src )
+        return -ENODEV;
+
+    iort_for_each_node(node)
+    {
+        const struct acpi_iort_root_complex *rc;
+        const struct acpi_iort_id_mapping *in;
+        struct acpi_iort_id_mapping *outmap;
+        struct acpi_iort_node *outnode;
+        unsigned int i;
+
+        if ( node->type != ACPI_IORT_NODE_PCI_ROOT_COMPLEX )
+            continue;
+
+        if ( node->length < offsetof(struct acpi_iort_node, node_data) +
+                            sizeof(*rc) )
+            continue;
+
+        rc = (const struct acpi_iort_root_complex *)node->node_data;
+        in = (const struct acpi_iort_id_mapping *)((const char *)node +
+                                                   node->mapping_offset);
+
+        if ( base )
+        {
+            if ( offset + node->mapping_offset +
+                 node->mapping_count * sizeof(*outmap) > size )
+                return -ENOSPC;
+
+            /*
+             * Copy everything ahead of the mappings verbatim, so whatever
+             * the firmware's revision put in node_data survives.
+             */
+            memcpy((char *)base + offset, node, node->mapping_offset);
+            outnode = (struct acpi_iort_node *)((char *)base + offset);
+            outmap = (struct acpi_iort_id_mapping *)((char *)base + offset +
+                                                     node->mapping_offset);
+
+            for ( i = 0; i < node->mapping_count; i++ )
+            {
+                uint32_t lo, hi;
+
+                if ( iort_map_rid(rc->pci_segment_number, in[i].input_base,
+                                  ACPI_IORT_NODE_ITS_GROUP, &lo, NULL) ||
+                     iort_map_rid(rc->pci_segment_number,
+                                  in[i].input_base + in[i].id_count,
+                                  ACPI_IORT_NODE_ITS_GROUP, &hi, NULL) )
+                    return -ENXIO;
+
+                /* The composed range has to stay contiguous to be expressible. */
+                if ( hi - lo != in[i].id_count )
+                    return -ENXIO;
+
+                outmap[i] = in[i];
+                outmap[i].output_base = lo;
+                outmap[i].output_reference = its_out_offset;
+            }
+
+            outnode->length = node->mapping_offset +
+                              node->mapping_count * sizeof(*outmap);
+        }
+
+        offset += node->mapping_offset +
+                  node->mapping_count * sizeof(struct acpi_iort_id_mapping);
+        nodes++;
+    }
+
+    if ( base )
+    {
+        memcpy(out, iort_table, sizeof(*out));
+        out->node_count = nodes;
+        out->node_offset = sizeof(*out);
+        out->header.length = offset;
+    }
+
+    *len_out = offset;
+
+    return 0;
+}
+
+int iort_hwdom_size(uint32_t *size)
+{
+    if ( !iort_table )
+        return -ENODEV;
+
+    return iort_hwdom_walk(NULL, 0, size);
+}
+
+int iort_make_hwdom_table(void *base, size_t size, uint32_t *len)
+{
+    if ( !iort_table )
+        return -ENODEV;
+
+    return iort_hwdom_walk(base, size, len);
+}
+
+/*
  * Local variables:
  * mode: C
  * c-file-style: "BSD"
