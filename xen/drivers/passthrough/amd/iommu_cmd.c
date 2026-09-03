@@ -80,24 +80,26 @@ static void flush_command_buffer(struct amd_iommu *iommu,
     timeout = start + (timeout_base ?: 100) * MILLISECS(threshold);
     while ( ACCESS_ONCE(*this_poll_slot) != CMD_COMPLETION_DONE )
     {
-        if ( timeout && NOW() > timeout )
+        if ( NOW() > timeout )
         {
             threshold |= threshold << 1;
+            /*
+             * An IOMMU that never stores the completion word would otherwise
+             * wedge us here forever, so report what it did with the command
+             * and carry on rather than hanging the boot.
+             */
             printk(XENLOG_WARNING
-                   "AMD IOMMU %pp: %scompletion wait taking too long\n",
+                   "AMD IOMMU %pp: %scompletion wait timed out "
+                   "(head %#x tail %#x status %#x)\n",
                    &iommu->sbdf,
-                   timeout_base ? "iotlb " : "");
-            timeout = 0;
+                   timeout_base ? "iotlb " : "",
+                   readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET),
+                   readl(iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET),
+                   readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET));
+            return;
         }
         cpu_relax();
     }
-
-    if ( !timeout )
-        printk(XENLOG_WARNING
-               "AMD IOMMU %pp: %scompletion wait took %lums\n",
-               &iommu->sbdf,
-               timeout_base ? "iotlb " : "",
-               (NOW() - start) / 10000000);
 }
 
 /* Build low level iommu command messages */
