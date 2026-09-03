@@ -75,8 +75,14 @@
         GICD_TYPER_ESPI_RANGE((typer) >> GICD_TYPER_ESPI_RANGE_SHIFT) : 0)
 #endif
 
-/* Common between GICD_PIDR2 and GICR_PIDR2 */
+/*
+ * Architecture revision reported by the PIDR2 of any GIC component.  Common
+ * between GICD_PIDR2 and GICR_PIDR2, and identical in every GIC revision,
+ * which is what makes it usable to discover the revision itself.
+ */
 #define GIC_PIDR2_ARCH_MASK         (0xf0)
+#define GIC_PIDR2_ARCH_GICv1        (0x10)
+#define GIC_PIDR2_ARCH_GICv2        (0x20)
 #define GIC_PIDR2_ARCH_GICv3        (0x30)
 #define GIC_PIDR2_ARCH_GICv4        (0x40)
 

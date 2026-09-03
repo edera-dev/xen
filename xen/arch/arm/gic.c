@@ -18,6 +18,8 @@
 #include <xen/list.h>
 #include <xen/device_tree.h>
 #include <xen/acpi.h>
+#include <xen/sizes.h>
+#include <xen/vmap.h>
 #include <xen/cpu.h>
 #include <xen/notifier.h>
 #include <asm/p2m.h>
@@ -26,6 +28,7 @@
 #include <asm/device.h>
 #include <asm/io.h>
 #include <asm/gic.h>
+#include <asm/gic_v3_defs.h>
 #include <asm/vgic.h>
 #include <asm/acpi.h>
 
@@ -215,10 +218,54 @@ int gic_map_hwdom_extra_mappings(struct domain *d)
 }
 
 #ifdef CONFIG_ACPI
+/*
+ * Discover the GIC architecture revision from the hardware.
+ *
+ * The revision is reported by the architecture field of the distributor's
+ * PIDR2, but that register lives at a different offset in the two distributor
+ * layouts: 0xFE8 within the 4kB GICv2 frame and 0xFFE8 within the 64kB GICv3
+ * one.  Probe the GICv2 offset first, as it is inside the frame of either
+ * layout and so is always a well defined access; on a GICv3 it lands in
+ * reserved space and reads as zero.  Only once GICv2 has been ruled out is the
+ * GICv3 offset, which lies beyond the end of a GICv2 distributor, touched.
+ */
+static unsigned int __init gic_acpi_probe_version(paddr_t dist_paddr)
+{
+    void __iomem *dist;
+    unsigned int version = ACPI_MADT_GIC_VERSION_NONE;
+    uint32_t arch;
+
+    dist = ioremap_nocache(dist_paddr, SZ_64K);
+    if ( !dist )
+    {
+        printk("GIC: Unable to map the distributor to probe its version\n");
+        return ACPI_MADT_GIC_VERSION_NONE;
+    }
+
+    arch = readl_relaxed(dist + GICD_ICPIDR2) & GIC_PIDR2_ARCH_MASK;
+    if ( arch == GIC_PIDR2_ARCH_GICv1 )
+        version = ACPI_MADT_GIC_VERSION_V1;
+    else if ( arch == GIC_PIDR2_ARCH_GICv2 )
+        version = ACPI_MADT_GIC_VERSION_V2;
+    else
+    {
+        arch = readl_relaxed(dist + GICD_PIDR2) & GIC_PIDR2_ARCH_MASK;
+        if ( arch == GIC_PIDR2_ARCH_GICv3 )
+            version = ACPI_MADT_GIC_VERSION_V3;
+        else if ( arch == GIC_PIDR2_ARCH_GICv4 )
+            version = ACPI_MADT_GIC_VERSION_V4;
+    }
+
+    iounmap(dist);
+
+    return version;
+}
+
 static void __init gic_acpi_preinit(void)
 {
     struct acpi_subtable_header *header;
     struct acpi_madt_generic_distributor *dist;
+    unsigned int version;
 
     header = acpi_table_get_entry_madt(ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR, 0);
     if ( !header )
@@ -226,8 +273,25 @@ static void __init gic_acpi_preinit(void)
 
     dist = container_of(header, struct acpi_madt_generic_distributor, header);
 
-    if ( acpi_device_init(DEVICE_INTERRUPT_CONTROLLER, NULL, dist->version) )
-        panic("Unable to find compatible GIC in the ACPI table\n");
+    /*
+     * The MADT is allowed to leave the GIC version unspecified, in which case
+     * the ACPI specification requires it to be discovered from the hardware.
+     */
+    version = dist->version;
+    if ( version == ACPI_MADT_GIC_VERSION_NONE )
+    {
+        version = gic_acpi_probe_version(dist->base_address);
+        if ( version == ACPI_MADT_GIC_VERSION_NONE )
+            panic("The MADT specifies no GIC version and probing the distributor at %#"PRIpaddr" found none\n",
+                  dist->base_address);
+
+        printk(XENLOG_INFO "GIC: MADT specifies no version, probed GICv%u\n",
+               version);
+    }
+
+    if ( acpi_device_init(DEVICE_INTERRUPT_CONTROLLER, NULL, version) )
+        panic("Unable to find a compatible driver for GICv%u in the ACPI table\n",
+              version);
 }
 #else
 static void __init gic_acpi_preinit(void) { }
