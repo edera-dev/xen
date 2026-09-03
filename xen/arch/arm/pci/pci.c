@@ -64,10 +64,64 @@ static int __init dt_pci_init(void)
 }
 
 #ifdef CONFIG_ACPI
+/*
+ * Register a host bridge for every MCFG allocation.  That is all ACPI gives us
+ * without an AML interpreter: the PCI windows are in the root complex's _CRS,
+ * so Xen cannot assign BARs itself and the hardware domain does it instead,
+ * reporting devices back through PHYSDEVOP_pci_device_add.
+ */
 static int __init acpi_pci_init(void)
 {
-    printk(XENLOG_ERR "ACPI pci init not supported \n");
-    return -EOPNOTSUPP;
+    struct acpi_table_header *table;
+    const struct acpi_table_mcfg *mcfg;
+    const struct acpi_mcfg_allocation *alloc;
+    unsigned int i, count;
+    acpi_status status;
+    int rc = -ENODEV;
+
+    status = acpi_get_table(ACPI_SIG_MCFG, 0, &table);
+    if ( ACPI_FAILURE(status) )
+    {
+        printk(XENLOG_ERR "PCI: no MCFG table, no host bridge can be found\n");
+        return -ENODEV;
+    }
+
+    if ( table->length < sizeof(*mcfg) )
+    {
+        printk(XENLOG_ERR "PCI: MCFG table is too short\n");
+        return -EINVAL;
+    }
+
+    mcfg = container_of(table, const struct acpi_table_mcfg, header);
+    count = (table->length - sizeof(*mcfg)) / sizeof(*alloc);
+    if ( !count )
+    {
+        printk(XENLOG_ERR "PCI: MCFG table describes no allocation\n");
+        return -ENODEV;
+    }
+
+    alloc = (const struct acpi_mcfg_allocation *)(mcfg + 1);
+    for ( i = 0; i < count; i++, alloc++ )
+    {
+        struct pci_host_bridge *bridge;
+
+        bridge = pci_host_acpi_probe(alloc->pci_segment, alloc->address,
+                                     alloc->start_bus_number,
+                                     alloc->end_bus_number,
+                                     &pci_generic_ecam_ops);
+        if ( IS_ERR(bridge) )
+        {
+            printk(XENLOG_ERR
+                   "PCI: failed to register segment %04x [bus %02x-%02x]: %ld\n",
+                   alloc->pci_segment, alloc->start_bus_number,
+                   alloc->end_bus_number, PTR_ERR(bridge));
+            continue;
+        }
+
+        rc = 0;
+    }
+
+    return rc;
 }
 #else
 static int __init acpi_pci_init(void)
