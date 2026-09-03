@@ -20,6 +20,8 @@
 #include <xen/device_tree.h>
 #include <xen/libfdt/libfdt.h>
 #include <acpi/actables.h>
+
+#include <asm/iort.h>
 #include <asm/domain_build.h>
 
 /* Override macros from asm/page.h to make them work with mfn_t */
@@ -263,6 +265,43 @@ static void __init acpi_xsdt_modify_entry(u64 entry[],
     }
 }
 
+/*
+ * Replace the firmware's IORT with one that does not describe the SMMUs, so
+ * that the hardware domain does not bind its own IOMMU driver to hardware Xen
+ * owns.  On failure the firmware table is left in place: the domain then
+ * drives the SMMU, which is what it did before this existed, and is better
+ * than handing it a table that describes the machine incorrectly.
+ */
+static int __init acpi_create_iort(struct domain *d, struct membank tbl_add[])
+{
+    uint32_t offset = acpi_get_table_offset(tbl_add, TBL_IORT);
+    uint8_t *base_ptr = d->arch.efi_acpi_table + offset;
+    struct acpi_table_header *iort;
+    uint32_t len;
+    uint8_t checksum;
+    int rc;
+
+    rc = iort_make_hwdom_table(base_ptr, d->arch.efi_acpi_len - offset, &len);
+    if ( rc )
+    {
+        if ( rc != -ENODEV )
+            printk(XENLOG_WARNING
+                   "Unable to rewrite the IORT (%d), the hardware domain will see the firmware's\n",
+                   rc);
+        return rc;
+    }
+
+    iort = (struct acpi_table_header *)base_ptr;
+    iort->checksum = 0;
+    checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, iort), len);
+    iort->checksum -= checksum;
+
+    tbl_add[TBL_IORT].start = d->arch.efi_acpi_gpa + offset;
+    tbl_add[TBL_IORT].size = len;
+
+    return 0;
+}
+
 static int __init acpi_create_xsdt(struct domain *d, struct membank tbl_add[])
 {
     struct acpi_table_header *table = NULL;
@@ -298,6 +337,9 @@ static int __init acpi_create_xsdt(struct domain *d, struct membank tbl_add[])
                            ACPI_SIG_FADT, tbl_add[TBL_FADT].start);
     acpi_xsdt_modify_entry(xsdt->table_offset_entry, entry_count,
                            ACPI_SIG_MADT, tbl_add[TBL_MADT].start);
+    if ( tbl_add[TBL_IORT].size )
+        acpi_xsdt_modify_entry(xsdt->table_offset_entry, entry_count,
+                               ACPI_SIG_IORT, tbl_add[TBL_IORT].start);
     xsdt->table_offset_entry[entry_count] = tbl_add[TBL_STAO].start;
 
     xsdt->header.length = table_size;
@@ -446,6 +488,7 @@ static int __init estimate_acpi_efi_size(struct domain *d,
                                          const struct kernel_info *kinfo)
 {
     size_t efi_size, acpi_len, madt_size;
+    uint32_t iort_size;
     u64 addr;
     struct acpi_table_rsdp *rsdp_tbl;
     struct acpi_table_header *table;
@@ -457,6 +500,9 @@ static int __init estimate_acpi_efi_size(struct domain *d,
 
     madt_size = gic_get_hwdom_madt_size(d);
     acpi_len += ROUNDUP(madt_size, 8);
+
+    if ( !iort_hwdom_size(&iort_size) )
+        acpi_len += ROUNDUP(iort_size, 8);
 
     addr = acpi_os_get_root_pointer();
     if ( !addr )
@@ -534,6 +580,9 @@ int __init prepare_acpi(struct domain *d, struct kernel_info *kinfo)
     rc = acpi_create_stao(d, tbl_add);
     if ( rc != 0 )
         return rc;
+
+    /* A failure here is not fatal; see the comment on acpi_create_iort(). */
+    acpi_create_iort(d, tbl_add);
 
     rc = acpi_create_xsdt(d, tbl_add);
     if ( rc != 0 )
