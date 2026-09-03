@@ -411,6 +411,18 @@ void amd_iommu_flush_pages(struct domain *d, struct iommu_context *ctx,
 void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
                             domid_t domid)
 {
+    const struct amd_iommu_dte *dte = iommu->dev_table.buffer;
+
+    /*
+     * An entry with TV clear translates nothing, so there is nothing cached
+     * to invalidate. Skipping it also avoids naming such an entry at all:
+     * Linux prefills V and TV together and never invalidates a V-only entry,
+     * and an emulated IOMMU has been seen to reject the command outright and
+     * halt its command processor, starving every later invalidation.
+     */
+    if ( dte && !dte[bdf].tv )
+        return;
+
     invalidate_dev_table_entry(iommu, bdf);
     flush_command_buffer(iommu, 0);
 
