@@ -211,6 +211,18 @@ warn:
  *   the CPU).
  * - Mitigating using the firmware.
  */
+/*
+ * A core implementing FEAT_CLRBHB can discard the branch history itself, and
+ * enable_spectre_bhb_workaround() will use that in preference to any loop.
+ * Match on the feature rather than on a MIDR so that parts newer than the
+ * lists below are mitigated instead of being silently left alone, which is
+ * what happens to any core this file does not name.
+ */
+static bool has_bhb_clear_insn(const struct arm_cpu_capabilities *entry)
+{
+    return current_cpu_data.isa64.clearbhb;
+}
+
 static int enable_spectre_bhb_workaround(void *data)
 {
     const struct arm_cpu_capabilities *entry = data;
@@ -759,6 +771,12 @@ static const struct arm_cpu_capabilities arm_errata[] = {
     {
         .capability = ARM_WORKAROUND_BHB_LOOP_132,
         MIDR_ALL_VERSIONS(MIDR_NEOVERSE_V2),
+        .enable = enable_spectre_bhb_workaround,
+    },
+    {
+        .desc = "Spectre-BHB cleared by FEAT_CLRBHB",
+        .capability = ARM_WORKAROUND_BHB_CLEAR_INSN,
+        .matches = has_bhb_clear_insn,
         .enable = enable_spectre_bhb_workaround,
     },
 
