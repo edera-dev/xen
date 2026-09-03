@@ -53,13 +53,31 @@ void acpi_smp_init_cpus(void);
  */
 paddr_t acpi_get_table_offset(struct membank tbl_add[], EFI_MEM_RES index);
 
-/* Macros for consistency checks of the GICC subtable of MADT */
-#define ACPI_MADT_GICC_LENGTH	\
-    (acpi_gbl_FADT.header.revision < 6 ? 76 : 80)
+/*
+ * Macros for consistency checks of the GICC subtable of MADT.
+ *
+ * The GICC subtable has grown with successive revisions of the ACPI
+ * specification: it is 76 bytes in ACPI 5.1, 80 bytes in ACPI 6.0 and has
+ * gained further fields since.  Firmware built against a newer revision than
+ * Xen knows about is therefore entitled to emit longer entries, so only
+ * require that an entry is long enough to contain the fields Xen consumes
+ * (i.e. everything up to and including arm_mpidr) and that it fits within the
+ * table.  Checking for an exact length instead would make Xen reject the
+ * whole MADT on such firmware.
+ */
+#define ACPI_MADT_GICC_MIN_LENGTH					\
+    offsetof(struct acpi_madt_generic_interrupt, efficiency_class)
 
-#define BAD_MADT_GICC_ENTRY(entry, end)						\
-    (!(entry) || (unsigned long)(entry) + sizeof(*(entry)) > (end) ||	\
-     (entry)->header.length != ACPI_MADT_GICC_LENGTH)
+#define BAD_MADT_GICC_ENTRY(entry, end)					\
+    (!(entry) || (entry)->header.length < ACPI_MADT_GICC_MIN_LENGTH ||	\
+     (unsigned long)(entry) + (entry)->header.length > (end))
+
+/*
+ * Length of the GICC subtables in the host MADT.  The hardware domain's MADT
+ * is built by copying a host GICC entry, so it has to be generated using the
+ * same length rather than one hardcoded in Xen.
+ */
+unsigned int acpi_get_madt_gicc_length(void);
 
 #ifdef CONFIG_ACPI
 extern bool acpi_disabled;
