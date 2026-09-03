@@ -244,6 +244,13 @@ static int __must_check amd_iommu_setup_domain_device(
     else
         spin_unlock_irqrestore(&iommu->lock, flags);
 
+    {
+        const uint64_t *raw = (const void *)dte;
+
+        printk(XENLOG_INFO "AMD-Vi: dte[%#x] %016lx %016lx %016lx %016lx\n",
+               req_id, raw[0], raw[1], raw[2], raw[3]);
+    }
+
     AMD_IOMMU_DEBUG("Setup I/O page table: device id = %#x, type = %#x, "
                     "root table = %#"PRIx64", "
                     "domain = %d, paging mode = %d\n",

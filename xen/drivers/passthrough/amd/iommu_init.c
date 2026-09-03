@@ -896,6 +896,12 @@ static void enable_iommu(struct amd_iommu *iommu)
     iommu->enabled = 1;
     iommu->index = nr_amd_iommus;
 
+    printk(XENLOG_INFO "AMD-Vi: %pp control %016lx status %08x devtab %016lx\n",
+           &iommu->sbdf,
+           readq(iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET),
+           readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET),
+           readq(iommu->mmio_base + IOMMU_DEV_TABLE_BASE_LOW_OFFSET));
+
     spin_unlock_irqrestore(&iommu->lock, flags);
 
     /*
