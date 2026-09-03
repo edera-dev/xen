@@ -548,7 +548,8 @@ static void cf_check parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
     else if ( code == IOMMU_EVENT_ILLEGAL_COMMAND_ERROR ||
               code == IOMMU_EVENT_COMMAND_HW_ERROR )
     {
-        uint64_t addr = *(uint64_t *)(entry + 2);
+        /* The command address is stored as addr[63:4]. */
+        uint64_t addr = *(uint64_t *)(entry + 2) << 4;
         paddr_t base = virt_to_maddr(iommu->cmd_buffer.buffer);
         const uint32_t *cmd = NULL;
 
@@ -896,6 +897,13 @@ static void enable_iommu(struct amd_iommu *iommu)
     iommu->index = nr_amd_iommus;
 
     spin_unlock_irqrestore(&iommu->lock, flags);
+
+    /*
+     * Probe the ring with a lone completion wait before anything else is
+     * queued: it distinguishes a command buffer that does not work at all
+     * from one that objects to a specific command.
+     */
+    amd_iommu_probe_cmd_buffer(iommu);
 
     if ( iommu->features.flds.ia_sup )
         amd_iommu_flush_all_caches(iommu);
