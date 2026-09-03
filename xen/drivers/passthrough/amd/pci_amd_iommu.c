@@ -18,6 +18,7 @@
  */
 
 #include <xen/iocap.h>
+#include <xen/param.h>
 #include <xen/softirq.h>
 #include <xen/iommu.h>
 #include <xen/mm.h>
@@ -120,7 +121,6 @@ static int __must_check amd_iommu_setup_domain_device(
     struct domain *domain, struct iommu_context *ctx, struct amd_iommu *iommu,
     uint8_t devfn, struct pci_dev *pdev, struct iommu_context *prev_ctx)
 {
-    struct domain_iommu *hd = dom_iommu(domain);
     struct amd_iommu_dte *table, *dte;
     unsigned long flags;
     unsigned int req_id, sr_flags;
@@ -130,7 +130,7 @@ static int __must_check amd_iommu_setup_domain_device(
     const struct page_info *root_pg;
     domid_t domid;
 
-    BUG_ON(!hd->arch.amd.paging_mode || !iommu->dev_table.buffer);
+    BUG_ON(!ctx->arch.amd.paging_mode || !iommu->dev_table.buffer);
 
     req_id = get_dma_requestor_id(iommu->sbdf.seg, pdev->sbdf.bdf);
     ivrs_dev = &get_ivrs_mappings(iommu->sbdf.seg)[req_id];
@@ -154,7 +154,7 @@ static int __must_check amd_iommu_setup_domain_device(
         /* bind DTE to domain page-tables */
         rc = amd_iommu_set_root_page_table(
                  dte, page_to_maddr(root_pg), domid,
-                 hd->arch.amd.paging_mode, sr_flags);
+                 ctx->arch.amd.paging_mode, sr_flags);
         if ( rc )
         {
             ASSERT(rc < 0);
@@ -196,7 +196,7 @@ static int __must_check amd_iommu_setup_domain_device(
         else
             rc = amd_iommu_set_root_page_table(
                      dte, page_to_maddr(root_pg), domid,
-                     hd->arch.amd.paging_mode, sr_flags);
+                     ctx->arch.amd.paging_mode, sr_flags);
         if ( rc < 0 )
         {
             spin_unlock_irqrestore(&iommu->lock, flags);
@@ -255,7 +255,7 @@ static int __must_check amd_iommu_setup_domain_device(
                     "root table = %#"PRIx64", "
                     "domain = %d, paging mode = %d\n",
                     req_id, pdev->type, page_to_maddr(root_pg),
-                    domid, hd->arch.amd.paging_mode);
+                    domid, ctx->arch.amd.paging_mode);
 
     ASSERT(pcidevs_locked());
 
@@ -343,6 +343,17 @@ static int cf_check iov_enable_xt(void)
 }
 
 unsigned int __read_mostly amd_iommu_max_paging_mode = IOMMU_MAX_PT_LEVELS;
+/*
+ * Cap on the depth of a guest's IOMMU page tables, 0 to derive it from the
+ * address width as before. Linux picks the depth from what a domain actually
+ * maps and so programs three levels where Xen's 52-bit derivation gives five;
+ * an IOMMU that has only ever seen Linux may not handle the deeper table.
+ *
+ * The hardware domain is left alone: its identity mappings cover host RAM, and
+ * a mapping that falls outside the tables reaches domain_crash().
+ */
+unsigned int __read_mostly amd_iommu_guest_pt_levels;
+integer_param("amd-iommu-guest-pt-levels", amd_iommu_guest_pt_levels);
 int __read_mostly amd_iommu_min_paging_mode = 1;
 
 static int cf_check amd_iommu_domain_init(struct domain *d)
@@ -353,6 +364,10 @@ static int cf_check amd_iommu_domain_init(struct domain *d)
 
     if ( pglvl < 0 )
         return pglvl;
+
+    if ( amd_iommu_guest_pt_levels && !is_hardware_domain(d) &&
+         pglvl > amd_iommu_guest_pt_levels )
+        pglvl = amd_iommu_guest_pt_levels;
 
     /*
      * Choose the number of levels for the IOMMU page tables, taking into
@@ -464,6 +479,19 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
         ctx->arch.amd.didmap[iommu->index] =
             iommu_alloc_domid(iommu->domid_map);
     }
+
+    /*
+     * The default context carries the hardware domain's identity mappings and
+     * must keep the depth derived from the address width. A context created
+     * for a device can use a shallower table, which is what Linux programs and
+     * therefore all an IOMMU that has only run Linux need ever have walked.
+     */
+    ctx->arch.amd.paging_mode = hd->arch.amd.paging_mode;
+
+    if ( ctx->id && amd_iommu_guest_pt_levels &&
+         ctx->arch.amd.paging_mode > amd_iommu_guest_pt_levels )
+        ctx->arch.amd.paging_mode = max(amd_iommu_guest_pt_levels,
+                                        (unsigned int)amd_iommu_min_paging_mode);
 
     if ( !ctx->opaque )
     {
