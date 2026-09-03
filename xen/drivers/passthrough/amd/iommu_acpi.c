@@ -880,19 +880,6 @@ static u16 __init parse_ivhd_device_special(
     return dev_length;
 }
 
-static inline size_t
-get_ivhd_header_size(const struct acpi_ivrs_hardware *ivhd_block)
-{
-    switch ( ivhd_block->header.type )
-    {
-    case ACPI_IVRS_TYPE_HARDWARE:
-        return offsetof(struct acpi_ivrs_hardware, efr_image);
-    case ACPI_IVRS_TYPE_HARDWARE_11H:
-        return sizeof(struct acpi_ivrs_hardware);
-    }
-    return 0;
-}
-
 static int __init parse_ivhd_block(const struct acpi_ivrs_hardware *ivhd_block)
 {
     const union acpi_ivhd_device *ivhd_device;

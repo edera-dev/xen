@@ -137,9 +137,10 @@ int __init amd_iommu_detect_one_acpi(
 {
     struct amd_iommu *iommu;
     u8 bus, dev, func;
+    size_t hdr_size = get_ivhd_header_size(ivhd_block);
     int rt = 0;
 
-    if ( ivhd_block->header.length < sizeof(*ivhd_block) )
+    if ( !hdr_size || ivhd_block->header.length < hdr_size )
     {
         AMD_IOMMU_ERROR("invalid IVHD block length\n");
         return -ENODEV;
