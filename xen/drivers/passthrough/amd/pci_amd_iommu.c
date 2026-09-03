@@ -492,14 +492,18 @@ static int cf_check amd_iommu_attach(
     struct domain *d, struct pci_dev *pdev, struct iommu_context *ctx)
 {
     int ret;
-    struct ivrs_mappings *ivrs_mappings = get_ivrs_mappings(pdev->seg);
-    int req_id = get_dma_requestor_id(pdev->seg, pdev->sbdf.bdf);
-    struct ivrs_unity_map *map = ivrs_mappings[req_id].unity_map;
     struct amd_iommu *iommu = find_iommu_for_device(pdev->sbdf);
+    struct ivrs_mappings *ivrs_mappings;
+    struct ivrs_unity_map *map;
     uint16_t bdf = pdev->sbdf.bdf;
+    int req_id;
 
     if ( !iommu )
         return 0;
+
+    ivrs_mappings = get_ivrs_mappings(pdev->seg);
+    req_id = get_dma_requestor_id(pdev->seg, bdf);
+    map = ivrs_mappings[req_id].unity_map;
 
     if ( iommu_intremap &&
          ivrs_mappings[bdf].dte_requestor_id == bdf &&
@@ -540,12 +544,15 @@ static int cf_check amd_iommu_attach(
 static int cf_check amd_iommu_detach(struct domain *d, struct pci_dev *pdev,
                                      struct iommu_context *prev_ctx)
 {
-    struct ivrs_mappings *ivrs_mappings = get_ivrs_mappings(pdev->seg);
-    int req_id = get_dma_requestor_id(pdev->seg, pdev->sbdf.bdf);
     struct amd_iommu *iommu = find_iommu_for_device(pdev->sbdf);
+    struct ivrs_mappings *ivrs_mappings;
+    int req_id;
 
     if ( !iommu )
         return 0;
+
+    ivrs_mappings = get_ivrs_mappings(pdev->seg);
+    req_id = get_dma_requestor_id(pdev->seg, pdev->sbdf.bdf);
 
     amd_iommu_disable_domain_device(d, iommu, prev_ctx, pdev->devfn, pdev);
 
@@ -581,13 +588,17 @@ static int cf_check amd_iommu_reattach(struct domain *d,
                                        struct iommu_context *prev_ctx,
                                        struct iommu_context *ctx)
 {
-    int ret, rc, req_id = get_dma_requestor_id(pdev->seg, pdev->sbdf.bdf);
-    struct ivrs_mappings *ivrs_mapping = &get_ivrs_mappings(pdev->seg)[req_id];
-    struct ivrs_unity_map *map = ivrs_mapping ? ivrs_mapping->unity_map : NULL;
     struct amd_iommu *iommu = find_iommu_for_device(pdev->sbdf);
+    struct ivrs_mappings *ivrs_mapping;
+    struct ivrs_unity_map *map;
+    int ret, rc, req_id;
 
     if ( !iommu )
         return 0;
+
+    req_id = get_dma_requestor_id(pdev->seg, pdev->sbdf.bdf);
+    ivrs_mapping = &get_ivrs_mappings(pdev->seg)[req_id];
+    map = ivrs_mapping ? ivrs_mapping->unity_map : NULL;
 
     ret = amd_iommu_reserve_domain_unity_map(d, ctx, map, 0);
     if ( ret )
