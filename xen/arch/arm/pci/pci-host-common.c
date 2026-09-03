@@ -22,6 +22,7 @@
 #include <xen/sched.h>
 #include <xen/vmap.h>
 
+#include <asm/iort.h>
 #include <asm/setup.h>
 
 /*
@@ -197,6 +198,94 @@ static int pci_set_msi_base(struct pci_host_bridge *bridge)
     return 0;
 }
 
+
+#ifdef CONFIG_ACPI
+/*
+ * Construct a host bridge from an MCFG allocation.
+ *
+ * Unlike the device tree path there is no node to hang this off, so
+ * bridge->dt_node stays NULL and the device tree specific lookups skip it.
+ * Nothing beyond the ECAM window is described: the PCI windows live in the
+ * root complex's _CRS, which needs AML that Xen does not have.  That only
+ * costs us Xen side BAR assignment, which ACPI systems leave to the hardware
+ * domain anyway, so bar_ranges is left unset and pci-scan must stay off.
+ */
+struct pci_host_bridge *__init pci_host_acpi_probe(uint16_t segment,
+                                                   paddr_t mcfg_addr,
+                                                   uint8_t busn_start,
+                                                   uint8_t busn_end,
+                                                   const struct pci_ecam_ops *ops)
+{
+    struct pci_host_bridge *bridge;
+    struct pci_config_window *cfg;
+    paddr_t msi_base;
+    int err;
+
+    if ( busn_start > busn_end )
+        return ERR_PTR(-EINVAL);
+
+    bridge = pci_alloc_host_bridge();
+    if ( !bridge )
+        return ERR_PTR(-ENOMEM);
+
+    cfg = xzalloc(struct pci_config_window);
+    if ( !cfg )
+    {
+        err = -ENOMEM;
+        goto err_bridge;
+    }
+
+    cfg->busn_start = busn_start;
+    cfg->busn_end = busn_end;
+
+    /*
+     * The MCFG base address is relative to bus 0 even when the allocation
+     * starts higher up, so the window has to be offset by the starting bus.
+     * This matches what the x86 side does in mmconfig_64.c.
+     */
+    cfg->phys_addr = mcfg_addr + ((paddr_t)busn_start << ops->bus_shift);
+    cfg->size = (paddr_t)(busn_end - busn_start + 1) << ops->bus_shift;
+
+    cfg->win = pci_remap_cfgspace(cfg->phys_addr, cfg->size);
+    if ( !cfg->win )
+    {
+        printk(XENLOG_ERR "PCI: ECAM ioremap failed for segment %04x\n",
+               segment);
+        err = -ENOMEM;
+        goto err_cfg;
+    }
+
+    bridge->cfg = cfg;
+    bridge->ops = &ops->pci_ops;
+    bridge->segment = segment;
+
+    pci_add_host_bridge(bridge);
+    pci_add_segment(segment);
+
+    /*
+     * The doorbell comes from the IORT rather than from an "msi-map"
+     * property.  Every device below the bridge is expected to reach the same
+     * ITS, so ask on behalf of the first one.
+     */
+    if ( !iort_get_msi_base(segment, (uint32_t)busn_start << 8, &msi_base) )
+        bridge->its_msi_base = msi_base;
+
+    printk(XENLOG_INFO
+           "PCI: segment %04x ECAM at [mem 0x%"PRIpaddr"-0x%"PRIpaddr"] for [bus %02x-%02x]\n",
+           segment, cfg->phys_addr, cfg->phys_addr + cfg->size - 1,
+           busn_start, busn_end);
+
+    return bridge;
+
+err_cfg:
+    xfree(cfg);
+
+err_bridge:
+    xfree(bridge);
+
+    return ERR_PTR(err);
+}
+#endif /* CONFIG_ACPI */
 
 int pci_get_new_domain_nr(void)
 {
