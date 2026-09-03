@@ -115,6 +115,8 @@ struct amd_iommu {
      * waited on; only correct for an IOMMU that does not cache translations.
      */
     bool cmd_buffer_dead;
+    /* Consecutive command buffer timeouts, reset by one that completes. */
+    unsigned int cmd_failures;
 
     unsigned int index;
 
