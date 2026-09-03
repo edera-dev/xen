@@ -536,6 +536,24 @@ static void cf_check parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
                 pci_check_disable_device(iommu->sbdf.seg, PCI_BUS(bdf),
                                          PCI_DEVFN(bdf));
     }
+    else if ( code == IOMMU_EVENT_ILLEGAL_COMMAND_ERROR ||
+              code == IOMMU_EVENT_COMMAND_HW_ERROR )
+    {
+        uint64_t addr = *(uint64_t *)(entry + 2);
+        paddr_t base = virt_to_maddr(iommu->cmd_buffer.buffer);
+        const uint32_t *cmd = NULL;
+
+        if ( addr >= base && addr < base + iommu->cmd_buffer.size )
+            cmd = maddr_to_virt(addr);
+
+        printk(XENLOG_ERR
+               "AMD-Vi: %s at %#"PRIx64" (ring %#"PRIpaddr"+%#"PRIx64
+               " size %#x)\n", code_str, addr, base,
+               addr >= base ? addr - base : 0, iommu->cmd_buffer.size);
+        if ( cmd )
+            printk(XENLOG_ERR "AMD-Vi:   cmd %08x %08x %08x %08x\n",
+                   cmd[0], cmd[1], cmd[2], cmd[3]);
+    }
     else
         printk(XENLOG_ERR "%s %08x %08x %08x %08x\n",
                code_str, entry[0], entry[1], entry[2], entry[3]);
@@ -986,7 +1004,7 @@ static void * __init allocate_cmd_buffer(struct amd_iommu *iommu)
     BUILD_BUG_ON(sizeof(cmd_entry_t) != (1u << IOMMU_CMD_BUFFER_ENTRY_ORDER));
 
     return allocate_ring_buffer(&iommu->cmd_buffer, sizeof(cmd_entry_t),
-                                nr_ents, "Command Buffer", false);
+                                nr_ents, "Command Buffer", true);
 }
 
 static void * __init allocate_event_log(struct amd_iommu *iommu)
