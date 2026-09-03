@@ -23,6 +23,32 @@
 #define CMD_COMPLETION_INIT 0
 #define CMD_COMPLETION_DONE 1
 
+/*
+ * A rejected command halts the command processor: the head pointer stops and
+ * nothing further is consumed. Restart the ring so later commands still run,
+ * which is what Linux does on ILLEGAL_COMMAND_ERROR from its event handler.
+ * Anything still queued is discarded, as it is there too.
+ */
+static void reset_cmd_buffer(struct amd_iommu *iommu)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&iommu->lock, flags);
+
+    iommu->ctrl.cmd_buf_en = false;
+    writeq(iommu->ctrl.raw, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
+
+    writel(0, iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET);
+    writel(0, iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET);
+    iommu->cmd_buffer.head = 0;
+    iommu->cmd_buffer.tail = 0;
+
+    iommu->ctrl.cmd_buf_en = true;
+    writeq(iommu->ctrl.raw, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
+
+    spin_unlock_irqrestore(&iommu->lock, flags);
+}
+
 static void send_iommu_command(struct amd_iommu *iommu,
                                const uint32_t cmd[4])
 {
@@ -131,13 +157,27 @@ static void flush_command_buffer(struct amd_iommu *iommu,
                    readl(iommu->mmio_base + IOMMU_EVENT_LOG_HEAD_OFFSET),
                    readl(iommu->mmio_base + IOMMU_EVENT_LOG_TAIL_OFFSET));
             iommu_check_event_log(iommu);
-            if ( !(readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET) &
-                   IOMMU_RING_BUFFER_PTR_MASK) )
+            /*
+             * Restart the ring rather than give up on it. Only stop using it
+             * altogether once restarting has repeatedly failed to help, so a
+             * genuinely dead command buffer cannot cost a timeout per flush.
+             */
+            reset_cmd_buffer(iommu);
+
+            if ( ++iommu->cmd_failures >= 8 )
+            {
+                printk(XENLOG_WARNING
+                       "AMD IOMMU %pp: giving up on the command buffer\n",
+                       &iommu->sbdf);
                 iommu->cmd_buffer_dead = true;
+            }
             return;
         }
         cpu_relax();
     }
+
+    /* The ring is answering again. */
+    iommu->cmd_failures = 0;
 }
 
 /* Build low level iommu command messages */
