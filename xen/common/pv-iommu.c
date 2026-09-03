@@ -6,6 +6,7 @@
  */
 
 #include <xen/errno.h>
+#include <xen/param.h>
 #include <xen/mm.h>
 #include <xen/lib.h>
 #include <xen/iommu.h>
@@ -196,6 +197,14 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
     return ret;
 }
 
+/*
+ * Whether a map refuses to overwrite an existing mapping. Checking costs a
+ * page table walk per page; a guest that maps a large region a page at a time
+ * pays it for every one.
+ */
+static bool __read_mostly pv_iommu_check_conflicts;
+boolean_param("pv-iommu-check-conflicts", pv_iommu_check_conflicts);
+
 static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
 {
     struct iommu_context *ctx;
@@ -233,8 +242,13 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
         if ( ret )
             break;
 
-        /* Check for conflict with existing mappings */
-        if ( !iommu_lookup_page(d, dfn, &mfn_lookup, &lookup_flags, map->ctx_no) )
+        /*
+         * Check for conflict with existing mappings. This costs a page table
+         * walk per page on top of the one the mapping itself does, which for a
+         * large mapping is the dominant cost, so allow it to be skipped.
+         */
+        if ( pv_iommu_check_conflicts &&
+             !iommu_lookup_page(d, dfn, &mfn_lookup, &lookup_flags, map->ctx_no) )
         {
             if ( page && mfn_valid(mfn) )
                 put_page(page);
