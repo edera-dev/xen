@@ -36,6 +36,7 @@ enum pv_iommu_cmd {
     IOMMU_flush_nested = 10,     /* if IOMMUCAP_nested */
     IOMMU_attach_pasid = 11,     /* if IOMMUCAP_pasid */
     IOMMU_detach_pasid = 12,     /* if IOMMUCAP_pasid */
+    IOMMU_flush_pages = 13,      /* if IOMMUCAP_deferred_flush */
 };
 
 /**
@@ -64,6 +65,11 @@ enum pv_iommu_cmd {
  * If set, IOMMU_ALLOC_identity is supported in pv_iommu_alloc.
  */
 #define IOMMUCAP_identity  (1U << 4)
+
+/**
+ * If set, IOMMU_MAP_no_flush and IOMMU_flush_pages are supported.
+ */
+#define IOMMUCAP_deferred_flush (1U << 5)
 
 /**
  * IOMMU_query_capabilities
@@ -165,6 +171,14 @@ DEFINE_XEN_GUEST_HANDLE(pv_iommu_free_t);
 /* Enforce DMA coherency */
 #define IOMMU_MAP_cache (1 << 2)
 
+/*
+ * Don't flush the IOTLB for this call. The caller must issue IOMMU_flush_pages
+ * over the range before a device uses it. Mapping a scattered buffer costs one
+ * call per run of contiguous frames, and on some hardware the flush is far
+ * more expensive than the mapping, so let a caller pay it once for the lot.
+ */
+#define IOMMU_MAP_no_flush (1 << 3)
+
 /**
  * IOMMU_map_pages
  * Map pages on a IOMMU context.
@@ -197,6 +211,28 @@ struct pv_iommu_map_pages {
 };
 typedef struct pv_iommu_map_pages pv_iommu_map_pages_t;
 DEFINE_XEN_GUEST_HANDLE(pv_iommu_map_pages_t);
+
+/**
+ * IOMMU_flush_pages
+ * Flush the IOTLB over a device frame range on a IOMMU context.
+ *
+ * Pairs with IOMMU_MAP_no_flush.
+ */
+struct pv_iommu_flush_pages {
+    /* IN: IOMMU context number */
+    uint16_t ctx_no;
+
+    /* IN: Device frame number */
+    uint64_aligned_t dfn;
+
+    /* IN: Size of pages to flush */
+    uint32_t pgsize;
+
+    /* IN: Number of pages to flush */
+    uint32_t nr_pages;
+};
+typedef struct pv_iommu_flush_pages pv_iommu_flush_pages_t;
+DEFINE_XEN_GUEST_HANDLE(pv_iommu_flush_pages_t);
 
 /**
  * IOMMU_unmap_pages
