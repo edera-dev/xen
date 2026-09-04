@@ -645,6 +645,11 @@ out:
     return rc;
 }
 
+bool libxl__arch_has_ioports(void)
+{
+    return true;
+}
+
 int libxl__arch_domain_map_irq(libxl__gc *gc, uint32_t domid, int irq)
 {
     int ret;

@@ -1345,6 +1345,19 @@ static void pci_add_dm_done(libxl__egc *egc,
         size = end - start + 1;
         if (start) {
             if (flags & PCI_BAR_IO) {
+                if (!libxl__arch_has_ioports()) {
+                    /*
+                     * There is no I/O port space to grant, and the guest has
+                     * no way to reach the BAR either.  Skip it rather than
+                     * refusing the whole device over a BAR it may not need:
+                     * xc_domain_ioport_permission() is not implemented on
+                     * such an architecture and would fail the assignment.
+                     */
+                    LOGD(WARN, domainid,
+                         "ignoring I/O port BAR %#llx/%#llx, this architecture has no I/O ports",
+                         start, size);
+                    continue;
+                }
                 r = xc_domain_ioport_permission(ctx->xch, domid, start, size, 1);
                 if (r < 0) {
                     LOGED(ERROR, domainid,
@@ -2038,6 +2051,9 @@ static void pci_remove_detached(libxl__egc *egc,
         size = end - start + 1;
         if (start) {
             if (flags & PCI_BAR_IO) {
+                /* Nothing was granted for this BAR; see pci_add_dm_done(). */
+                if (!libxl__arch_has_ioports())
+                    continue;
                 rc = xc_domain_ioport_permission(ctx->xch, domid, start,
                                                  size, 0);
                 if (rc < 0)
