@@ -1845,6 +1845,11 @@ int libxl__arch_vnuma_build_vmemrange(libxl__gc *gc,
     return libxl__vnuma_build_vmemrange_pv_generic(gc, domid, info, state);
 }
 
+bool libxl__arch_has_ioports(void)
+{
+    return false;
+}
+
 int libxl__arch_domain_map_irq(libxl__gc *gc, uint32_t domid, int irq)
 {
     return xc_domain_bind_pt_spi_irq(CTX->xch, domid, irq, irq);
