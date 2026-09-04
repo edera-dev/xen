@@ -66,6 +66,10 @@ int libxl__arch_vnuma_build_vmemrange(libxl__gc *gc,
 _hidden
 int libxl__arch_domain_map_irq(libxl__gc *gc, uint32_t domid, int irq);
 
+/* whether the architecture has an I/O port space at all */
+_hidden
+bool libxl__arch_has_ioports(void);
+
 _hidden
 void libxl__arch_domain_create_info_setdefault(libxl__gc *gc,
                                                libxl_domain_create_info *c_info);
