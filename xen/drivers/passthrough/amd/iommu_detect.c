@@ -63,7 +63,12 @@ void __init get_iommu_features(struct amd_iommu *iommu)
     if ( !(amd_iommu_acpi_info & ACPI_IVRS_EFR_SUP) )
     {
         if ( !iommu_has_cap(iommu, PCI_CAP_EFRSUP_SHIFT) )
+        {
+            /* No register to read, so nothing says whether it caches. */
+            if ( amd_iommu_flush_on_map < 0 )
+                amd_iommu_flush_on_map = true;
             return;
+        }
 
         iommu->features.raw =
             readq(iommu->mmio_base + IOMMU_EXT_FEATURE_MMIO_OFFSET);
@@ -71,6 +76,15 @@ void __init get_iommu_features(struct amd_iommu *iommu)
         if ( 4 + iommu->features.flds.hats < amd_iommu_max_paging_mode )
             amd_iommu_max_paging_mode = 4 + iommu->features.flds.hats;
     }
+
+    /*
+     * An IOMMU that caches entries it did not find present needs invalidating
+     * after one is installed. The extended feature register says whether it
+     * does; with no register to read, nothing says either way and the safe
+     * answer is to invalidate.
+     */
+    if ( amd_iommu_flush_on_map < 0 )
+        amd_iommu_flush_on_map = !iommu->features.raw;
 
     /* Don't log the same set of features over and over. */
     first = list_first_entry(&amd_iommu_head, struct amd_iommu, list);
@@ -137,9 +151,10 @@ int __init amd_iommu_detect_one_acpi(
 {
     struct amd_iommu *iommu;
     u8 bus, dev, func;
+    size_t hdr_size = get_ivhd_header_size(ivhd_block);
     int rt = 0;
 
-    if ( ivhd_block->header.length < sizeof(*ivhd_block) )
+    if ( !hdr_size || ivhd_block->header.length < hdr_size )
     {
         AMD_IOMMU_ERROR("invalid IVHD block length\n");
         return -ENODEV;
@@ -223,6 +238,13 @@ int __init amd_iommu_detect_one_acpi(
         goto out;
 
     iommu->domid_map = iommu_init_domid(DOMID_INVALID);
+    if ( iommu->domid_map )
+        /*
+         * Never hand out DomainID 0. Linux allocates from 1 upwards and
+         * treats 0 as its unallocated/error placeholder, so an emulated
+         * IOMMU may reject a command or device table entry naming it.
+         */
+        __set_bit(0, iommu->domid_map);
     rt = -ENOMEM;
     if ( !iommu->domid_map )
         goto out;

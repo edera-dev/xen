@@ -26,7 +26,9 @@
 #include <xen/tasklet.h>
 #include <xen/sched.h>
 #include <xen/domain_page.h>
+#include <xen/iommu.h>
 #include <xen/msi.h>
+#include <xen/acpi.h>
 
 #include <asm/msi.h>
 #include <asm/apicdef.h>
@@ -35,6 +37,7 @@
 
 #define iommu_found()           (!list_empty(&amd_iommu_head))
 
+extern unsigned int nr_amd_iommus;
 extern struct list_head amd_iommu_head;
 
 typedef struct event_entry
@@ -106,6 +109,17 @@ struct amd_iommu {
 
     int enabled;
 
+    /*
+     * Set when the command buffer is found never to advance its head pointer.
+     * Invalidation then cannot be issued at all, so it is skipped rather than
+     * waited on; only correct for an IOMMU that does not cache translations.
+     */
+    bool cmd_buffer_dead;
+    /* Consecutive command buffer timeouts, reset by one that completes. */
+    unsigned int cmd_failures;
+
+    unsigned int index;
+
     struct list_head ats_devices;
 };
 
@@ -150,6 +164,23 @@ extern bool iommuv2_enabled;
 
 struct acpi_ivrs_hardware;
 
+/*
+ * The fixed portion of an IVHD block is shorter for type 0x10, which lacks the
+ * EFR image and the reserved field that follow it.
+ */
+static inline size_t
+get_ivhd_header_size(const struct acpi_ivrs_hardware *ivhd_block)
+{
+    switch ( ivhd_block->header.type )
+    {
+    case ACPI_IVRS_TYPE_HARDWARE:
+        return offsetof(struct acpi_ivrs_hardware, efr_image);
+    case ACPI_IVRS_TYPE_HARDWARE_11H:
+        return sizeof(struct acpi_ivrs_hardware);
+    }
+    return 0;
+}
+
 #define for_each_amd_iommu(amd_iommu) \
     list_for_each_entry(amd_iommu, \
         &amd_iommu_head, list)
@@ -184,6 +215,7 @@ void get_iommu_features(struct amd_iommu *iommu);
 
 /* amd-iommu-init functions */
 int amd_iommu_prepare(bool xt);
+void iommu_check_event_log(struct amd_iommu *iommu);
 int amd_iommu_init(bool xt);
 int amd_iommu_init_late(void);
 int amd_iommu_update_ivrs_mapping_acpi(void);
@@ -195,20 +227,21 @@ void amd_iommu_quarantine_teardown(struct pci_dev *pdev);
 /* mapping functions */
 int __must_check cf_check amd_iommu_map_page(
     struct domain *d, dfn_t dfn, mfn_t mfn, unsigned int flags,
-    unsigned int *flush_flags);
+    unsigned int *flush_flags, struct iommu_context *ctx);
 int __must_check cf_check amd_iommu_unmap_page(
     struct domain *d, dfn_t dfn, unsigned int order,
-    unsigned int *flush_flags);
-int __must_check amd_iommu_alloc_root(struct domain *d);
-int amd_iommu_reserve_domain_unity_map(struct domain *d,
+    unsigned int *flush_flags, struct iommu_context *ctx);
+int cf_check amd_iommu_lookup_page(struct domain *d, dfn_t dfn, mfn_t *mfn,
+                                   unsigned int *flags, struct iommu_context *ctx);
+int amd_iommu_reserve_domain_unity_map(struct domain *d, struct iommu_context *ctx,
                                        const struct ivrs_unity_map *map,
                                        unsigned int flag);
-int amd_iommu_reserve_domain_unity_unmap(struct domain *d,
+int amd_iommu_reserve_domain_unity_unmap(struct domain *d, struct iommu_context *ctx,
                                          const struct ivrs_unity_map *map);
 int cf_check amd_iommu_get_reserved_device_memory(
     iommu_grdm_t *func, void *ctxt);
 int __must_check cf_check amd_iommu_flush_iotlb_pages(
-    struct domain *d, dfn_t dfn, unsigned long page_count,
+    struct domain *d, struct iommu_context *ctx, dfn_t dfn, unsigned long page_count,
     unsigned int flush_flags);
 void amd_iommu_print_entries(const struct amd_iommu *iommu, unsigned int dev_id,
                              dfn_t dfn);
@@ -230,15 +263,16 @@ void iommu_dte_add_device_entry(struct amd_iommu_dte *dte,
                                 const struct ivrs_mappings *ivrs_dev);
 
 /* send cmd to iommu */
-void amd_iommu_flush_all_pages(struct domain *d);
-void amd_iommu_flush_pages(struct domain *d, unsigned long dfn,
-                           unsigned int order);
+void amd_iommu_flush_all_pages(struct domain *d, struct iommu_context *ctx);
+void amd_iommu_flush_pages(struct domain *d, struct iommu_context *ctx,
+                           unsigned long dfn, unsigned int order);
 void amd_iommu_flush_iotlb(u8 devfn, const struct pci_dev *pdev,
                            daddr_t daddr, unsigned int order);
 void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
                             domid_t domid);
 void amd_iommu_flush_intremap(struct amd_iommu *iommu, uint16_t bdf);
 void amd_iommu_flush_all_caches(struct amd_iommu *iommu);
+void amd_iommu_probe_cmd_buffer(struct amd_iommu *iommu);
 
 /* find iommu for bdf */
 struct amd_iommu *find_iommu_for_device(pci_sbdf_t sbdf);
@@ -285,6 +319,11 @@ extern struct hpet_sbdf {
 
 extern unsigned int amd_iommu_acpi_info;
 extern unsigned int amd_iommu_max_paging_mode;
+extern unsigned int amd_iommu_guest_pt_levels;
+extern unsigned int amd_iommu_dump_bdf;
+extern int8_t amd_iommu_flush_on_map;
+
+void cf_check amd_iommu_dump_flush_stats(unsigned char key);
 extern int amd_iommu_min_paging_mode;
 
 extern void *shared_intremap_table;
