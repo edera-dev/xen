@@ -69,6 +69,12 @@ struct pci_host_bridge {
     uint64_t its_msi_base;
     struct rangeset *bar_ranges;
     struct rangeset *bar_ranges_prefetch;
+    /*
+     * Memory the bridge decodes, from _CRS.  Only set on an ACPI system, where
+     * there is no device tree node to read "ranges" from; pci_check_bar() uses
+     * it to tell whether a BAR lies inside a window the bridge claims.
+     */
+    struct rangeset *windows;
 };
 
 struct pci_ops {
