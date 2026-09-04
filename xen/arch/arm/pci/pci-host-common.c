@@ -22,6 +22,7 @@
 #include <xen/sched.h>
 #include <xen/vmap.h>
 
+#include <asm/acpi-dsdt.h>
 #include <asm/iort.h>
 #include <asm/setup.h>
 
@@ -269,6 +270,24 @@ struct pci_host_bridge *__init pci_host_acpi_probe(uint16_t segment,
      */
     if ( !iort_get_msi_base(segment, (uint32_t)busn_start << 8, &msi_base) )
         bridge->its_msi_base = msi_base;
+
+    /*
+     * The windows the bridge decodes are only in its _CRS.  Failing to read
+     * them is not fatal: pci_check_bar() then rejects every BAR, exactly as it
+     * did before this was read at all, so passthrough is refused rather than
+     * being allowed on unchecked addresses.
+     */
+    bridge->windows = rangeset_new(NULL, "PCI host bridge windows",
+                                   RANGESETF_prettyprint_hex);
+    if ( bridge->windows &&
+         acpi_pci_get_host_bridge_windows(segment, bridge->windows) )
+    {
+        printk(XENLOG_WARNING
+               "PCI: segment %04x: no usable _CRS, BAR checks will fail\n",
+               segment);
+        rangeset_destroy(bridge->windows);
+        bridge->windows = NULL;
+    }
 
     printk(XENLOG_INFO
            "PCI: segment %04x ECAM at [mem 0x%"PRIpaddr"-0x%"PRIpaddr"] for [bus %02x-%02x]\n",
@@ -665,6 +684,17 @@ bool pci_check_bar(const struct pci_dev *pdev, mfn_t start, mfn_t end)
 
     if ( s > e )
         return false;
+
+    if ( !acpi_disabled )
+    {
+        const struct pci_host_bridge *bridge =
+            pci_find_host_bridge(pdev->seg, pdev->bus);
+
+        if ( !bridge || !bridge->windows )
+            return false;
+
+        return rangeset_contains_range(bridge->windows, s, e);
+    }
 
     dt_node = pci_find_host_bridge_node(pdev);
     if ( !dt_node )
