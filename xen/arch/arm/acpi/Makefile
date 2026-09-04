@@ -1,3 +1,4 @@
+obj-y += dsdt.init.o
 obj-y += iort.o
 obj-y += lib.o
 obj-y += domain_build.init.o
