@@ -92,6 +92,14 @@ static void send_iommu_command(struct amd_iommu *iommu,
     spin_unlock_irqrestore(&iommu->lock, flags);
 }
 
+/*
+ * A completion wait is a round trip to the IOMMU. Where that IOMMU is emulated
+ * it can cost far more than the invalidation it confirms, which is not visible
+ * from outside, so count them and time them. Dumped and reset by the 'y' key.
+ */
+DEFINE_PER_CPU(uint64_t, amd_iommu_cw_done);
+DEFINE_PER_CPU(uint64_t, amd_iommu_cw_ns);
+
 static void flush_command_buffer(struct amd_iommu *iommu,
                                  unsigned int timeout_base)
 {
@@ -107,11 +115,14 @@ static void flush_command_buffer(struct amd_iommu *iommu,
         CMD_COMPLETION_DONE,
         0
     };
-    s_time_t start, timeout;
+    s_time_t start, timeout, cw_start;
     static unsigned int __read_mostly threshold = 1;
 
     if ( iommu->cmd_buffer_dead )
         return;
+
+    this_cpu(amd_iommu_cw_done)++;
+    cw_start = NOW();
 
     ACCESS_ONCE(*this_poll_slot) = CMD_COMPLETION_INIT;
 
@@ -178,6 +189,8 @@ static void flush_command_buffer(struct amd_iommu *iommu,
 
     /* The ring is answering again. */
     iommu->cmd_failures = 0;
+
+    this_cpu(amd_iommu_cw_ns) += NOW() - cw_start;
 }
 
 /* Build low level iommu command messages */
@@ -504,4 +517,33 @@ void amd_iommu_flush_all_caches(struct amd_iommu *iommu)
 {
     invalidate_iommu_all(iommu);
     flush_command_buffer(iommu, 0);
+}
+
+void cf_check amd_iommu_dump_flush_stats(unsigned char key)
+{
+    uint64_t done = 0, ns = 0;
+    unsigned int cpu;
+
+    for_each_online_cpu ( cpu )
+    {
+        done += per_cpu(amd_iommu_cw_done, cpu);
+        ns += per_cpu(amd_iommu_cw_ns, cpu);
+        per_cpu(amd_iommu_cw_done, cpu) = 0;
+        per_cpu(amd_iommu_cw_ns, cpu) = 0;
+    }
+
+    printk("AMD-Vi: %"PRIu64" completion waits, %"PRIu64" ms, %"PRIu64" ns each\n",
+           done, ns / 1000000, done ? ns / done : 0);
+
+    done = ns = 0;
+    for_each_online_cpu ( cpu )
+    {
+        done += per_cpu(pv_mmu_update_calls, cpu);
+        ns += per_cpu(pv_mmu_update_ns, cpu);
+        per_cpu(pv_mmu_update_calls, cpu) = 0;
+        per_cpu(pv_mmu_update_ns, cpu) = 0;
+    }
+
+    printk("PV: %"PRIu64" mmu_update calls, %"PRIu64" ms inside, %"PRIu64" ns each\n",
+           done, ns / 1000000, done ? ns / done : 0);
 }
