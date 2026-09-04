@@ -167,14 +167,28 @@ int main(int argc, char **argv)
     /* Define processor objects and control methods. */
     for ( cpu = 0; cpu < max_cpus; cpu++)
     {
-        push_block("Processor", "PR%02X, %d, 0x0000b010, 0x06", cpu, cpu);
+#ifdef CONFIG_ARM_64
+        /*
+         * The ProcessorID field of the legacy Processor() is a byte, so it
+         * cannot describe a CPU numbered 256 or above, which GUEST_MAX_VCPUS
+         * now allows.  Arm needs none of what Processor() carries beyond the
+         * two names below, so use the Device() form that ACPI has preferred
+         * since 6.0 and which has no such limit.
+         */
+        push_block("Device", "P%03X", cpu);
 
         stmt("Name", "_HID, \"ACPI0007\"");
 
         stmt("Name", "_UID, %d", cpu);
-#ifdef CONFIG_ARM_64
+
         pop_block();
         continue;
+#else
+        push_block("Processor", "P%03X, %d, 0x0000b010, 0x06", cpu, cpu);
+
+        stmt("Name", "_HID, \"ACPI0007\"");
+
+        stmt("Name", "_UID, %d", cpu);
 #endif
         /* Name this processor's MADT LAPIC descriptor. */
         stmt("OperationRegion", 
@@ -244,15 +258,15 @@ int main(int argc, char **argv)
         /* Extract current CPU's status: 0=offline; 1=online. */
         stmt("And", "Local1, 1, Local2");
         /* Check if status is up-to-date in the relevant MADT LAPIC entry... */
-        push_block("If", "LNotEqual(Local2, \\_SB.PR%02X.FLG)", cpu);
+        push_block("If", "LNotEqual(Local2, \\_SB.P%03X.FLG)", cpu);
         /* ...If not, update it and the MADT checksum, and notify OSPM. */
-        stmt("Store", "Local2, \\_SB.PR%02X.FLG", cpu);
+        stmt("Store", "Local2, \\_SB.P%03X.FLG", cpu);
         push_block("If", "LEqual(Local2, 1)");
-        stmt("Notify", "PR%02X, 1", cpu); /* Notify: Device Check */
+        stmt("Notify", "P%03X, 1", cpu); /* Notify: Device Check */
         stmt("Subtract", "\\_SB.MSU, 1, \\_SB.MSU"); /* Adjust MADT csum */
         pop_block();
         push_block("Else", NULL);
-        stmt("Notify", "PR%02X, 3", cpu); /* Notify: Eject Request */
+        stmt("Notify", "P%03X, 3", cpu); /* Notify: Eject Request */
         stmt("Add", "\\_SB.MSU, 1, \\_SB.MSU"); /* Adjust MADT csum */
         pop_block();
         pop_block();
