@@ -3984,6 +3984,10 @@ long do_mmuext_op(
     return rc;
 }
 
+/* Time spent inside do_mmu_update(), dumped by the 'y' key. */
+DEFINE_PER_CPU(uint64_t, pv_mmu_update_ns);
+DEFINE_PER_CPU(uint64_t, pv_mmu_update_calls);
+
 long do_mmu_update(
     XEN_GUEST_HANDLE_PARAM(mmu_update_t) ureqs,
     unsigned int count,
@@ -4002,6 +4006,7 @@ long do_mmu_update(
         flush_root_pt_others = false;
     uint32_t xsm_needed = 0;
     uint32_t xsm_checked = 0;
+    s_time_t mmu_update_start = NOW();
     int rc = put_old_guest_table(curr);
 
     if ( unlikely(rc) )
@@ -4350,6 +4355,9 @@ long do_mmu_update(
     perfc_add(num_page_updates, i);
 
  out:
+    this_cpu(pv_mmu_update_ns) += NOW() - mmu_update_start;
+    this_cpu(pv_mmu_update_calls)++;
+
     if ( pt_owner != d )
         rcu_unlock_domain(pt_owner);
 
