@@ -322,6 +322,8 @@ extern unsigned int amd_iommu_max_paging_mode;
 extern unsigned int amd_iommu_guest_pt_levels;
 extern unsigned int amd_iommu_dump_bdf;
 extern int8_t amd_iommu_flush_on_map;
+
+void cf_check amd_iommu_dump_flush_stats(unsigned char key);
 extern int amd_iommu_min_paging_mode;
 
 extern void *shared_intremap_table;

@@ -1562,6 +1562,8 @@ int __init amd_iommu_init(bool xt)
                             "dump IOMMU intremap tables", 0);
 
     register_keyhandler('X', amd_dump_iommu_contexts, "dump iommu contexts", 1);
+    register_keyhandler('y', amd_iommu_dump_flush_stats,
+                        "dump and reset IOMMU flush stats", 1);
     return 0;
 
 error_out:

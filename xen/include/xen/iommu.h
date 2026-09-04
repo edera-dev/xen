@@ -584,6 +584,9 @@ int iommu_detach_context(struct domain *d, device_t *dev);
  */
 DECLARE_PER_CPU(bool, iommu_dont_flush_iotlb);
 
+DECLARE_PER_CPU(uint64_t, pv_mmu_update_ns);
+DECLARE_PER_CPU(uint64_t, pv_mmu_update_calls);
+
 int arch_iommu_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_order);
 int arch_iommu_pviommu_teardown(struct domain *d);
 bool arch_iommu_use_permitted(const struct domain *d);
