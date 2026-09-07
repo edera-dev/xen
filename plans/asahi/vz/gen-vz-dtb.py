@@ -191,7 +191,13 @@ def main():
     w("")
     w("/ {")
     w('\tcompatible = "apple,virtualization-generic-platform";')
-    w('\tmodel = "Apple Virtualization Generic Platform";')
+    # Stamp the VM's shape into the model string.  Xen prints this at the EFI
+    # stage, while the firmware console still works, so a device tree left over
+    # from a differently-configured VM announces itself instead of turning into
+    # a hang with no CPUs or the wrong amount of memory.
+    total_mib = sum(e - st + 1 for st, e in banks) >> 20
+    w('\tmodel = "Apple Virtualization Generic Platform, %d CPUs, %d MiB";'
+      % (len(cpus), total_mib))
     w("\t#address-cells = <2>;")
     w("\t#size-cells = <2>;")
     w("\tinterrupt-parent = <&gic>;")

@@ -141,7 +141,18 @@ visible from in here.
    `SystemTable->ConOut` until `ExitBootServices`, and EDK II's console is on
    the virtio-gpu that UTM displays. That covers image load, the DTB, the
    module list and the memory map — i.e. most of the ways a first boot goes
-   wrong.
+   wrong. Expect:
+
+   ```
+   Using modules provided by bootloader in FDT
+   Device tree describes: Apple Virtualization Generic Platform, 6 CPUs, 8192 MiB
+   ```
+
+   Read the second line carefully. `gen-vz-dtb.py` stamps the vCPU count and
+   memory size into the `model` string precisely so that a device tree left
+   over from a differently-configured VM announces itself here rather than
+   becoming a hang later. If instead you get a warning that the tree describes
+   no CPUs, GRUB's `devicetree` line did not run.
 2. **`xl dmesg` recovers the whole ring afterwards.** Xen keeps its log in
    `conring` regardless of whether any physical console exists, so once dom0
    is up, every message from `start_xen` onwards is retrievable. This is why
@@ -175,6 +186,27 @@ So the dark window is `ExitBootServices` → `virtio_gpu` probing, which covers
 all of Xen's boot *and* early dom0. If Xen dies in there the symptom is a hung
 or reset VM and no text at all, which is why §7 is a bisection list rather
 than a debugging procedure.
+
+Note that `xl dmesg` means the arm64 tools have to be built and installed in
+dom0: the log comes back through a sysctl hypercall and there is no other
+reader. It does not need `xenstored` running, though, so a dom0 that only
+reached a dracut shell can still produce the log if `xl` is in the initramfs.
+
+### Why the panic message cannot be saved
+
+The obvious escape — have `panic()` write the console ring into an EFI
+variable, then reboot into plain Linux and read it out of `efivarfs` — does
+not work today, and it is worth recording why so nobody re-derives it.
+`arch/arm/efi/boot.c` does call `SetVirtualAddressMap()` and keeps `efi_rs`,
+so the runtime services *pointer* survives; but `common/efi/runtime.c` guards
+the whole call path with `#ifndef CONFIG_ARM /* TODO - disabled until
+implemented on ARM */`, and `efi_rs_enter()`/`efi_rs_leave()` have no arm64
+implementation at all. Making runtime calls work on arm64 is its own piece of
+work, not something to bolt onto a panic path.
+
+Until then `noreboot` (§6) is the whole of the story: the VM powering off
+means Xen panicked, the VM sitting there idle means Xen hung. One bit, but a
+real one.
 
 ---
 

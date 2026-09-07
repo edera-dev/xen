@@ -10,7 +10,7 @@
 
 / {
 	compatible = "apple,virtualization-generic-platform";
-	model = "Apple Virtualization Generic Platform";
+	model = "Apple Virtualization Generic Platform, 6 CPUs, 8192 MiB";
 	#address-cells = <2>;
 	#size-cells = <2>;
 	interrupt-parent = <&gic>;
