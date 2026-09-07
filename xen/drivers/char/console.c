@@ -463,7 +463,7 @@ static void cf_check conring_dump_keyhandler(unsigned char key)
 void __init console_init_ring(void)
 {
     char *ring;
-    unsigned int i, order, memflags;
+    unsigned int i, order, memflags, dropped;
     unsigned long flags;
 
     if ( !opt_conring_size )
@@ -479,6 +479,12 @@ void __init console_init_ring(void)
     opt_conring_size = PAGE_SIZE << order;
 
     nrspin_lock_irqsave(&console_lock, flags);
+    /*
+     * conring_puts() advances conringc past whatever it had to overwrite, so
+     * at this point -- before anything has consumed the ring -- conringc is
+     * exactly the number of early bytes that no longer exist.
+     */
+    dropped = conringc;
     for ( i = conringc ; i != conringp; i++ )
         ring[i & (opt_conring_size - 1)] = conring[i & (conring_size - 1)];
     conring = ring;
@@ -487,6 +493,18 @@ void __init console_init_ring(void)
     nrspin_unlock_irqrestore(&console_lock, flags);
 
     printk("Allocated console ring of %u KiB.\n", opt_conring_size >> 10);
+
+    /*
+     * Worth saying out loud, because the bytes lost are the *earliest* ones --
+     * where a boot problem is described -- and because on a platform with no
+     * physical console at all, where this ring read back with `xl dmesg` is
+     * the only log there is, their absence is otherwise undetectable.
+     */
+    if ( dropped )
+        printk(XENLOG_WARNING
+               "Dropped %u bytes of the boot log: the static ring holds only "
+               "%u KiB.  Pass conring_size=<KiB> to keep them.\n",
+               dropped, _CONRING_SIZE >> 10);
 }
 
 /*
