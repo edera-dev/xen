@@ -182,6 +182,14 @@ visible from in here.
    it in the initramfs (`dracut --add-drivers virtio_gpu`) if you want output
    before the root filesystem is mounted.
 
+4. **`xl debug-keys` reaches every keyhandler.** This is easy to overlook and
+   matters a lot here. Xen's keyhandlers are normally driven by typing at the
+   serial console, which does not exist — but `XEN_SYSCTL_debug_keys` sends
+   them from dom0, so `xl debug-keys i && xl dmesg` gets §03's interrupt
+   binding dump, `q` gets the domain list, `w` re-dumps the ring, and so on.
+   Everything the console could have been used for is available, just after
+   the fact rather than interactively.
+
 So the dark window is `ExitBootServices` → `virtio_gpu` probing, which covers
 all of Xen's boot *and* early dom0. If Xen dies in there the symptom is a hung
 or reset VM and no text at all, which is why §7 is a bisection list rather
@@ -191,14 +199,6 @@ Note that `xl dmesg` means the arm64 tools have to be built and installed in
 dom0: the log comes back through a sysctl hypercall and there is no other
 reader. It does not need `xenstored` running, though, so a dom0 that only
 reached a dracut shell can still produce the log if `xl` is in the initramfs.
-
-4. **`xl debug-keys` reaches every keyhandler.** This is easy to overlook and
-   matters a lot here. Xen's keyhandlers are normally driven by typing at the
-   serial console, which does not exist — but `XEN_SYSCTL_debug_keys` sends
-   them from dom0, so `xl debug-keys i && xl dmesg` gets §03's interrupt
-   binding dump, `q` gets the domain list, `w` re-dumps the ring, and so on.
-   Everything the console could have been used for is available, just after
-   the fact rather than interactively.
 
 ### What about the EFI framebuffer?
 
