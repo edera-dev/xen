@@ -118,10 +118,18 @@ config APPLE_PLATFORM
 config APPLE_AIC
 	bool "Apple Interrupt Controller (AIC) driver"
 	default APPLE_PLATFORM
-	depends on ARM_64
+	depends on ARM_64 && GICV3
 	help
 	  Physical-layer driver for the Apple Interrupt Controller (AIC v1/v2/v3)
 	  found on Apple Silicon.  Work in progress; see plans/asahi/.
+
+	  Depends on GICV3, which is not merely a preference: the driver's whole
+	  approach is to register the GICv3 virtual CPU interface that Apple
+	  cores implement and hand guests a synthesised GICv3, which it builds
+	  out of vgic_dist's rdist_regions -- fields that only exist when GICV3
+	  is enabled.  CONFIG_APPLE selects it; a build that enables the AIC
+	  some other way (ALL64_PLAT) must not silently get a driver that
+	  cannot compile.
 
 config APPLE_VZ_PLATFORM
 	bool
