@@ -10,7 +10,8 @@ machine macOS's Virtualization.framework synthesises for a guest has none of
 the hardware that made §03–§07 hard: it has a GICv3, not an AIC; PSCI, not a
 spin table; no IOMMU at all; and a nested EL2 that is not VHE-only. So Xen's
 stock arm64 paths apply, and what this document is mostly about is the two
-things the platform *doesn't* have — a device tree and a serial port.
+things the platform *doesn't* have: a device tree, and any serial port Xen
+already knew how to drive.
 
 ```
   macOS (Apple Silicon, real EL2)
@@ -50,6 +51,7 @@ EDK II`), so the boot path is UEFI, not `m1n1`.
 | DRAM | `0x7000_0000–0x2_6fff_ffff` contiguous | `/proc/iomem` |
 | IOMMU | none | `/sys/class/iommu` empty |
 | UART | **none.** The only non-PCI device in the DSDT is a PL061 GPIO at `0x2006_0000` (SPI 37) used as the power button GED | DSDT |
+| Serial | virtio-console over PCI, and only that. A configured UTM serial port appears as a second such device which does *not* offer MULTIPORT — see §2 | `lspci`, sysfs |
 | Devices | all virtio-pci: net, blk, fs, gpu, snd, rng, balloon, console; plus 2 Apple xHCI | `lspci` |
 
 Two of these deserve emphasis because they invert assumptions from the
@@ -74,74 +76,122 @@ through it.)
 
 ---
 
-## 2. There is no console, and one attempt at one killed the VM
+## 2. The console: a virtio-console, and the one that killed the VM
 
-This is the biggest practical problem and it is worth being blunt about.
-
-There is no UART. Not a PL011 (the DSDT has no `ARMH0011`), not an 8250,
-nothing. Virtualization.framework's only serial device is
+Start with what the platform does not have. There is no UART. Not a PL011
+(the DSDT has no `ARMH0011`), not an 8250, nothing — the only non-PCI device
+in the whole DSDT is a PL061 GPIO serving as the power button.
+Virtualization.framework's only serial device is
 `VZVirtioConsoleDeviceSerialPortConfiguration`, i.e. **virtio-console over
-PCI**, which is what `0000:00:0b.0` (`1af4:1043`) is. Xen has no virtio
-driver, so with no changes Xen boots with no console at all.
+PCI**. So either Xen drives virtio-console or Xen has no console.
 
-The obvious fix — write one — was investigated and is **not recommended**,
-because of what happened when the existing plumbing was tested:
+It does now: `xen/drivers/char/virtio-console.c`, selected with
+`console=vtcon`. That matters more than a debug convenience, because
+`console_init_preirq()` ends in `conring_flush()`, and with
+`CONFIG_EARLY_PRINTK` off that flush includes `CONSOLE_SERIAL` — so the
+moment the console comes up, Xen replays *its entire log from the first
+message*. There is no dark window.
+
+### Why this needs care: the port that killed the VMM
+
+Before the UTM configuration had a serial port, testing the virtio-console
+device that was there anyway did this:
 
 ```
 $ echo "XEN-VZ-PROBE hello from dom0-to-be" > /dev/vport7p0
 ```
 
-**killed the VMM instantly.** Not a guest panic: the whole VM died,
+and **killed the VMM instantly.** Not a guest panic: the whole VM died,
 `journalctl -b -1` ends mid-audit-record at exactly the timestamp of that
-`sudo` (15:43:42.975), and `last -x` records that boot alone ending in `crash`
-with no shutdown record, unlike the boots either side of it. Nothing
+`sudo` (15:43:42.975), and `last -x` records that boot alone ending in
+`crash` with no shutdown record, unlike the boots either side of it. Nothing
 guest-side survived — pstore, `/var/crash` and the kernel ring are all empty
 for that boot — which is itself consistent with the host process dying rather
 than the guest.
 
-The port in question is `vport7p0`, name `com.redhat.spice.0`, a **non-console**
-multiport port created by UTM's serial device. Two measurements narrow what
-happened:
+Two measurements narrow it:
 
 - The `sudo` session lived 5.6 ms and the surrounding `timeout 3` never fired,
   so the `write()` did not block. `virtio_console` blocks whenever
   `!host_connected`, so the backend *had* asserted `PORT_OPEN`: the port was
   attached in the virtio sense, whatever was or was not draining it.
 - The **control queue works** — `virtio7-control-i` has taken interrupts and
-  the port was enumerated and named — while `virtio7-output` has never taken
-  one. So the crashing write was the first traffic that queue ever carried,
-  and a generic ring-format or guest-physical-address bug in the backend is
-  ruled out: the control queue uses the same machinery and is fine. Whatever
-  breaks is specific to the port data path.
+  the port was enumerated and named `com.redhat.spice.0` — while
+  `virtio7-output` had never taken one. So the crashing write was the first
+  traffic that queue ever carried, and a generic ring-format or
+  guest-physical-address bug in the backend is ruled out: the control queue
+  uses the same machinery and is fine. Whatever breaks is specific to the
+  port data path.
 
-The guest side did nothing unusual whatsoever: 35 bytes in a `kmalloc`'d
-buffer, a one-element scatterlist, `virtqueue_add_outbuf` on vq 1 (port 0
-transmit), a 16-bit MMIO kick. `VIRTIO_F_ACCESS_PLATFORM` is clear and there
-is no IOMMU, so the descriptor carried a raw guest-physical address, as it
-does for every other device here.
+The guest side did nothing unusual: 35 bytes in a `kmalloc`'d buffer, a
+one-element scatterlist, `virtqueue_add_outbuf` on vq 1, a 16-bit MMIO kick.
+The full forensic write-up is in `~/vm-crash.txt`; only a macOS crash report
+can distinguish "faults with nothing draining it" from "faults on port data
+at all", and those live in `~/Library/Logs/DiagnosticReports/` and UTM's
+debug log, neither reachable from inside the guest.
 
-The full forensic write-up, including which macOS crash report would settle
-"faults with nothing draining it" versus "faults on port data at all", is in
-`~/vm-crash.txt`; the host-side evidence lives in
-`~/Library/Logs/DiagnosticReports/` and UTM's debug log, neither reachable
-from inside the guest.
+### What the driver does about it
 
-The conclusion for Xen is that a virtio-console driver would have as its very
-first act the operation that is known to be able to kill the VM, with no way
-to tell beforehand whether it is safe. That is a bad trade for a debug
-console. It is not ruled out forever — if the host end is known to be
-attached (UTM's serial set to a built-in terminal, window open) it may be
-perfectly fine — but it must never be the default, and confirming which of
-the two failure modes it is needs the macOS-side crash log, not anything
-visible from in here.
+Adding a serial port in UTM adds a **second** virtio-console PCI device, and
+the two are measurably different:
 
-### What to use instead
+| Device | MULTIPORT offered | What it is |
+|---|---|---|
+| `00:05.0` | **no** (feature bit 1 clear) | the serial port UTM shows; Linux puts `hvc0` and a getty on it |
+| `00:0c.0` | yes | the `com.redhat.spice.0` port that crashed the VMM |
 
-1. **Xen's EFI-stage output goes to the screen.** `xen.efi` prints through
-   `SystemTable->ConOut` until `ExitBootServices`, and EDK II's console is on
-   the virtio-gpu that UTM displays. That covers image load, the DTB, the
-   module list and the memory map — i.e. most of the ways a first boot goes
-   wrong. Expect:
+That difference is the whole safety rule. A device without
+`VIRTIO_CONSOLE_F_MULTIPORT` has exactly one port, port 0, which the
+specification says is the console and is *always open* — there is no
+attachment state to get wrong. A device with MULTIPORT requires opening the
+port through the control queue, and until that handshake completes a driver
+has no idea whether anything is attached, which is precisely the condition
+that killed the VM.
+
+So the driver **refuses any device offering MULTIPORT**, says so in the log,
+and takes the first one that does not. On this machine that picks `00:05.0`
+and skips `00:0c.0`. It applies the rule to an explicitly selected device
+too (`vtcon=<bus>:<dev>.<fn>` names one): the reason is not "we guessed
+wrong", it is "we cannot know the port is safe to write to".
+
+Beyond that the driver is deliberately dull. It negotiates nothing but
+`VIRTIO_F_VERSION_1`, so split rings with no event index and no indirect
+descriptors — a device offering those must work without them. It is polled;
+the device's only interrupt is an MSI-X, and wiring an MSI up for a debug
+console is not worth it when a 10 ms receive timer is imperceptible for
+typing. And it uses one descriptor per character, which is what a PL011
+effectively does anyway (one MMIO store per byte) and which cannot lose a
+partial line the way a buffer flushed on newline can; Xen's serial layer
+already knows how to wait, since `tx_ready()` reports free descriptors and it
+spins on zero.
+
+It also only touches the device when asked. `console=vtcon` has to be on the
+command line before the platform code calls `virtio_console_init()` at all —
+given the above, bringing up a virtio-console is not something to do to a
+machine that did not ask for it.
+
+### dom0 must not drive the same device
+
+This is the one new sharp edge, and it has two halves.
+
+Xen owns the device it picks. If dom0's `virtio_console` also binds to it,
+two drivers reset and re-queue the same virtqueues. Fedora builds
+`CONFIG_VIRTIO_CONSOLE=y`, so a blacklist will not help — but a custom dom0
+kernel is mandatory here anyway (§6), so build it with
+`CONFIG_VIRTIO_CONSOLE=n`, or `=m` and `module_blacklist=virtio_console`.
+
+The second half is a name collision that would be very confusing to debug:
+both `virtio_console` and Xen's PV console (`CONFIG_HVC_XEN`) register
+`hvc0`, and whichever probes first wins. With `virtio_console` gone, dom0's
+`hvc0` is Xen's PV console — which Xen multiplexes onto the same physical
+port. So dom0 loses nothing by giving up the device: `console=hvc0` in dom0
+comes out of the same serial terminal as Xen's own output, which is the
+ordinary Xen arrangement.
+
+### What is still worth having anyway
+
+1. **Xen's EFI-stage output goes to the screen** regardless, through
+   `SystemTable->ConOut` until `ExitBootServices`. Expect:
 
    ```
    Using modules provided by bootloader in FDT
@@ -151,83 +201,41 @@ visible from in here.
    Read the second line carefully. `gen-vz-dtb.py` stamps the vCPU count and
    memory size into the `model` string precisely so that a device tree left
    over from a differently-configured VM announces itself here rather than
-   becoming a hang later. If instead you get a warning that the tree describes
-   no CPUs, GRUB's `devicetree` line did not run.
-2. **`xl dmesg` recovers the whole ring afterwards.** Xen keeps its log in
-   `conring` regardless of whether any physical console exists, so once dom0
-   is up, every message from `start_xen` onwards is retrievable. This is why
-   `apple_vz_defconfig` turns on `DEBUG_INITCALL_TRACE`: log space is the only
-   diagnostic channel, so it may as well be used.
+   becoming a hang later. If instead you get a warning that the tree
+   describes no CPUs, GRUB's `devicetree` line did not run.
 
-   Two boot parameters matter a great deal here and are easy to miss:
+2. **`conring_size=512`.** The ring Xen boots with is a static 16 KiB buffer
+   and `console_init_postirq()` only replaces it partway through `start_xen`.
+   Xen now prints `Dropped N bytes of the boot log` when the front is
+   overwritten, but with `loglvl=all` and an initcall trace it is better to
+   make the ring big enough — especially since `conring_flush()` can only
+   replay what is still in it.
 
-   - **`conring_size=512`.** The ring Xen boots with is a static 16 KiB
-     buffer, and `console_init_postirq()` only replaces it partway through
-     `start_xen`. With `loglvl=all` and an initcall trace, the front of the
-     log — the part that describes a boot problem — is quite capable of
-     being overwritten before then. Xen now prints `Dropped N bytes of the
-     boot log` when that happens, so at least the loss is visible, but on
-     this platform it is better to just make the ring big enough.
-   - **`console_to_ring`.** This sends *guest* console output, dom0 included,
-     into Xen's ring as well. That is what makes dom0's own boot log
-     recoverable: with `console=hvc0` in the dom0 command line and this set,
-     everything dom0 printed before `virtio_gpu` came up is sitting in
-     `xl dmesg` afterwards. Without it, dom0's early boot is simply gone.
-3. **Give dom0 `console=tty0`** so that dom0's own boot is visible on the UTM
-   display via virtio-gpu's DRM fbcon (`console=hvc0` alone goes into Xen's
-   ring and nowhere else). But do not expect it early: there is no EFI
-   framebuffer to fall back on (the boot console is `dummycon` and
-   `/sys/class/graphics` has no `fb0` until DRM is up), and Fedora builds
-   `CONFIG_DRM_VIRTIO_GPU=m`, so nothing appears until that module loads. Put
-   it in the initramfs (`dracut --add-drivers virtio_gpu`) if you want output
-   before the root filesystem is mounted.
+3. **`console_to_ring`**, which sends guest console output, dom0 included,
+   into Xen's ring as well, so `xl dmesg` shows dom0's boot too.
 
-4. **`xl debug-keys` reaches every keyhandler.** This is easy to overlook and
-   matters a lot here. Xen's keyhandlers are normally driven by typing at the
-   serial console, which does not exist — but `XEN_SYSCTL_debug_keys` sends
-   them from dom0, so `xl debug-keys i && xl dmesg` gets §03's interrupt
-   binding dump, `q` gets the domain list, `w` re-dumps the ring, and so on.
-   Everything the console could have been used for is available, just after
-   the fact rather than interactively.
+4. **`xl debug-keys` reaches every keyhandler** through
+   `XEN_SYSCTL_debug_keys`, so `xl debug-keys i && xl dmesg` gets §03's
+   interrupt binding dump, `q` the domain list, and so on. Useful even with a
+   console, since it does not need input to reach Xen.
 
-So the dark window is `ExitBootServices` → `virtio_gpu` probing, which covers
-all of Xen's boot *and* early dom0. If Xen dies in there the symptom is a hung
-or reset VM and no text at all, which is why §7 is a bisection list rather
-than a debugging procedure.
+### The dead ends, so nobody re-derives them
 
-Note that `xl dmesg` means the arm64 tools have to be built and installed in
-dom0: the log comes back through a sysctl hypercall and there is no other
-reader. It does not need `xenstored` running, though, so a dom0 that only
-reached a dracut shell can still produce the log if `xl` is in the initramfs.
-
-### What about the EFI framebuffer?
-
-Ruled out, on evidence rather than argument. Fedora's kernel is built with
+**EFI framebuffer:** ruled out on evidence. Fedora's kernel is built with
 `CONFIG_FB_EFI=y` and `CONFIG_SYSFB_SIMPLEFB=y`, yet this VM's boot console is
 `dummycon` and no `efifb` or `simple-framebuffer` ever appears — so the arm64
 EFI stub found no GOP framebuffer to hand over, and there is none for Xen to
 write to either. That matches how EDK II drives virtio-gpu: GOP `Blt` sends
 the display a `RESOURCE_FLUSH` command, so writes to a linear buffer would not
-reach the screen even if one were exposed. There is no cheap graphical console
-hiding here.
+reach the screen even if one were exposed.
 
-### Why the panic message cannot be saved
-
-The obvious escape — have `panic()` write the console ring into an EFI
-variable, then reboot into plain Linux and read it out of `efivarfs` — does
-not work today, and it is worth recording why so nobody re-derives it.
-`arch/arm/efi/boot.c` does call `SetVirtualAddressMap()` and keeps `efi_rs`,
-so the runtime services *pointer* survives; but `common/efi/runtime.c` guards
-the whole call path with `#ifndef CONFIG_ARM /* TODO - disabled until
-implemented on ARM */`, and `efi_rs_enter()`/`efi_rs_leave()` have no arm64
-implementation at all. Making runtime calls work on arm64 is its own piece of
-work, not something to bolt onto a panic path.
-
-Until then `noreboot` (§6) is the whole of the story: the VM powering off
-means Xen panicked, the VM sitting there idle means Xen hung. One bit, but a
-real one.
-
----
+**Panic log to an EFI variable:** closed. `arch/arm/efi/boot.c` does call
+`SetVirtualAddressMap()` and keeps `efi_rs`, so the runtime services pointer
+survives; but `common/efi/runtime.c` guards the whole call path with
+`#ifndef CONFIG_ARM /* TODO - disabled until implemented on ARM */`, and
+`efi_rs_enter()`/`efi_rs_leave()` have no arm64 implementation. That is its
+own piece of work, not a panic-path addition. It also matters much less now
+that a panic message can just come out of the serial port as it is printed.
 
 ## 3. Xen needs a device tree, and this platform has none
 
@@ -324,8 +332,10 @@ off and is selected only by `APPLE_VZ`.
 |---|---|
 | `arch/arm/platforms/apple-vz.c`, `CONFIG_APPLE_VZ` | Names the machine in the log and reports E2H/CNTFRQ, which are the two facts worth having in a ring recovered later. Nothing else: the platform needs no quirks. |
 | `arch/arm/gic-v2m.c`, `CONFIG_GICV2M` | §4. |
+| `drivers/char/virtio-console.c`, `CONFIG_HAS_VIRTIO_CONSOLE` | §2. The only serial port the platform has. `console=vtcon`, `vtcon=<bus>:<dev>.<fn>`. |
+| `drivers/char/serial.c`, `include/xen/serial.h` | `console=vtcon` parsing, on the otherwise unused `SERHND_DBGP` slot. |
 | `arch/arm/gic-v3.c`, `arch/arm/domain_build.c` | The two call sites for the above. |
-| `arch/arm/configs/apple_vz_defconfig` | GICv3 + GICv2m, `EARLY_PRINTK` **off** (nothing to print to), initcall trace on. |
+| `arch/arm/configs/apple_vz_defconfig` | GICv3 + GICv2m + the virtio console, `CONFIG_DOM0_MEM`, initcall trace on. `EARLY_PRINTK` stays **off**: it writes to a fixed MMIO address from assembly, which a PCI device found at runtime can never be — and with it off, `conring_flush()` replays everything to the virtio console instead. |
 | `plans/asahi/vz/gen-vz-dtb.py`, `vz.dts` | §3. |
 
 Note what is *not* here. No AIC, no dockchannel, no s5l, no forced-VHE work,
@@ -368,10 +378,14 @@ Two independent problems, both measured on this VM, and both the same traps
   built with `CONFIG_EFI_ZBOOT=n` in the first place, which is simpler when
   you are building it anyway.
 
+- **`CONFIG_VIRTIO_CONSOLE=n`** (or `=m` plus
+  `module_blacklist=virtio_console`). Xen owns the virtio-console device it
+  picked, and this is also what leaves `hvc0` to Xen's PV console rather than
+  to a second driver on the same hardware. See §2.
+
 The initramfs needs `virtio_pci`, `virtio_blk` and `btrfs` (all built in
-here), and `virtio_gpu` if you want early console output per §2. Rebuild it
-`--no-hostonly`: the one on disk was generated for a machine booting from
-ACPI without Xen, which is not the machine it will see.
+here). Rebuild it `--no-hostonly`: the one on disk was generated for a machine
+booting from ACPI without Xen, which is not the machine it will see.
 
 ### Then the GRUB commands
 
@@ -381,7 +395,7 @@ the GRUB command line (`c`) or in a `menuentry`:
 ```
 insmod xen_boot
 devicetree /vz.dtb
-xen_hypervisor /xen.efi dom0_mem=2G dom0_max_vcpus=2 console=none console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot
+xen_hypervisor /xen.efi dom0_mem=2G dom0_max_vcpus=2 console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot
 xen_module /Image-xen-dom0 console=hvc0 console=tty0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=root selinux=0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
@@ -389,8 +403,11 @@ boot
 
 Notes on the command lines:
 
-- `console=none` is honest about there being no serial port; `xl dmesg` still
-  works. Do **not** put `console=dtuart` there — there is no UART to find.
+- `console=vtcon` selects the virtio-console (§2). Do **not** put
+  `console=dtuart` there — there is no UART to find, and `dt_uart_init()` will
+  just say "No dtuart path configured". `console=none` also still works, if you
+  would rather Xen did not touch the device at all; the log is then `xl dmesg`
+  only.
 - `console_to_ring conring_size=512` per §2. These are the difference between
   having a log and not.
 - `noreboot` because the default is not what you want here. `panic()` calls
@@ -428,22 +445,40 @@ In rough order of likelihood, and all of it untested:
    `ExitBootServices`. The EFI-stage messages should have appeared; if
    `xen.efi` printed nothing at all, GRUB's `LoadImage` rejected the image or
    the FDT was not installed.
-3. **Screen goes blank and stays blank.** Xen got past EFI and hung with no
-   console. The dark window of §2. Bisect by removing things: fewer dom0
-   vCPUs, `dom0_max_vcpus=1`, then no PCI at all in the DTB (drop the `pcie`
-   node) to separate "Xen cannot boot" from "dom0 cannot use its devices".
-4. **PSCI.** If secondaries never come up, the assumption in §1 that macOS
+3. **Nothing on the serial terminal, but the EFI lines appeared.** Either the
+   console never came up or Xen died before it did. Those are
+   distinguishable: with `console=vtcon` the driver logs
+   `vtcon: virtio-console at 05:00.0 ...` from `platform_init()` and
+   `vtcon: console on virtio-console ...` from `init_preirq()`, and the whole
+   ring is replayed the moment the second one succeeds — so if the terminal
+   shows nothing at all, bring-up failed and the reason is in the ring for
+   `xl dmesg` later. Check that the UTM serial device exists and its terminal
+   is open, and look for `vtcon: skipping ...: offers MULTIPORT` naming the
+   only candidate, which means the port Xen would need is one it will not
+   write to (§2).
+4. **Serial output stops partway through Xen's boot.** Suspect the device
+   rather than Xen: everything Xen prints goes through one descriptor per
+   character with a notification each, and a backend that stops consuming
+   will make `tx_ready()` return zero forever and Xen will spin in
+   `__serial_putc()`. `console=none` plus `xl dmesg` separates "Xen hung"
+   from "the console hung".
+5. **Screen and serial both blank after EFI.** Xen got past EFI and hung
+   before the console. Bisect by removing things: fewer dom0 vCPUs,
+   `dom0_max_vcpus=1`, then no PCI at all in the DTB (drop the `pcie` node) —
+   which also removes the console, so pair it with `console=none`, and use it
+   to separate "Xen cannot boot" from "dom0 cannot use its devices".
+6. **PSCI.** If secondaries never come up, the assumption in §1 that macOS
    traps SMC from virtual EL2 is wrong. Symptom: Xen boots on one CPU and
    `setup_virt_paging`'s `smp_call_function` never returns.
-5. **The EL2 physical timer.** Xen needs `CNTHP_EL2` and PPI 26 delivered.
+7. **The EL2 physical timer.** Xen needs `CNTHP_EL2` and PPI 26 delivered.
    The GTDT declares it (§1) but nothing in the guest exercises it, since
    Linux at EL1 uses PPI 30 and nVHE KVM does not use the hyp timer for the
    host. This is the least-corroborated hardware assumption in the whole
    plan.
-6. **dom0 has no disk.** MSIs (§4). Check with `xl dmesg` for the
+8. **dom0 has no disk.** MSIs (§4). Check with `xl dmesg` for the
    `GICv2m: dom0: frame 0x1fff0000, SPIs 128-255` line, then in dom0 for
    `GICv2m: range[mem 0x1fff0000-0x1fff0fff], SPI[128:255]` and for
    `virtio1-req.0` appearing in `/proc/interrupts`.
-7. **dom0 oopses in `virtio_gpu`.** Then §2's plan for seeing anything is
-   gone; fall back to `console=hvc0` plus `xl dmesg` from an SSH session over
-   virtio-net.
+9. **dom0's `hvc0` is the wrong thing.** If `virtio_console` is still built
+   into the dom0 kernel it will race Xen's PV console for the `hvc0` name and
+   fight Xen for the device. §2, and §6's kernel prerequisites.

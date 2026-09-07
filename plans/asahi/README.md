@@ -36,7 +36,7 @@ pages", "interrupt injection must be software‑only") turned out to be **false*
 | 08 | [dom0-asahi-integration](08-dom0-asahi-integration.md) | dom0 DT generation, device‑ownership split, EL1 audit, toolstack |
 | 09 | [roadmap-testing-and-risks](09-roadmap-testing-and-risks.md) | Phases P0–P6, milestones, test strategy, risk register, estimate |
 | 10 | [bringup-runbook](10-bringup-runbook.md) | **How-to**: vdm cable, m1n1 proxy, `apple_defconfig`, the push loop, expected output per milestone |
-| 11 | [virtualization-framework](11-virtualization-framework.md) | A second target: Xen nested inside Virtualization.framework — the measured platform, the missing console, the generated DTB, GICv2m for dom0, the GRUB recipe |
+| 11 | [virtualization-framework](11-virtualization-framework.md) | A second target: Xen nested inside Virtualization.framework — the measured platform, the virtio console (and the port that killed the VMM), the generated DTB, GICv2m for dom0, the GRUB recipe |
 
 ## Reading orders
 
