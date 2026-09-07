@@ -930,6 +930,51 @@ static void __init efi_arch_load_addr_check(const EFI_LOADED_IMAGE *loaded_image
         blexit(L"Xen must be loaded at a 4 KByte boundary.");
 }
 
+/*
+ * Say what the bootloader's device tree claims to describe, and complain if it
+ * describes no machine at all.
+ *
+ * This is the last chance to say anything at all.  ConOut works until
+ * ExitBootServices() and a platform may have no console whatsoever after that
+ * -- Apple's Virtualization.framework has no UART of any kind -- so a tree
+ * that carries the bootloader's modules but no hardware becomes a silent hang
+ * somewhere in start_xen(), with nothing to suggest the cause was a missing
+ * line in the bootloader's configuration rather than Xen itself.  That is a
+ * one-line mistake (GRUB's xen_boot hands Xen an empty tree when its
+ * `devicetree` command has not run) and it should not cost an afternoon.
+ */
+static void __init efi_arch_report_fdt(const void *fdt)
+{
+    const char *prop;
+    union string name;
+    int len;
+
+    prop = fdt_getprop(fdt, 0, "model", &len);
+    if ( !prop )
+        prop = fdt_getprop(fdt, 0, "compatible", &len);
+
+    if ( prop && len > 0 )
+    {
+        name.cs = prop;
+        if ( s2w(&name) )
+        {
+            PrintStr(L"Device tree describes: ");
+            PrintStr(name.w);
+            PrintStr(L"\r\n");
+            efi_bs->FreePool(name.w);
+        }
+    }
+    else
+        PrintStr(L"Device tree has no model or compatible property.\r\n");
+
+    if ( fdt_subnode_offset(fdt, 0, "cpus") < 0 )
+        PrintStr(L"Warning: the device tree describes no CPUs, only the\r\n"
+                 L"         bootloader's modules.  On an ACPI system that is\r\n"
+                 L"         expected.  Otherwise no description of the machine\r\n"
+                 L"         has reached Xen and it will not get far -- check\r\n"
+                 L"         that the bootloader loaded a device tree.\r\n");
+}
+
 static bool __init efi_arch_use_config_file(EFI_SYSTEM_TABLE *SystemTable)
 {
     bool load_cfg_file = true;
@@ -971,6 +1016,7 @@ static bool __init efi_arch_use_config_file(EFI_SYSTEM_TABLE *SystemTable)
         return true;
     }
     PrintStr(L"Using modules provided by bootloader in FDT\r\n");
+    efi_arch_report_fdt(fdt_efi);
     /* We have modules already defined in fdt, just add space. */
     fdt_efi = fdt_increase_size(&dtbfile, EFI_PAGE_SIZE);
 
