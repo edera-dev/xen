@@ -19,10 +19,19 @@ CONFIG_GICV2M=y
 # machine that has one, so the ITS driver is dead code here.
 # CONFIG_HAS_ITS is not set
 
-# There is no UART of any kind on this platform -- not a PL011, not an
-# 8250 -- so there is nothing for early printk to write to and an early
-# console pointed anywhere would fault before the first message.  Xen's log is
-# recovered from the console ring with `xl dmesg` once dom0 is up.
+# The only serial device the platform can be given is a virtio-console on the
+# PCI bus, so that is the console.  Selected at boot with console=vtcon; the
+# driver will not touch the device otherwise.  Selected by APPLE_VZ, stated
+# here because it is the difference between having a console and not.
+CONFIG_HAS_VIRTIO_CONSOLE=y
+
+# Early printk writes to a fixed MMIO address from assembly, before there is
+# any way to discover a PCI device, so it cannot reach the virtio console and
+# there is no UART for it to reach instead.  Leaving it off is also what makes
+# the virtio console useful: console_init_preirq()'s conring_flush() only
+# includes CONSOLE_SERIAL when early printk did not already carry those
+# messages, so with it off the whole boot log is replayed to the console the
+# moment it comes up.
 # CONFIG_EARLY_PRINTK is not set
 
 # Xen's default when dom0_mem is not given is 512M plus a warning -- and on

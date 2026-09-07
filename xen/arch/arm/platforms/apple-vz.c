@@ -30,6 +30,7 @@
 #include <asm/processor.h>
 #include <asm/sysregs.h>
 #include <xen/console.h>
+#include <xen/serial.h>
 #include <xen/device_tree.h>
 #include <xen/init.h>
 #include <xen/lib.h>
@@ -63,14 +64,31 @@ static int __init apple_vz_init(void)
            (unsigned long)READ_SYSREG(CNTFRQ_EL0));
 
     /*
-     * Self-documenting, because this log is normally read long after the fact
-     * and out of context.  The platform has no UART of any kind -- its only
-     * serial device is a virtio-console, which Xen has no driver for -- so
-     * everything from here on exists only in the console ring.
+     * The platform's only serial device is a virtio-console on the PCI bus,
+     * so give Xen a real console on it.  This runs after vm_init() (so
+     * ioremap works) and before console_init_preirq() (so the registration is
+     * in place when the console is chosen), which is also what makes
+     * conring_flush() replay the whole boot log to it -- everything printed
+     * up to this point included.
+     *
+     * Only when asked.  Writing to a virtio-console port that nothing on the
+     * host is draining killed the VMM during bring-up, so this is not
+     * something to do to a machine that did not ask for it; and the driver
+     * additionally refuses any port it cannot know the state of.  See
+     * plans/asahi/11-virtualization-framework.md section 2.
      */
-    if ( !console_has("dtuart") && !console_has("com1") )
-        printk("Apple VZ: no serial console on this platform; this log is "
-               "readable only from the console ring (`xl dmesg`)\n");
+    if ( IS_ENABLED(CONFIG_HAS_VIRTIO_CONSOLE) && console_has("vtcon") )
+        virtio_console_init();
+    else
+        /*
+         * Self-documenting, because this log is normally read long after the
+         * fact and out of context: there is no UART of any kind here, so
+         * without the virtio console everything from this point on exists
+         * only in the console ring.
+         */
+        printk("Apple VZ: no virtio console selected; this log is readable "
+               "only from the console ring (`xl dmesg`).  Pass console=vtcon "
+               "for a live one.\n");
 
     return 0;
 }

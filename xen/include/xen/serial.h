@@ -90,6 +90,20 @@ struct uart_driver {
     const struct vuart_info *(*vuart_info)(struct serial_port *port);
 };
 
+/*
+ * Registered from platform code rather than probed: the device is a PCI
+ * function, not a device-tree node, so there is nothing for the device-tree
+ * scan to match on.
+ *
+ * The stub lets a platform call this under IS_ENABLED() without an #ifdef of
+ * its own -- ALL64_PLAT builds the platform code without selecting the driver.
+ */
+#ifdef CONFIG_HAS_VIRTIO_CONSOLE
+void virtio_console_init(void);
+#else
+static inline void virtio_console_init(void) {}
+#endif
+
 #ifdef CONFIG_HAS_APPLE_DOCKCHANNEL
 /*
  * Registered from platform code rather than probed: the dockchannel has no
@@ -106,6 +120,7 @@ void apple_dockchannel_console_init(paddr_t base);
 # define SERHND_DBGP    (2<<0)
 # define SERHND_XHCI    (3<<0)
 # define SERHND_DTUART  (0<<0) /* Steal SERHND_COM1 value */
+# define SERHND_VTCON   (2<<0) /* Steal SERHND_DBGP value; x86-only driver */
 #define SERHND_HI       (1<<2) /* Mux/demux each transferred char by MSB. */
 #define SERHND_LO       (1<<3) /* Ditto, except that the MSB is cleared.  */
 #define SERHND_COOKED   (1<<4) /* Newline/carriage-return translation?    */
