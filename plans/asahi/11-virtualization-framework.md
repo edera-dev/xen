@@ -192,6 +192,25 @@ dom0: the log comes back through a sysctl hypercall and there is no other
 reader. It does not need `xenstored` running, though, so a dom0 that only
 reached a dracut shell can still produce the log if `xl` is in the initramfs.
 
+4. **`xl debug-keys` reaches every keyhandler.** This is easy to overlook and
+   matters a lot here. Xen's keyhandlers are normally driven by typing at the
+   serial console, which does not exist — but `XEN_SYSCTL_debug_keys` sends
+   them from dom0, so `xl debug-keys i && xl dmesg` gets §03's interrupt
+   binding dump, `q` gets the domain list, `w` re-dumps the ring, and so on.
+   Everything the console could have been used for is available, just after
+   the fact rather than interactively.
+
+### What about the EFI framebuffer?
+
+Ruled out, on evidence rather than argument. Fedora's kernel is built with
+`CONFIG_FB_EFI=y` and `CONFIG_SYSFB_SIMPLEFB=y`, yet this VM's boot console is
+`dummycon` and no `efifb` or `simple-framebuffer` ever appears — so the arm64
+EFI stub found no GOP framebuffer to hand over, and there is none for Xen to
+write to either. That matches how EDK II drives virtio-gpu: GOP `Blt` sends
+the display a `RESOURCE_FLUSH` command, so writes to a linear buffer would not
+reach the screen even if one were exposed. There is no cheap graphical console
+hiding here.
+
 ### Why the panic message cannot be saved
 
 The obvious escape — have `panic()` write the console ring into an EFI
@@ -391,6 +410,9 @@ Notes on the command lines:
 - `dom0_max_vcpus=2` to start with: the host GICR region holds exactly 6
   redistributors, so 6 dom0 vCPUs fit exactly, but fewer is fewer things to go
   wrong on a first boot.
+- `dom0_mem` is belt and braces: `apple_vz_defconfig` sets `CONFIG_DOM0_MEM`
+  to `2G` so that omitting it cannot silently land on Xen's 512M default,
+  whose `warning_add()` would not be readable until dom0 was already up.
 
 ---
 

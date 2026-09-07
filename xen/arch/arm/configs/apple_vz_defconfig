@@ -25,6 +25,13 @@ CONFIG_GICV2M=y
 # recovered from the console ring with `xl dmesg` once dom0 is up.
 # CONFIG_EARLY_PRINTK is not set
 
+# Xen's default when dom0_mem is not given is 512M plus a warning -- and on
+# this platform that warning is invisible until dom0 is up enough to run
+# `xl dmesg`, which 512M may well not be enough to reach with a distribution
+# initramfs.  Give the build a usable default so forgetting the boot parameter
+# is not a debugging session.  The command line still overrides it.
+CONFIG_DOM0_MEM="2G"
+
 # Bring-up aids.  Both only cost log space, and log space is all there is:
 # with no console, an initcall trace in the ring is the difference between
 # "dom0 came up" and knowing which initcall was running when it did not.
