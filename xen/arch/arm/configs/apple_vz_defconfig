@@ -1,0 +1,33 @@
+# Xen as a nested hypervisor inside a macOS Virtualization.framework VM on
+# Apple Silicon (nested virtualisation enabled, so Xen is entered at EL2).
+#
+# Unlike apple_defconfig this is a stock arm64 GICv3 build: the synthesised
+# platform has a GIC, PSCI and a generic timer, and the nested EL2 is non-VHE,
+# so nothing about the bare-metal Apple port is wanted here.
+#
+# See plans/asahi/11-virtualization-framework.md for the boot recipe and for
+# what to do about the missing console.
+CONFIG_APPLE_VZ=y
+
+# The platform's only MSI controller is a GICv2m frame, and its PCI _PRT
+# routes no pin any device asserts, so without this dom0's virtio devices
+# cannot raise an interrupt.  Selected by APPLE_VZ; stated here to be explicit
+# about how dom0 gets its disk and network working.
+CONFIG_GICV2M=y
+
+# The MADT declares no ITS, and gen-vz-dtb.py refuses to emit a tree for a
+# machine that has one, so the ITS driver is dead code here.
+# CONFIG_HAS_ITS is not set
+
+# There is no UART of any kind on this platform -- not a PL011, not an
+# 8250 -- so there is nothing for early printk to write to and an early
+# console pointed anywhere would fault before the first message.  Xen's log is
+# recovered from the console ring with `xl dmesg` once dom0 is up.
+# CONFIG_EARLY_PRINTK is not set
+
+# Bring-up aids.  Both only cost log space, and log space is all there is:
+# with no console, an initcall trace in the ring is the difference between
+# "dom0 came up" and knowing which initcall was running when it did not.
+CONFIG_DEBUG=y
+CONFIG_DEBUG_INFO=y
+CONFIG_DEBUG_INITCALL_TRACE=y

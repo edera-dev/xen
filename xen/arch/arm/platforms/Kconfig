@@ -30,6 +30,27 @@ config APPLE
 	  Apple cores implement, even though the physical interrupt controller is
 	  the AIC.
 
+config APPLE_VZ
+	bool "Apple Virtualization.framework generic platform"
+	depends on ARM_64
+	select GICV3
+	select GICV2M
+	help
+	  Enable support for running Xen as a nested hypervisor inside a macOS
+	  Virtualization.framework VM on Apple Silicon, with nested
+	  virtualisation enabled so that the guest is entered at EL2.
+
+	  This is a different machine from the bare-metal Apple Silicon support
+	  (CONFIG_APPLE): the synthesised platform has a GICv3 rather than an
+	  AIC, PSCI CPU bring-up, and no IOMMU, so Xen's generic arm64 paths
+	  apply almost unchanged.  What it does not have is any UART, so Xen
+	  boots with no console of its own; see
+	  plans/asahi/11-virtualization-framework.md.
+
+	  GICV2M is selected because the platform's only MSI controller is a
+	  GICv2m frame, and with no usable INTx routing it is the only way the
+	  hardware domain can get an interrupt out of a virtio-pci device.
+
 config QEMU
 	bool "QEMU aarch virt machine support"
 	depends on ARM_64
@@ -101,6 +122,10 @@ config APPLE_AIC
 	help
 	  Physical-layer driver for the Apple Interrupt Controller (AIC v1/v2/v3)
 	  found on Apple Silicon.  Work in progress; see plans/asahi/.
+
+config APPLE_VZ_PLATFORM
+	bool
+	default (ALL64_PLAT || APPLE_VZ)
 
 config MPSOC_PLATFORM
 	bool
