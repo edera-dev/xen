@@ -70,6 +70,32 @@ int map_irq_to_domain(struct domain *d, unsigned int irq,
 int map_range_to_domain(const struct dt_device_node *dev, uint32_t flags,
                         uint64_t addr, uint64_t len, void *data);
 
+/*
+ * GICv2m MSI frames.  Declared here rather than in asm/gic.h because these
+ * are hardware-domain construction helpers -- the same kind of thing as
+ * handle_device() above -- and not part of the GIC driver interface.
+ */
+#ifdef CONFIG_GICV2M
+int gicv2m_hwdom_setup(struct domain *d, const struct dt_device_node *gic,
+                       p2m_type_t p2mt);
+int gicv2m_hwdom_dt_nodes(const struct domain *d,
+                          const struct dt_device_node *gic, void *fdt);
+#else
+static inline int gicv2m_hwdom_setup(struct domain *d,
+                                     const struct dt_device_node *gic,
+                                     p2m_type_t p2mt)
+{
+    return 0;
+}
+
+static inline int gicv2m_hwdom_dt_nodes(const struct domain *d,
+                                        const struct dt_device_node *gic,
+                                        void *fdt)
+{
+    return 0;
+}
+#endif /* CONFIG_GICV2M */
+
 extern const char __init_data_begin[], __bss_start[], __bss_end[];
 
 struct init_info
