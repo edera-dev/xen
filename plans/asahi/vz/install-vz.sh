@@ -77,15 +77,48 @@ install -m 0644 "$DTB_SRC" "$BOOTDIR/vz.dtb"
 note "installed $BOOTDIR/xen.efi ($(stat -c%s "$BOOTDIR/xen.efi") bytes) and vz.dtb"
 
 # --------------------------------------------------------------- the dom0 pair
+#
+# Check the thing Xen actually checks.  kernel_zimage64_probe() looks for the
+# arm64 Image magic "ARM\x64" at offset 56 and returns -EINVAL otherwise, which
+# surfaces as "Could not set up d0 guest OS (rc = -22)" -- a message that says
+# nothing about the kernel being at fault.
+#
+# Note what is NOT a usable test: an arm64 Image starts with "MZ" because it is
+# deliberately also a valid PE/COFF EFI application (that is the EFI stub), so
+# a PE header says nothing.  A CONFIG_EFI_ZBOOT vmlinuz.efi starts with "MZ"
+# too and has zeroes at offset 56.
 for f in "$DOM0_KERNEL" "$DOM0_INITRD"; do
     [ -e "/boot$f" ] || warn "/boot$f does not exist yet; the entry will not boot until it does"
 done
 if [ -e "/boot$DOM0_KERNEL" ]; then
-    read -r kmagic < <(od -An -tx2 -N2 "/boot$DOM0_KERNEL" | tr -d ' \n'; echo)
-    if [ "$kmagic" = "5a4d" ]; then
-        warn "/boot$DOM0_KERNEL is a PE image, i.e. almost certainly a"
-        warn "CONFIG_EFI_ZBOOT kernel.  Xen's loader understands a raw Image, a"
-        warn "zImage or a uImage and nothing else, so this will not boot."
+    k=/boot$DOM0_KERNEL
+    off56=$(od -An -tx1 -j56 -N4 "$k" | tr -d ' \n')
+    head4=$(od -An -tx1 -N4 "$k" | tr -d ' \n')
+
+    if [ "$off56" != "41524d64" ]; then
+        warn "$k is not a raw arm64 Image: no ARM\\x64 magic at offset 56"
+        case $head4 in
+        28b52ffd)
+            warn "  it is a zstd stream -- decompress it:"
+            warn "    zstd -dc $k > /boot/Image-dom0   # ignore the trailing-bytes"
+            warn "                                     # complaint: that is the"
+            warn "                                     # 4-byte size Linux appends"
+            ;;
+        1f8b*)
+            warn "  it is gzip-compressed; Xen can decompress gzip, so if this"
+            warn "  still fails the size trailer is probably missing"
+            ;;
+        fd377a58)
+            warn "  it is xz-compressed -- decompress it with: xz -dc" ;;
+        4d5a*)
+            warn "  it is a PE image with no Image magic, i.e. a CONFIG_EFI_ZBOOT"
+            warn "  vmlinuz.efi.  Xen's loader cannot unwrap that; build the"
+            warn "  kernel with CONFIG_EFI_ZBOOT=n, or use arch/arm64/boot/Image."
+            ;;
+        *)  warn "  head is $head4; expected a raw Image or a supported"
+            warn "  compressed stream" ;;
+        esac
+        warn "Xen will refuse this with rc = -22."
     fi
 fi
 

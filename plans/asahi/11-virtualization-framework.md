@@ -337,6 +337,7 @@ off and is selected only by `APPLE_VZ`.
 | `arch/arm/gic-v3.c`, `arch/arm/domain_build.c` | The two call sites for the above. |
 | `arch/arm/configs/apple_vz_defconfig` | GICv3 + GICv2m + the virtio console, `CONFIG_DOM0_MEM`, initcall trace on. `EARLY_PRINTK` stays **off**: it writes to a fixed MMIO address from assembly, which a PCI device found at runtime can never be — and with it off, `conring_flush()` replays everything to the virtio console instead. |
 | `plans/asahi/vz/gen-vz-dtb.py`, `vz.dts` | §3. |
+| `common/device-tree/kernel.c` | Report what a rejected boot module actually is, rather than only `rc = -22`. |
 | `plans/asahi/vz/install-vz.sh` | §6. Installs Xen and the DTB, writes the GRUB entries, and fixes the four things that make a first boot fail silently. |
 
 Note what is *not* here. No AIC, no dockchannel, no s5l, no forced-VHE work,
@@ -373,11 +374,23 @@ Two independent problems, both measured on this VM, and both the same traps
   here) plus `CONFIG_PCI_HOST_GENERIC=y` (also already `y`) so it can drive
   the DT-described ECAM bridge.
 - **`CONFIG_EFI_ZBOOT=y`**, so `/boot/vmlinuz-*` is a PE wrapper with the real
-  Image compressed inside (verified: `MZ` header). Xen's loader understands a
-  raw `Image`, a `zImage` or a `uImage` and nothing else, so the zboot wrapper
-  has to be unwrapped — the same `unzboot.py` step as §10 — or the kernel
-  built with `CONFIG_EFI_ZBOOT=n` in the first place, which is simpler when
-  you are building it anyway.
+  Image zstd-compressed inside. Xen's loader understands a raw `Image`, a
+  `zImage` or a `uImage and nothing else, so the wrapper has to be unwrapped —
+  the same `unzboot.py` step as §10 — or the kernel built with
+  `CONFIG_EFI_ZBOOT=n`, which is simpler when you are building it anyway.
+
+  **An `MZ` header is not how you tell.** An arm64 `Image` starts with `MZ`
+  too, deliberately: it is simultaneously a raw Image and a valid PE/COFF EFI
+  application, which is what the EFI stub is. The discriminator is the arm64
+  Image magic at **offset 56**, which is what
+  `kernel_zimage64_probe()` checks:
+
+  ```
+  /boot/vmlinuz-xen-dom0             first2=4d5a off56=41524d64   <- raw Image
+  /boot/vmlinuz-7.1.13-200.fc44      first2=4d5a off56=00000000   <- zboot PE
+  ```
+
+  Getting this wrong cost a boot: see below.
 
 - **`CONFIG_VIRTIO_CONSOLE=n`** (or `=m` plus
   `module_blacklist=virtio_console`). Xen owns the virtio-console device it
@@ -495,15 +508,37 @@ Notes on the command lines:
 
 In rough order of likelihood, and all of it untested:
 
-1. **Xen complains about the dom0 module, or dom0 never starts.** The zboot
-   wrapper and the missing `CONFIG_XEN`, per §6. These are the two most
-   likely first failures and neither is Xen's fault, so rule them out before
-   suspecting anything in §5.
-2. **Nothing on screen after GRUB.** Xen died before or during
+1. **`Could not set up d0 guest OS (rc = -22)`**, right after `Loading
+   ramdisk from boot module @ ...`. This is the first thing that actually
+   happened, and the message names nothing useful. It is
+   `kernel_image_probe()` returning `-EINVAL` from `kernel_probe()`, i.e. the
+   dom0 kernel is not an image Xen recognises.
+
+   The cause here was a **zstd stream**: `kernel_decompress()` in
+   `common/device-tree/kernel.c` says `/* only gzip is supported */`, so a
+   zstd payload falls straight through to a probe of still-compressed data.
+   That is not an oversight — `common/Makefile` builds every non-gzip
+   decompressor `$(CONFIG_X86)`-only, so on arm64 they do not exist. Fix it
+   outside Xen:
+
+   ```
+   zstd -dc vmlinuz.zst > /boot/vmlinuz-xen-dom0    # the "unsupported format"
+                                                    # complaint is the 4-byte
+                                                    # size Linux appends; the
+                                                    # output is complete
+   ```
+
+   Then check `off56` is `41524d64` as above. `install-vz.sh` now does that
+   check and names the format it found, and Xen now says what the module
+   actually is instead of only `rc = -22`.
+2. **Xen complains about the dom0 module, or dom0 never starts.** The zboot
+   wrapper and the missing `CONFIG_XEN`, per §6. Neither is Xen's fault, so
+   rule them out before suspecting anything in §5.
+3. **Nothing on screen after GRUB.** Xen died before or during
    `ExitBootServices`. The EFI-stage messages should have appeared; if
    `xen.efi` printed nothing at all, GRUB's `LoadImage` rejected the image or
    the FDT was not installed.
-3. **Nothing on the serial terminal, but the EFI lines appeared.** Either the
+4. **Nothing on the serial terminal, but the EFI lines appeared.** Either the
    console never came up or Xen died before it did. Those are
    distinguishable: with `console=vtcon` the driver logs
    `vtcon: virtio-console at 05:00.0 ...` from `platform_init()` and
@@ -514,29 +549,29 @@ In rough order of likelihood, and all of it untested:
    is open, and look for `vtcon: skipping ...: offers MULTIPORT` naming the
    only candidate, which means the port Xen would need is one it will not
    write to (§2).
-4. **Serial output stops partway through Xen's boot.** Suspect the device
+5. **Serial output stops partway through Xen's boot.** Suspect the device
    rather than Xen: everything Xen prints goes through one descriptor per
    character with a notification each, and a backend that stops consuming
    will make `tx_ready()` return zero forever and Xen will spin in
    `__serial_putc()`. `console=none` plus `xl dmesg` separates "Xen hung"
    from "the console hung".
-5. **Screen and serial both blank after EFI.** Xen got past EFI and hung
+6. **Screen and serial both blank after EFI.** Xen got past EFI and hung
    before the console. Bisect by removing things: fewer dom0 vCPUs,
    `dom0_max_vcpus=1`, then no PCI at all in the DTB (drop the `pcie` node) —
    which also removes the console, so pair it with `console=none`, and use it
    to separate "Xen cannot boot" from "dom0 cannot use its devices".
-6. **PSCI.** If secondaries never come up, the assumption in §1 that macOS
+7. **PSCI.** If secondaries never come up, the assumption in §1 that macOS
    traps SMC from virtual EL2 is wrong. Symptom: Xen boots on one CPU and
    `setup_virt_paging`'s `smp_call_function` never returns.
-7. **The EL2 physical timer.** Xen needs `CNTHP_EL2` and PPI 26 delivered.
+8. **The EL2 physical timer.** Xen needs `CNTHP_EL2` and PPI 26 delivered.
    The GTDT declares it (§1) but nothing in the guest exercises it, since
    Linux at EL1 uses PPI 30 and nVHE KVM does not use the hyp timer for the
    host. This is the least-corroborated hardware assumption in the whole
    plan.
-8. **dom0 has no disk.** MSIs (§4). Check with `xl dmesg` for the
+9. **dom0 has no disk.** MSIs (§4). Check with `xl dmesg` for the
    `GICv2m: dom0: frame 0x1fff0000, SPIs 128-255` line, then in dom0 for
    `GICv2m: range[mem 0x1fff0000-0x1fff0fff], SPI[128:255]` and for
    `virtio1-req.0` appearing in `/proc/interrupts`.
-9. **dom0's `hvc0` is the wrong thing.** If `virtio_console` is still built
+10. **dom0's `hvc0` is the wrong thing.** If `virtio_console` is still built
    into the dom0 kernel it will race Xen's PV console for the `hvc0` name and
    fight Xen for the device. §2, and §6's kernel prerequisites.
