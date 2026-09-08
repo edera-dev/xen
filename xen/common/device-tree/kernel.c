@@ -119,6 +119,58 @@ int __init kernel_decompress(struct boot_module *mod, uint32_t offset)
     return 0;
 }
 
+/*
+ * Say what a rejected boot module actually is.
+ *
+ * kernel_image_probe() returning -EINVAL surfaces as construct_dom0()'s
+ * "Could not set up d0 guest OS (rc = -22)", which names neither the kernel
+ * nor anything about it, and on a platform whose only log is the console ring
+ * that is all there is to go on.  Every case below is a thing people really
+ * hand Xen -- an arm64 kernel is routinely shipped zstd-compressed inside a
+ * CONFIG_EFI_ZBOOT wrapper, and both that wrapper and a raw Image start with
+ * "MZ", so the difference is not visible without knowing where to look.
+ */
+static void __init report_unusable_kernel(paddr_t addr, paddr_t size)
+{
+    unsigned char head[8] = { };
+    unsigned char at56[4] = { };
+
+    printk(XENLOG_ERR "Boot module at %#"PRIpaddr" is not a kernel image Xen can load.\n",
+           addr);
+
+    if ( size < sizeof(head) )
+    {
+        printk(XENLOG_ERR "  It is only %#"PRIpaddr" bytes long.\n", size);
+        return;
+    }
+
+    copy_from_paddr(head, addr, sizeof(head));
+    if ( size >= 56 + sizeof(at56) )
+        copy_from_paddr(at56, addr + 56, sizeof(at56));
+
+    if ( !memcmp(head, "\x28\xb5\x2f\xfd", 4) )
+        printk(XENLOG_ERR "  It is a zstd stream.  Only gzip is decompressed here, so decompress it first.\n");
+    else if ( !memcmp(head, "\375" "7zXZ", 6) )
+        printk(XENLOG_ERR "  It is an xz stream.  Only gzip is decompressed here, so decompress it first.\n");
+    else if ( !memcmp(head, "\x02\x21", 2) )
+        printk(XENLOG_ERR "  It is an lz4 stream.  Only gzip is decompressed here, so decompress it first.\n");
+    else if ( head[0] == 0x1f && (head[1] == 0x8b || head[1] == 0x9e) )
+        printk(XENLOG_ERR "  It is gzip-compressed, so decompression itself failed.\n");
+    else if ( !memcmp(head, "MZ", 2) && size >= 56 + sizeof(at56) &&
+              !memcmp(at56, "\0\0\0\0", 4) )
+        printk(XENLOG_ERR
+               "  It is a PE image with no arm64 Image magic at offset 56, i.e. a\n"
+               "  CONFIG_EFI_ZBOOT vmlinuz.efi.  Xen cannot unwrap one: use the raw\n"
+               "  arch/arm64/boot/Image, or build with CONFIG_EFI_ZBOOT=n.\n");
+    else
+        printk(XENLOG_ERR
+               "  First bytes %02x %02x %02x %02x %02x %02x %02x %02x, offset 56 %02x %02x %02x %02x\n"
+               "  (a raw arm64 Image has \"ARM\\x64\" = 41 52 4d 64 at offset 56).\n",
+               head[0], head[1], head[2], head[3],
+               head[4], head[5], head[6], head[7],
+               at56[0], at56[1], at56[2], at56[3]);
+}
+
 int __init kernel_probe(struct kernel_info *info,
                         const struct dt_device_node *domain)
 {
@@ -236,6 +288,8 @@ int __init kernel_probe(struct kernel_info *info,
         return rc;
 
     rc = kernel_image_probe(info, mod->start, mod->size);
+    if ( rc )
+        report_unusable_kernel(mod->start, mod->size);
 
     return rc;
 }
