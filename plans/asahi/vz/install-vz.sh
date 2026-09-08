@@ -164,9 +164,21 @@ menuentry '$title' --class xen {
 
 	# hvc0 last, so it is dom0's /dev/console: that is Xen's console, which
 	# comes out of the same serial terminal as Xen's own output.
+	#
+	# earlycon=xenboot is the difference between a silent dom0 and a
+	# debuggable one.  hvc0 is a console_initcall, so it only registers in
+	# console_init(), which start_kernel() reaches *after* init_IRQ(),
+	# time_init() and the first local_irq_enable() -- a dom0 that dies in
+	# that window prints absolutely nothing.  The earlycon goes through
+	# HYPERVISOR_console_io from the first printk in setup_arch() instead.
+	# keep_bootcon keeps it alive once hvc0 takes over, so the end of the
+	# log can never be lost; the price is that everything from that point
+	# appears twice.  nokaslr makes the PCs in Xen's '0' keyhandler dump
+	# resolvable straight against the dom0 kernel's System.map.
 	xen_module $DOM0_KERNEL \\
 		root=UUID=$ROOT_SPEC ro$ROOT_FLAGS selinux=0 \\
-		console=tty0 console=hvc0
+		console=tty0 console=hvc0 \\
+		earlycon=xenboot keep_bootcon nokaslr
 
 	xen_module --nounzip $DOM0_INITRD
 }

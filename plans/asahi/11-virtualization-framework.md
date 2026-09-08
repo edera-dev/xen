@@ -1,9 +1,10 @@
 # 11 — Xen nested inside Virtualization.framework
 
-Status: **code written, never booted.** Everything below marked "(measured)"
-was read out of the running VM described in §1; everything marked
-"(untested)" is a change made on the strength of those measurements and not
-yet observed to work.
+Status: **Xen boots; dom0 boots to its first interrupt and stops there.** Everything below
+marked "(measured)" was read out of the running VM described in §1;
+everything marked "(untested)" is a change made on the strength of those
+measurements and not yet observed to work. What the two boots so far did
+prove, and what they did not, is §7.
 
 This is a *second target*, not a variation of the bare-metal port. The
 machine macOS's Virtualization.framework synthesises for a guest has none of
@@ -506,7 +507,156 @@ Notes on the command lines:
 
 ## 7. If it does not boot, look here first
 
-In rough order of likelihood, and all of it untested:
+### What the boots so far actually did
+
+**Boot 1** got as far as `construct_dom0()` and failed with `rc = -22`,
+because the dom0 kernel was still a zstd stream. That is item 1 below, and it
+is fixed.
+
+**Boot 2** (`git:a67d8630b7-dirty`) went much further, and everything in
+§1–§6 that it exercised worked:
+
+- the virtio console carried the whole log, including the pre-`init_preirq()`
+  part replayed out of the ring (§2);
+- the generated device tree was accepted whole — `Platform: APPLE
+  VIRTUALIZATION`, `Apple VZ: nested EL2, non-VHE (HCR_EL2.E2H=0)` and
+  `CNTFRQ_EL0 = 24000000 Hz` confirm §1's two central measurements from
+  Xen's own side (§3);
+- **PSCI works from virtual EL2**, which was an inference in §1 and is now
+  measured: `Brought up 6 CPUs`. Item 7 below is ruled out;
+- `Generic Timer IRQ: phys=30 hyp=26 virt=27` — the `interrupt-names` in the
+  generated timer node are read the way `init_dt_xen_time()` expects;
+- `GICv2m: d0: frame 0x0000001fff0000, SPIs 128-255` (§4), and dom0 was built
+  1:1 at `0x70000000` with its kernel, initrd and DTB loaded.
+
+Then dom0 ran. Two `Unhandled SMC/HVC` lines, `0x84000050` and `0x8600ff01`,
+are `smccc_probe_trng()` and `kvm_init_hyp_services()` off
+`arm_smccc_version_init()`, i.e. PSCI probing inside `setup_arch()`; the
+`vGICD`/`vGICR` writes after them are Linux's `gic_dist_config()` and
+`gic_cpu_config()` inside `init_IRQ()`. So dom0 executes real code at EL1 and
+its MMIO traps reach Xen.
+
+**And then nothing at all** — not a crash Xen can see, either: no domain
+crash dump, no further traps. The reason for the silence is structural: dom0
+has no console until `console_init()`, because `hvc_xen` is a
+`console_initcall`, and `start_kernel()` reaches that only after
+`init_IRQ()`, `time_init()` and the first `local_irq_enable()`. Every
+`printk` before it goes into a buffer nothing has been attached to yet.
+
+**Boot 3** added `earlycon=xenboot` and dom0 became legible. It works, and it
+is now on the command line `install-vz.sh` writes:
+`xenboot_earlycon_write()` is `dom0_write_console()`, an outright
+`HYPERVISOR_console_io` hypercall, so it prints from the first `printk` in
+`setup_arch()` with no device and no mapping. It needs only
+`CONFIG_HVC_XEN=y` and `CONFIG_SERIAL_EARLYCON=y` — note that the *other* Xen
+console in `hvc_xen.c`, `xenboot_console`, is behind `CONFIG_EARLY_PRINTK`,
+which arm64 does not have; the `EARLYCON_DECLARE` is not. `keep_bootcon`
+keeps it alive once `hvc0` takes over, and `nokaslr` makes the PCs in Xen's
+`0` dump resolvable straight against the dom0 kernel's `System.map`.
+
+What boot 3 then showed, interleaved with the same Xen messages:
+
+```
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x0000000010010000
+[    0.000000] GICv2m: DT overriding V2M MSI_TYPER (base:128, num:128)
+[    0.000000] GICv2m: range[mem 0x1fff0000-0x1fff0fff], SPI[128:255]
+[    0.000000] arch_timer: cp15 timer running at 24.00MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0xffffffffffffff ...
+[    0.000000] sched_clock: 56 bits at 24MHz, resolution 41ns, wraps every ...
+```
+
+and then stopped. That is a much smaller box than boot 2's, and three more
+things are now measured rather than assumed:
+
+- **The vGIC's system-register interface works.** dom0 is past
+  `gic_cpu_sys_reg_init()` — `ICC_SRE_EL1`, `ICC_PMR_EL1`, `ICC_CTLR_EL1`,
+  `ICC_IGRPEN1_EL1` — with no "unable to set SRE (disabled at EL2)". That was
+  the second suspect after boot 2 and it is dead.
+- **§4's v2m frame is mapped and readable in dom0.** `gicv2m_init_one()`
+  reads `V2M_MSI_IIDR` at `0x1fff_0fcc` unconditionally on the DT path, and
+  the read neither faulted nor stopped dom0. (The "DT overriding MSI_TYPER"
+  line says nothing about the register: Linux prints it whenever the DT
+  carries `arm,msi-base-spi`, agreement or not.) Item 9's Xen half and dom0
+  half are both confirmed as far as they can be before a device uses one.
+- **The virtual timer is set up correctly**: `(virt)` means
+  `arch_timer_uses_ppi == ARCH_TIMER_VIRT_PPI`, i.e. dom0 took PPI 27 out of
+  the generated timer node at the right index, and 24 MHz matches §1.
+
+### Where it stops: the first interrupt
+
+`sched_clock: 56 bits at 24MHz` is the last line of `arch_counter_register()`,
+i.e. the end of `time_init()` (`init/main.c:978`). The next `printk` a normal
+arm64 boot produces is `Console: colour dummy device 80x25` from `con_init()`
+inside `console_init()` (`init/main.c:1002`). Between the two there is
+`perf_event_init()`, `profile_init()`, `call_function_init()`,
+`kmem_cache_init_late()` — and **`local_irq_enable()` at
+`init/main.c:993`**, which is the first moment dom0 takes an interrupt at EL1
+at all.
+
+A virtual timer interrupt is already waiting for it. `arch_timer_register()`
+ends with `cpuhp_setup_state(CPUHP_AP_ARM_ARCH_TIMER_STARTING, ...)` —
+commented "Register and immediately configure the timer on the boot CPU" — so
+`arch_timer_starting_cpu()` has already enabled PPI 27 and
+`clockevents_config_and_register()` has already armed the periodic tick, all
+of it *before* the banner and `sched_clock` lines that we can see. dom0 then
+enables interrupts and never prints again.
+
+So this is no longer about how anything is configured. Interrupt *delivery*
+to dom0 is the thing that does not work, and the vtimer is what exercises it
+first:
+
+1. dom0 is spinning in its own handler — a vIRQ it acknowledges and Xen
+   re-injects, or a line it cannot deactivate. Xen sees no MMIO for any of
+   this: with SRE the whole `IAR`/`EOIR` cycle is system registers and the
+   deactivate lands in the LR, so a storm is completely invisible in Xen's
+   log, which is consistent with what we have.
+2. the storm is on Xen's side of the LR — the nested GIC's **maintenance
+   interrupt**, PPI 25 (`interrupts = <1 9 4>` in the generated tree,
+   `init_maintenance_interrupt()`, whose handler is deliberately a no-op).
+   Note *when* that first becomes possible: at the first LR write, which is
+   this timer interrupt. If it asserts and Xen cannot clear it, Xen never
+   returns to dom0, and Xen prints nothing either.
+3. dom0 is not running at all, and nothing is left to wake it.
+
+Xen's keyhandlers separate the three without a rebuild. `CTRL-a` three times
+takes the console back from dom0, then:
+
+- **`0`** (`dump_hwdom_registers()`) — dom0's PC for every vCPU. In
+  `arch_timer_handler_virt`, `gic_handle_irq` or `el1_interrupt` is case 1.
+- **`d`** — Xen's own registers on every pCPU. In `maintenance_interrupt` or
+  `do_IRQ` is case 2.
+- **`q`** — vCPU state; d0v0 blocked rather than runnable is case 3.
+- **`i`** — the interrupt bindings, for an SPI from the v2m block sitting
+  routed and active.
+
+Resolve dom0's PC against its `System.map` directly: `nokaslr` is on the
+command line, and arm64 does not randomise without a seed in `/chosen`
+anyway, which Xen's generated dom0 tree does not provide.
+
+### Two things in those logs that are *not* the bug
+
+- **`vGICD: unhandled word write ... to ICACTIVERn`**, 31 times, then the same
+  on the redistributor. Upstream Xen's `vgic-v3.c` has never implemented
+  `ICACTIVER` writes, and this is `gic_dist_config()` deactivating every SPI
+  and `gic_cpu_config()` every SGI/PPI at a moment when nothing is active, so
+  dropping them changes nothing. It is noise on every Xen/arm dom0 boot.
+- **`Maximum number of vGIC IRQs exceeded`**. `GICD_TYPER` reports 1020 lines
+  and `VGIC_MAX_IRQS` is 992, so dom0's vGIC stops at 992 — and dom0's own
+  writes stopping at `ICACTIVER120` (IRQ 991) is it agreeing. Everything this
+  machine has is below that: 988 SPIs per the MADT (§1) and the v2m block at
+  128–255 (§4).
+
+One assumption is still unproven rather than ruled out: item 8, the EL2
+physical timer. Nothing in these logs needs PPI 26 — Xen's boot reads the
+counter rather than waiting on the interrupt, and dom0's tick comes from the
+*virtual* timer PPI 27 trapped into `vtimer_interrupt()`, not from a Xen soft
+timer. A dead hyp timer would not explain the silence and would not have
+shown up yet; it would, however, be a second reason interrupt delivery is the
+area to look at.
+
+### The list
+
+In rough order of likelihood:
 
 1. **`Could not set up d0 guest OS (rc = -22)`**, right after `Loading
    ramdisk from boot module @ ...`. This is the first thing that actually
@@ -560,9 +710,10 @@ In rough order of likelihood, and all of it untested:
    `dom0_max_vcpus=1`, then no PCI at all in the DTB (drop the `pcie` node) —
    which also removes the console, so pair it with `console=none`, and use it
    to separate "Xen cannot boot" from "dom0 cannot use its devices".
-7. **PSCI.** If secondaries never come up, the assumption in §1 that macOS
-   traps SMC from virtual EL2 is wrong. Symptom: Xen boots on one CPU and
-   `setup_virt_paging`'s `smp_call_function` never returns.
+7. **PSCI.** *Ruled out by boot 2: `Brought up 6 CPUs`.* If secondaries ever
+   do stop coming up, the assumption in §1 that macOS traps SMC from virtual
+   EL2 is wrong. Symptom: Xen boots on one CPU and `setup_virt_paging`'s
+   `smp_call_function` never returns.
 8. **The EL2 physical timer.** Xen needs `CNTHP_EL2` and PPI 26 delivered.
    The GTDT declares it (§1) but nothing in the guest exercises it, since
    Linux at EL1 uses PPI 30 and nVHE KVM does not use the hyp timer for the
