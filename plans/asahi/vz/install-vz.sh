@@ -1,0 +1,164 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Install Xen and its device tree into /boot and give GRUB an entry for them,
+# on an Apple Virtualization.framework guest.  Re-run after every Xen rebuild;
+# it is idempotent.
+#
+# There are four things here that are not obvious, and each of them is a boot
+# that silently does not work if it is missing:
+#
+#  - GRUB needs xen_boot.mod on disk.  Fedora's grubaa64.efi is a monolithic
+#    image and xen_boot is not in it (`devicetree` is), and there is no
+#    /boot/grub2/arm64-efi at all, so `insmod xen_boot` has nowhere to look.
+#
+#  - Xen goes in /boot/xen/ rather than /boot.  /etc/grub.d/20_linux_xen globs
+#    /boot/xen* and would generate its own entries -- which cannot work here,
+#    because it emits no `devicetree` line and this platform has no device tree
+#    of its own.  A directory fails its `test -f` check, so it is skipped.
+#
+#  - The entry lives in /boot/grub2/custom.cfg, which 41_custom sources at boot.
+#    That means editing Xen's command line does not need grub2-mkconfig, which
+#    matters when the command line is the thing being iterated on.
+#
+#  - The menu has to be visible.  Fedora sets menu_auto_hide=1 in grubenv, and
+#    with boot_success=1 that hides it entirely.
+#
+# The dom0 kernel and initramfs are referenced through fixed names so that this
+# entry never has to be edited when the kernel changes:
+#
+#     /boot/vmlinuz-xen-dom0        (a raw arm64 Image, NOT a zboot PE)
+#     /boot/initramfs-xen-dom0.img
+#
+# Point those at the real files, by symlink or copy, once the dom0 kernel is
+# built.  See plans/asahi/11-virtualization-framework.md section 6 for what
+# that kernel has to have in it.
+
+set -eu
+
+XEN_SRC=${XEN_SRC:-$(cd "$(dirname "$0")/../../.." && pwd)/xen/xen}
+DTB_SRC=${DTB_SRC:-$(dirname "$0")/vz.dtb}
+
+BOOTDIR=/boot/xen
+GRUBDIR=/boot/grub2
+CUSTOM=$GRUBDIR/custom.cfg
+MODDIR=$GRUBDIR/arm64-efi
+
+DOM0_KERNEL=/vmlinuz-xen-dom0
+DOM0_INITRD=/initramfs-xen-dom0.img
+
+die() { echo "install-vz: $*" >&2; exit 1; }
+note() { echo "install-vz: $*"; }
+warn() { echo "install-vz: WARNING: $*" >&2; }
+
+[ "$(id -u)" = 0 ] || die "must run as root"
+[ -f "$XEN_SRC" ] || die "no Xen image at $XEN_SRC (build it, or set XEN_SRC=)"
+[ -f "$DTB_SRC" ] || die "no device tree at $DTB_SRC (run gen-vz-dtb.py)"
+
+# Xen's arm64 image carries a PE header in head.S, and that is what GRUB's
+# LoadImage() needs.  A raw Image here would be accepted by nothing and would
+# fail at the point where there is least to see.
+read -r magic < <(od -An -tx2 -N2 "$XEN_SRC" | tr -d ' \n'; echo)
+[ "$magic" = "5a4d" ] || die "$XEN_SRC is not a PE image (magic $magic, expected 5a4d/MZ)"
+
+# ---------------------------------------------------------------- GRUB modules
+if [ ! -f "$MODDIR/xen_boot.mod" ]; then
+    [ -d /usr/lib/grub/arm64-efi ] || \
+        die "install grub2-efi-aa64-modules: no /usr/lib/grub/arm64-efi"
+    note "installing GRUB modules into $MODDIR (for insmod xen_boot)"
+    mkdir -p "$MODDIR"
+    cp -a /usr/lib/grub/arm64-efi/. "$MODDIR/"
+fi
+
+# ------------------------------------------------------------------ Xen + DTB
+mkdir -p "$BOOTDIR"
+install -m 0644 "$XEN_SRC" "$BOOTDIR/xen.efi"
+install -m 0644 "$DTB_SRC" "$BOOTDIR/vz.dtb"
+note "installed $BOOTDIR/xen.efi ($(stat -c%s "$BOOTDIR/xen.efi") bytes) and vz.dtb"
+
+# --------------------------------------------------------------- the dom0 pair
+for f in "$DOM0_KERNEL" "$DOM0_INITRD"; do
+    [ -e "/boot$f" ] || warn "/boot$f does not exist yet; the entry will not boot until it does"
+done
+if [ -e "/boot$DOM0_KERNEL" ]; then
+    read -r kmagic < <(od -An -tx2 -N2 "/boot$DOM0_KERNEL" | tr -d ' \n'; echo)
+    if [ "$kmagic" = "5a4d" ]; then
+        warn "/boot$DOM0_KERNEL is a PE image, i.e. almost certainly a"
+        warn "CONFIG_EFI_ZBOOT kernel.  Xen's loader understands a raw Image, a"
+        warn "zImage or a uImage and nothing else, so this will not boot."
+    fi
+fi
+
+# ------------------------------------------------------------------- the entry
+BOOT_UUID=$(findmnt -no UUID /boot) || die "cannot determine /boot UUID"
+ROOT_SPEC=$(findmnt -no UUID /) || die "cannot determine / UUID"
+
+# btrfs needs the subvolume, and it is not guessable: this root is subvol=/root.
+ROOT_FLAGS=
+subvol=$(findmnt -no OPTIONS / | tr ',' '\n' | grep -m1 '^subvol=' || true)
+[ -n "$subvol" ] && ROOT_FLAGS=" rootflags=$subvol"
+
+note "writing $CUSTOM"
+
+# Two entries.  The second exists because of the history in
+# plans/asahi/11-virtualization-framework.md section 2: writing to a
+# virtio-console port killed the VMM once, and while the driver refuses the
+# port that did it, "boot Xen without touching the console device at all" is
+# the fallback that separates "Xen cannot boot" from "the console cannot".
+# Its log is still recoverable from the ring with `xl dmesg`.
+emit_entry() {
+	local title=$1 console=$2
+
+	cat <<EOF
+
+menuentry '$title' --class xen {
+	insmod part_gpt
+	insmod ext2
+	insmod xen_boot
+	search --no-floppy --fs-uuid --set=root $BOOT_UUID
+
+	# The platform is described only by ACPI, so Xen is given a device tree
+	# translated from the firmware tables by plans/asahi/vz/gen-vz-dtb.py.
+	# Without this GRUB hands Xen an empty tree and it hangs with no CPUs.
+	devicetree /xen/vz.dtb
+
+	# console_to_ring puts dom0's output in Xen's ring too, and noreboot
+	# stops a panic from rebooting into this same entry and destroying the
+	# only copy of the panic message.
+	xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 \\
+		$console console_to_ring conring_size=512 \\
+		loglvl=all guest_loglvl=all noreboot
+
+	# hvc0 last, so it is dom0's /dev/console: that is Xen's console, which
+	# comes out of the same serial terminal as Xen's own output.
+	xen_module $DOM0_KERNEL \\
+		root=UUID=$ROOT_SPEC ro$ROOT_FLAGS selinux=0 \\
+		console=tty0 console=hvc0
+
+	xen_module --nounzip $DOM0_INITRD
+}
+EOF
+}
+
+cat > "$CUSTOM" <<EOF
+# Written by plans/asahi/vz/install-vz.sh -- re-run it rather than hand-editing,
+# or hand-edit freely: 41_custom sources this file at boot, so changes here take
+# effect without grub2-mkconfig.
+EOF
+
+# console=vtcon is the virtio-console, the only serial port this platform has.
+emit_entry 'Xen (Virtualization.framework) with Linux dom0' \
+	'console=vtcon' >> "$CUSTOM"
+emit_entry 'Xen (Virtualization.framework), no console -- xl dmesg only' \
+	'console=none' >> "$CUSTOM"
+
+grub2-script-check "$CUSTOM" || die "$CUSTOM is not valid GRUB script"
+
+# ------------------------------------------------------------ show the menu
+if grub2-editenv "$GRUBDIR/grubenv" list | grep -q '^menu_auto_hide='; then
+    note "unsetting menu_auto_hide so the menu is shown"
+    grub2-editenv "$GRUBDIR/grubenv" unset menu_auto_hide
+fi
+grub2-editenv "$GRUBDIR/grubenv" unset menu_show_once 2>/dev/null || true
+
+note "done.  Select 'Xen (Virtualization.framework)' from the GRUB menu."

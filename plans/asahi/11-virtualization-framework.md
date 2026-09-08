@@ -337,6 +337,7 @@ off and is selected only by `APPLE_VZ`.
 | `arch/arm/gic-v3.c`, `arch/arm/domain_build.c` | The two call sites for the above. |
 | `arch/arm/configs/apple_vz_defconfig` | GICv3 + GICv2m + the virtio console, `CONFIG_DOM0_MEM`, initcall trace on. `EARLY_PRINTK` stays **off**: it writes to a fixed MMIO address from assembly, which a PCI device found at runtime can never be — and with it off, `conring_flush()` replays everything to the virtio console instead. |
 | `plans/asahi/vz/gen-vz-dtb.py`, `vz.dts` | §3. |
+| `plans/asahi/vz/install-vz.sh` | §6. Installs Xen and the DTB, writes the GRUB entries, and fixes the four things that make a first boot fail silently. |
 
 Note what is *not* here. No AIC, no dockchannel, no s5l, no forced-VHE work,
 no DART: `CONFIG_APPLE` is off in this build, which also means
@@ -387,19 +388,76 @@ The initramfs needs `virtio_pci`, `virtio_blk` and `btrfs` (all built in
 here). Rebuild it `--no-hostonly`: the one on disk was generated for a machine
 booting from ACPI without Xen, which is not the machine it will see.
 
-### Then the GRUB commands
+### Then install it
 
-Copy `xen.efi`, the dom0 Image, the initramfs and `vz.dtb` to `/boot`, then at
-the GRUB command line (`c`) or in a `menuentry`:
+`plans/asahi/vz/install-vz.sh` does the whole thing and is idempotent, so it is
+what to re-run after every Xen rebuild:
+
+```
+sudo ./plans/asahi/vz/install-vz.sh
+```
+
+It installs `xen/xen` as `/boot/xen/xen.efi` with `vz.dtb` beside it, writes
+two menu entries to `/boot/grub2/custom.cfg`, and unsets `menu_auto_hide`.
+Four things it does are not obvious, and each is a boot that silently does not
+work if it is missing:
+
+- **GRUB needs `xen_boot.mod` on disk.** Fedora's `grubaa64.efi` is a
+  monolithic image, `xen_boot` is *not* in it (`devicetree` is), and there is
+  no `/boot/grub2/arm64-efi` directory at all — so `insmod xen_boot` has
+  nowhere to look. The script populates it from `grub2-efi-aa64-modules`,
+  which is version-matched to the installed core.
+- **Xen goes in `/boot/xen/`, not `/boot`.** `/etc/grub.d/20_linux_xen` globs
+  `/boot/xen*` and would generate its own entries, which cannot work here: it
+  emits no `devicetree` line, and it would pair Xen with the stock zboot
+  kernel. A directory fails its `test -f` check, so it is skipped — verified
+  by `grub2-mkconfig` emitting nothing at all between its BEGIN and END
+  markers.
+- **The entries live in `custom.cfg`,** which `41_custom` sources at boot. So
+  editing Xen's command line — the thing actually being iterated on — does not
+  need `grub2-mkconfig`.
+- **`menu_auto_hide=1` in `grubenv`** hides the menu entirely once
+  `boot_success=1`. `GRUB_TIMEOUT_STYLE=menu` and `GRUB_TIMEOUT=10` in
+  `/etc/default/grub` make the intent explicit as well.
+
+`GRUB_DEFAULT` stays `saved`, i.e. the ordinary Fedora kernel, deliberately: a
+Xen entry has to be chosen by hand, so a Xen boot that hangs never becomes what
+this machine boots by default.
+
+The second entry is `console=none` — the fallback that separates "Xen cannot
+boot" from "the console cannot", given §2. Its log is still recoverable with
+`xl dmesg`.
+
+The dom0 kernel and initramfs are referenced through fixed names, so the entry
+never needs editing when the kernel changes. Point these at the real files once
+the kernel is built:
+
+```
+sudo ln -sf vmlinuz-<version> /boot/vmlinuz-xen-dom0
+sudo ln -sf initramfs-<version>.img /boot/initramfs-xen-dom0.img
+```
+
+The script warns if either is missing, and warns if the kernel is a PE image —
+which is how a `CONFIG_EFI_ZBOOT` kernel presents itself, and which Xen's
+loader cannot unwrap.
+
+### The GRUB commands themselves
+
+For reference, and for typing at the GRUB prompt (`c`) when bisecting:
 
 ```
 insmod xen_boot
-devicetree /vz.dtb
-xen_hypervisor /xen.efi dom0_mem=2G dom0_max_vcpus=2 console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot
-xen_module /Image-xen-dom0 console=hvc0 console=tty0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=root selinux=0
+search --no-floppy --fs-uuid --set=root <the /boot filesystem UUID>
+devicetree /xen/vz.dtb
+xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot
+xen_module /vmlinuz-xen-dom0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=/root selinux=0 console=tty0 console=hvc0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
 ```
+
+Note there is no argument between the image path and the command line: GRUB
+passes `argv[1..]` as the command line and Xen's `cmdline_parse()` does not
+skip a leading token, so an extra one there becomes an unknown parameter.
 
 Notes on the command lines:
 
