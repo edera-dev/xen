@@ -428,6 +428,16 @@ static long remote_cmd_op(struct pv_iommu_remote_cmd *remote_cmd,
     if ( !d )
         return -ENOENT;
 
+    /*
+     * do_iommu_op() vets the domain it is about to act on, but that is the
+     * caller, not the domain named here.
+     */
+    if ( !can_use_iommu_check(d) )
+    {
+        put_domain(d);
+        return -ENODEV;
+    }
+
     ret = do_iommu_subop(remote_cmd->subop,
                          guest_handle_to_param(remote_cmd->arg, void), d,
                          true);
