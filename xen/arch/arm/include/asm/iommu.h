@@ -33,10 +33,22 @@ void iommu_set_ops(const struct iommu_ops *ops);
  */
 int __must_check arm_iommu_map_page(struct domain *d, dfn_t dfn, mfn_t mfn,
                                     unsigned int flags,
-                                    unsigned int *flush_flags);
+                                    unsigned int *flush_flags,
+                                    struct iommu_context *ctx);
 int __must_check arm_iommu_unmap_page(struct domain *d, dfn_t dfn,
                                       unsigned int order,
-                                      unsigned int *flush_flags);
+                                      unsigned int *flush_flags,
+                                      struct iommu_context *ctx);
+
+/*
+ * Arm IOMMU drivers have a single context per domain, made of the domain's
+ * P2M.  These implement the context ops for it and reject any attempt to
+ * create a second one.
+ */
+int arm_iommu_context_init(struct domain *d, struct iommu_context *ctx,
+                           uint32_t flags);
+int arm_iommu_context_teardown(struct domain *d, struct iommu_context *ctx,
+                               uint32_t flags);
 
 /*
  * This function is not strictly ARM-specific, but it is only used by ARM
