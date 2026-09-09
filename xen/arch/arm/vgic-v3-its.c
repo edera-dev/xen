@@ -1589,7 +1589,7 @@ static int vgic_v3_its_init_virtual(struct domain *d, paddr_t guest_addr,
         mfn_t mfn = maddr_to_mfn(host_doorbell_addr);
         unsigned int flush_flags = 0;
         int ret = iommu_map(its->d, _dfn(PFN_DOWN(its->doorbell_address)),
-                            mfn, 1, IOMMUF_writable, &flush_flags);
+                            mfn, 1, IOMMUF_writable, &flush_flags, 0);
 
         if ( ret < 0 )
         {
@@ -1599,7 +1599,8 @@ static int vgic_v3_its_init_virtual(struct domain *d, paddr_t guest_addr,
             return ret;
         }
 
-        ret = iommu_iotlb_flush(its->d, _dfn(PFN_DOWN(its->doorbell_address)), 1, flush_flags);
+        ret = iommu_iotlb_flush(its->d, _dfn(PFN_DOWN(its->doorbell_address)),
+                                1, flush_flags, 0);
         if ( ret < 0 )
             return ret;
     }
