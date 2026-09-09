@@ -2720,7 +2720,8 @@ static int __must_check arm_smmu_iotlb_flush_all(struct domain *d)
 	return 0;
 }
 
-static int __must_check arm_smmu_iotlb_flush(struct domain *d, dfn_t dfn,
+static int __must_check arm_smmu_iotlb_flush(struct domain *d,
+				struct iommu_context *ctx, dfn_t dfn,
 				unsigned long page_count, unsigned int flush_flags)
 {
 	return arm_smmu_iotlb_flush_all(d);
@@ -2966,6 +2967,8 @@ static const struct iommu_ops arm_smmu_iommu_ops = {
 	.page_sizes		= PAGE_SIZE_4K,
 	.init			= arm_smmu_iommu_xen_domain_init,
 	.hwdom_init		= arch_iommu_hwdom_init,
+	.context_init		= arm_iommu_context_init,
+	.context_teardown	= arm_iommu_context_teardown,
 	.teardown		= arm_smmu_iommu_xen_domain_teardown,
 	.iotlb_flush		= arm_smmu_iotlb_flush,
 	.assign_device		= arm_smmu_assign_dev,
