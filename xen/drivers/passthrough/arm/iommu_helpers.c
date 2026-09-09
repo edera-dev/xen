@@ -32,7 +32,8 @@
 /* Should only be used if P2M Table is shared between the CPU and the IOMMU. */
 int __must_check arm_iommu_map_page(struct domain *d, dfn_t dfn, mfn_t mfn,
                                     unsigned int flags,
-                                    unsigned int *flush_flags)
+                                    unsigned int *flush_flags,
+                                    struct iommu_context *ctx)
 {
     p2m_type_t t;
 
@@ -61,9 +62,27 @@ int __must_check arm_iommu_map_page(struct domain *d, dfn_t dfn, mfn_t mfn,
 /* Should only be used if P2M Table is shared between the CPU and the IOMMU. */
 int __must_check arm_iommu_unmap_page(struct domain *d, dfn_t dfn,
                                       unsigned int order,
-                                      unsigned int *flush_flags)
+                                      unsigned int *flush_flags,
+                                      struct iommu_context *ctx)
 {
     return guest_physmap_remove_page(d, _gfn(dfn_x(dfn)), INVALID_MFN, order);
+}
+
+/*
+ * A domain's only IOMMU context is its P2M, which the domain already owns,
+ * so there is nothing to build up or tear down.  Secondary contexts would
+ * need page tables of their own, which no Arm driver maintains yet.
+ */
+int arm_iommu_context_init(struct domain *d, struct iommu_context *ctx,
+                           uint32_t flags)
+{
+    return (flags & IOMMU_CONTEXT_INIT_default) ? 0 : -EOPNOTSUPP;
+}
+
+int arm_iommu_context_teardown(struct domain *d, struct iommu_context *ctx,
+                               uint32_t flags)
+{
+    return 0;
 }
 
 /*
