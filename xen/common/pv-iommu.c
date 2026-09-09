@@ -24,6 +24,19 @@
 
 #define PVIOMMU_PREFIX "[PV-IOMMU] "
 
+/*
+ * Arm has neither p2m_is_mmio() nor the get_gfn()/put_gfn() reference
+ * counting x86 uses; a p2m_lookup() hands back the type with no reference
+ * taken, and device memory shows up as one of the direct MMIO types.
+ */
+#ifdef CONFIG_X86
+#define pv_iommu_is_mmio(t) p2m_is_mmio(t)
+#else
+#define pv_iommu_is_mmio(t) ((t) == p2m_mmio_direct_dev || \
+                             (t) == p2m_mmio_direct_nc ||  \
+                             (t) == p2m_mmio_direct_c)
+#endif
+
 static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
                            struct page_info **page, bool readonly)
 {
@@ -65,7 +78,7 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
         }
         ret = 0;
     }
-    else if ( p2m_is_mmio(p2mt) ||
+    else if ( pv_iommu_is_mmio(p2mt) ||
               iomem_access_permitted(d, mfn_x(*mfn),mfn_x(*mfn)) )
     {
         *page = NULL;
@@ -80,7 +93,9 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
         ret = -EPERM;
     }
 
+#ifdef CONFIG_X86
     put_gfn(d, gfn_x(gfn));
+#endif
     return ret;
 }
 
@@ -156,11 +171,12 @@ static long free_context_op(struct pv_iommu_free *free, struct domain *d)
     return iommu_context_free(d, free->ctx_no, flags);
 }
 
+#ifdef CONFIG_HAS_PCI
 static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
                                struct domain *d)
 {
     int ret;
-    const device_t *pdev = NULL;
+    const struct pci_dev *pdev = NULL;
     struct physdev_pci_device dev = reattach->dev;
     pci_sbdf_t sbdf = PCI_SBDF(dev.seg, dev.bus, dev.devfn);
 
@@ -177,12 +193,14 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
      * hypervisor never sees and so cannot translate, and instead learns the
      * machine BDF out of its own xenstore entries.
      */
+#ifdef CONFIG_HAS_VPCI
     if ( !is_hardware_domain(d) )
     {
         read_lock(&d->pci_lock);
         pdev = vpci_get_pdev_by_guest_sbdf(d, sbdf);
         read_unlock(&d->pci_lock);
     }
+#endif
 
     if ( !pdev )
         pdev = pci_get_pdev(d, sbdf);
@@ -193,11 +211,20 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
         return -ENODEV;
     }
 
-    ret = iommu_reattach_context(d, d, (device_t *)pdev, reattach->ctx_no);
+    ret = iommu_reattach_context(d, d, (struct pci_dev *)pdev,
+                                 reattach->ctx_no);
 
     pcidevs_unlock();
     return ret;
 }
+#else /* !CONFIG_HAS_PCI */
+static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
+                               struct domain *d)
+{
+    /* Devices are named by machine BDF, which only makes sense with PCI. */
+    return -EOPNOTSUPP;
+}
+#endif /* CONFIG_HAS_PCI */
 
 /*
  * Whether a map refuses to overwrite an existing mapping. Checking costs a
@@ -401,7 +428,9 @@ static long remote_cmd_op(struct pv_iommu_remote_cmd *remote_cmd,
     if ( !d )
         return -ENOENT;
 
-    ret = do_iommu_subop(remote_cmd->subop, remote_cmd->arg, d, true);
+    ret = do_iommu_subop(remote_cmd->subop,
+                         guest_handle_to_param(remote_cmd->arg, void), d,
+                         true);
 
     put_domain(d);
 

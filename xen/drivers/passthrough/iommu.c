@@ -375,7 +375,9 @@ static void cf_check iommu_dump_page_tables(unsigned char key)
         if ( iommu_use_hap_pt(d) )
             printk("%pd sharing page tables\n", d);
 
-        iommu_vcall(dom_iommu(d)->platform_ops, dump_page_tables, d);
+        /* The Arm drivers have no page tables of their own to dump. */
+        if ( dom_iommu(d)->platform_ops->dump_page_tables )
+            iommu_vcall(dom_iommu(d)->platform_ops, dump_page_tables, d);
     }
 
     rcu_read_unlock(&domlist_read_lock);
@@ -394,7 +396,6 @@ void __hwdom_init iommu_hwdom_init(struct domain *d)
 void cf_check iommu_domain_destroy(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
-    struct pci_dev *pdev;
 
     if ( !is_iommu_enabled(d) )
         return;
@@ -406,20 +407,27 @@ void cf_check iommu_domain_destroy(struct domain *d)
     if ( !hd->platform_ops )
         return;
 
-    /* Move all devices back to quarantine */
-    /* TODO: Is it needed ? */
-    for_each_pdev(d, pdev)
+#ifdef CONFIG_HAS_PCI
     {
-        int rc = iommu_reattach_context(d, dom_io, pdev, 0);
+        struct pci_dev *pdev;
 
-        if ( rc )
+        /* Move all devices back to quarantine */
+        /* TODO: Is it needed ? */
+        for_each_pdev(d, pdev)
         {
-            printk(XENLOG_WARNING "Unable to quarantine device %pp (%d)\n", &pdev->sbdf, rc);
-            pdev->broken = true;
+            int rc = iommu_reattach_context(d, dom_io, pdev, 0);
+
+            if ( rc )
+            {
+                printk(XENLOG_WARNING "Unable to quarantine device %pp (%d)\n",
+                       &pdev->sbdf, rc);
+                pdev->broken = true;
+            }
+            else
+                pdev->domain = dom_io;
         }
-        else
-            pdev->domain = dom_io;
     }
+#endif
 
     iommu_vcall(hd->platform_ops, teardown, d);
 
@@ -504,9 +512,6 @@ static long _iommu_map(struct domain *d, dfn_t dfn0, mfn_t mfn0,
     unsigned int order, j = 0;
     int rc = 0;
 
-    if ( !is_iommu_enabled(d) )
-        return 0;
-
     ASSERT(!IOMMUF_order(flags));
 
     for ( i = 0; i < page_count; i += 1UL << order )
@@ -560,6 +565,13 @@ long iommu_map(struct domain *d, dfn_t dfn0, mfn_t mfn0,
     struct iommu_context *ctx;
     long ret;
 
+    /*
+     * Check this before taking a context: a domain without an IOMMU has no
+     * contexts, and its default one is not even initialized.
+     */
+    if ( !is_iommu_enabled(d) )
+        return 0;
+
     if ( !(ctx = iommu_get_context(d, ctx_id)) )
         return -ENOENT;
 
@@ -578,6 +590,10 @@ int iommu_legacy_map(struct domain *d, dfn_t dfn, mfn_t mfn,
     int rc = 0;
 
     ASSERT(!(flags & IOMMUF_preempt));
+
+    /* See iommu_map(). */
+    if ( !is_iommu_enabled(d) )
+        return 0;
 
     ctx = iommu_get_context(d, 0);
 
@@ -602,9 +618,6 @@ static long _iommu_unmap(struct domain *d, dfn_t dfn0, unsigned long page_count,
     unsigned long i;
     unsigned int order, j = 0;
     int rc = 0;
-
-    if ( !is_iommu_enabled(d) )
-        return 0;
 
     ASSERT(!(flags & ~IOMMUF_preempt));
 
@@ -660,6 +673,10 @@ long iommu_unmap(struct domain *d, dfn_t dfn0, unsigned long page_count,
     struct iommu_context *ctx;
     long ret;
 
+    /* See iommu_map(). */
+    if ( !is_iommu_enabled(d) )
+        return 0;
+
     if ( !(ctx = iommu_get_context(d, ctx_id)) )
         return -ENOENT;
 
@@ -675,6 +692,10 @@ int iommu_legacy_unmap(struct domain *d, dfn_t dfn, unsigned long page_count)
     unsigned int flush_flags = 0;
     struct iommu_context *ctx;
     int rc = 0;
+
+    /* See iommu_map(). */
+    if ( !is_iommu_enabled(d) )
+        return 0;
 
     ctx = iommu_get_context(d, 0);
 
@@ -823,25 +844,33 @@ int iommu_context_alloc(struct domain *d, uint16_t *ctx_id, unsigned int flags)
     return ret;
 }
 
+#ifdef CONFIG_HAS_PCI
+
+/*
+ * Only PCI devices take part in the context model: a device tree device is
+ * handled by the pre-context operations in drivers/passthrough/device_tree.c.
+ */
+
 /**
  * Attach dev phantom functions to ctx, override any existing
  * mapped context.
  */
-static int cf_check iommu_reattach_phantom(struct domain *d, device_t *dev,
+static int cf_check iommu_reattach_phantom(struct domain *d,
+                                           struct pci_dev *pdev,
                                            struct iommu_context *ctx)
 {
     int ret = 0;
-    uint8_t devfn = dev->devfn;
+    uint8_t devfn = pdev->devfn;
     struct domain_iommu *hd = dom_iommu(d);
 
-    while ( dev->phantom_stride )
+    while ( pdev->phantom_stride )
     {
-        devfn += dev->phantom_stride;
+        devfn += pdev->phantom_stride;
 
-        if ( PCI_SLOT(devfn) != PCI_SLOT(dev->devfn) )
+        if ( PCI_SLOT(devfn) != PCI_SLOT(pdev->devfn) )
             break;
 
-        ret = iommu_call(hd->platform_ops, add_devfn, d, dev, devfn, ctx);
+        ret = iommu_call(hd->platform_ops, add_devfn, d, pdev, devfn, ctx);
 
         if ( ret )
             break;
@@ -853,21 +882,23 @@ static int cf_check iommu_reattach_phantom(struct domain *d, device_t *dev,
 /**
  * Detach all device phantom functions.
  */
-static int cf_check iommu_detach_phantom(struct domain *d, device_t *dev,
+static int cf_check iommu_detach_phantom(struct domain *d,
+                                         struct pci_dev *pdev,
                                          struct iommu_context *prev_ctx)
 {
     int ret = 0;
-    uint8_t devfn = dev->devfn;
+    uint8_t devfn = pdev->devfn;
     struct domain_iommu *hd = dom_iommu(d);
 
-    while ( dev->phantom_stride )
+    while ( pdev->phantom_stride )
     {
-        devfn += dev->phantom_stride;
+        devfn += pdev->phantom_stride;
 
-        if ( PCI_SLOT(devfn) != PCI_SLOT(dev->devfn) )
+        if ( PCI_SLOT(devfn) != PCI_SLOT(pdev->devfn) )
             break;
 
-        ret = iommu_call(hd->platform_ops, remove_devfn, d, dev, devfn, prev_ctx);
+        ret = iommu_call(hd->platform_ops, remove_devfn, d, pdev, devfn,
+                         prev_ctx);
 
         if ( ret )
             break;
@@ -876,12 +907,16 @@ static int cf_check iommu_detach_phantom(struct domain *d, device_t *dev,
     return ret;
 }
 
-int cf_check iommu_attach_context(struct domain *d, device_t *dev, uint16_t ctx_id)
+int cf_check iommu_attach_context(struct domain *d, struct pci_dev *pdev,
+                                  uint16_t ctx_id)
 {
     struct iommu_context *ctx = NULL;
     int ret = 0, rc;
 
-    if ( dev->context == ctx_id )
+    if ( !dom_iommu(d)->platform_ops->attach )
+        return -EOPNOTSUPP;
+
+    if ( pdev->context == ctx_id )
         return 0;
 
     if ( !(ctx = iommu_get_context(d, ctx_id)) )
@@ -899,24 +934,26 @@ int cf_check iommu_attach_context(struct domain *d, device_t *dev, uint16_t ctx_
     }
 
     /* ignore attach operations on PCIe bridges */
-    if ( dev->type != DEV_TYPE_PCIe_BRIDGE )
-        ret = iommu_call(dom_iommu(d)->platform_ops, attach, d, dev, ctx);
+    if ( pdev->type != DEV_TYPE_PCIe_BRIDGE )
+        ret = iommu_call(dom_iommu(d)->platform_ops, attach, d,
+                         pci_to_dev(pdev), ctx);
 
     if ( ret )
         goto unlock;
 
     /* See iommu_reattach_context() */
-    rc = iommu_reattach_phantom(d, dev, ctx);
+    rc = iommu_reattach_phantom(d, pdev, ctx);
 
     if ( rc )
     {
         printk(XENLOG_ERR "IOMMU: Unable to attach %pp phantom functions\n",
-               &dev->sbdf);
+               &pdev->sbdf);
 
-        if( iommu_call(dom_iommu(d)->platform_ops, detach, d, dev, ctx)
-            || iommu_detach_phantom(d, dev, ctx) )
+        if( iommu_call(dom_iommu(d)->platform_ops, detach, d,
+                       pci_to_dev(pdev), ctx)
+            || iommu_detach_phantom(d, pdev, ctx) )
         {
-            printk(XENLOG_ERR "IOMMU: Improperly detached %pp\n", &dev->sbdf);
+            printk(XENLOG_ERR "IOMMU: Improperly detached %pp\n", &pdev->sbdf);
             WARN();
         }
 
@@ -924,8 +961,8 @@ int cf_check iommu_attach_context(struct domain *d, device_t *dev, uint16_t ctx_
         goto unlock;
     }
 
-    dev->context = ctx_id;
-    list_add(&dev->context_list, &ctx->devices);
+    pdev->context = ctx_id;
+    list_add(&pdev->context_list, &ctx->devices);
 
 unlock:
     pcidevs_unlock();
@@ -936,12 +973,15 @@ unlock:
     return ret;
 }
 
-int cf_check iommu_detach_context(struct domain *d, device_t *dev)
+int cf_check iommu_detach_context(struct domain *d, struct pci_dev *pdev)
 {
     struct iommu_context *ctx;
     int ret = 0, rc;
 
-    if ( !dev->domain || dev->context == IOMMU_INVALID_CONTEXT_ID )
+    if ( !dom_iommu(d)->platform_ops->detach )
+        return -EOPNOTSUPP;
+
+    if ( !pdev->domain || pdev->context == IOMMU_INVALID_CONTEXT_ID )
     {
         printk(XENLOG_WARNING "IOMMU: Trying to detach a non-attached device\n");
         WARN();
@@ -949,28 +989,29 @@ int cf_check iommu_detach_context(struct domain *d, device_t *dev)
     }
 
     /* Make sure device is actually in the domain. */
-    ASSERT(d == dev->domain);
+    ASSERT(d == pdev->domain);
 
     pcidevs_lock();
 
-    ctx = iommu_get_context(d, dev->context);
+    ctx = iommu_get_context(d, pdev->context);
     ASSERT(ctx); /* device is using an invalid context ?
-                    dev->context invalid ? */
+                    pdev->context invalid ? */
 
     /* ignore detach operations on PCIe bridges */
-    if ( dev->type != DEV_TYPE_PCIe_BRIDGE )
-        ret = iommu_call(dom_iommu(d)->platform_ops, detach, d, dev, ctx);
+    if ( pdev->type != DEV_TYPE_PCIe_BRIDGE )
+        ret = iommu_call(dom_iommu(d)->platform_ops, detach, d,
+                         pci_to_dev(pdev), ctx);
 
     if ( ret )
         goto unlock;
 
-    rc = iommu_detach_phantom(d, dev, ctx);
+    rc = iommu_detach_phantom(d, pdev, ctx);
 
     if ( rc )
         printk(XENLOG_WARNING "IOMMU: "
                "Improperly detached device functions (%d)\n", rc);
 
-    list_del(&dev->context_list);
+    list_del(&pdev->context_list);
 
 unlock:
     pcidevs_unlock();
@@ -978,11 +1019,12 @@ unlock:
     return ret;
 }
 
-int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next_dom,
-                                    device_t *dev, uint16_t ctx_id)
+int cf_check iommu_reattach_context(struct domain *prev_dom,
+                                    struct domain *next_dom,
+                                    struct pci_dev *pdev, uint16_t ctx_id)
 {
     uint16_t prev_ctx_id;
-    device_t *ctx_dev;
+    struct pci_dev *ctx_dev;
     struct domain_iommu *prev_hd, *next_hd;
     struct iommu_context *prev_ctx = NULL, *next_ctx = NULL;
     int ret = 0, rc;
@@ -992,7 +1034,7 @@ int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next
     BUG_ON(!prev_dom && !next_dom);
 
     /* Device domain must be coherent with prev_dom. */
-    ASSERT(!prev_dom || dev->domain == prev_dom);
+    ASSERT(!prev_dom || pdev->domain == prev_dom);
 
     /// TODO: Do such cases exists ?
     // /* Platform ops must match */
@@ -1000,25 +1042,32 @@ int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next
     //     return -EINVAL;
 
     if ( !prev_dom )
-        return iommu_attach_context(next_dom, dev, ctx_id);
+        return iommu_attach_context(next_dom, pdev, ctx_id);
 
     if ( !next_dom )
-        return iommu_detach_context(prev_dom, dev);
+        return iommu_detach_context(prev_dom, pdev);
 
     prev_hd = dom_iommu(prev_dom);
     next_hd = dom_iommu(next_dom);
+
+    /*
+     * A driver that doesn't implement contexts (the Arm SMMU drivers) has
+     * nothing to move the device between.
+     */
+    if ( !prev_hd->platform_ops->reattach )
+        return -EOPNOTSUPP;
 
     pcidevs_lock();
 
     same_domain = prev_dom == next_dom;
 
-    prev_ctx_id = dev->context;
+    prev_ctx_id = pdev->context;
 
     if ( same_domain && (ctx_id == prev_ctx_id) )
     {
         printk(XENLOG_DEBUG
                "IOMMU: Reattaching %pp to same IOMMU context c%hu\n",
-               &dev->sbdf, ctx_id);
+               &pdev->sbdf, ctx_id);
         ret = 0;
         goto unlock;
     }
@@ -1042,9 +1091,9 @@ int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next
     }
 
     /* ignore reattach operations on PCIe bridges */
-    if ( dev->type != DEV_TYPE_PCIe_BRIDGE )
-        ret = iommu_call(prev_hd->platform_ops, reattach, next_dom, dev,
-                         prev_ctx, next_ctx);
+    if ( pdev->type != DEV_TYPE_PCIe_BRIDGE )
+        ret = iommu_call(prev_hd->platform_ops, reattach, next_dom,
+                         pci_to_dev(pdev), prev_ctx, next_ctx);
 
     if ( ret )
         goto unlock;
@@ -1053,7 +1102,7 @@ int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next
      * We need to do special handling for phantom devices as they
      * also use some other PCI functions behind the scenes.
      */
-    rc = iommu_reattach_phantom(next_dom, dev, next_ctx);
+    rc = iommu_reattach_phantom(next_dom, pdev, next_ctx);
 
     if ( rc )
     {
@@ -1064,16 +1113,17 @@ int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next
          */
         printk(XENLOG_WARNING "IOMMU: "
                "Device %pp improperly reattached due to phantom function"
-               " reattach failure between %dd%dc and %dd%dc (%d)\n", dev,
+               " reattach failure between %dd%dc and %dd%dc (%d)\n", pdev,
                prev_dom->domain_id, prev_ctx->id, next_dom->domain_id,
                next_dom->domain_id, rc);
 
         /* Try reattaching to previous context, reverting into a consistent state. */
-        if ( iommu_call(prev_hd->platform_ops, reattach, prev_dom, dev, next_ctx,
-                        prev_ctx) || iommu_reattach_phantom(prev_dom, dev, prev_ctx) )
+        if ( iommu_call(prev_hd->platform_ops, reattach, prev_dom,
+                        pci_to_dev(pdev), next_ctx, prev_ctx)
+             || iommu_reattach_phantom(prev_dom, pdev, prev_ctx) )
         {
             printk(XENLOG_ERR "Unable to reattach %pp back to %dd%dc\n",
-                   &dev->sbdf, prev_dom->domain_id, prev_ctx->id);
+                   &pdev->sbdf, prev_dom->domain_id, prev_ctx->id);
 
             if ( !is_hardware_domain(prev_dom) )
                 domain_crash(prev_dom);
@@ -1091,7 +1141,7 @@ int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next
     /* Remove device from previous context, and add it to new one. */
     list_for_each_entry(ctx_dev, &prev_ctx->devices, context_list)
     {
-        if ( ctx_dev == dev )
+        if ( ctx_dev == pdev )
         {
             list_del(&ctx_dev->context_list);
             list_add(&ctx_dev->context_list, &next_ctx->devices);
@@ -1100,7 +1150,7 @@ int cf_check iommu_reattach_context(struct domain *prev_dom, struct domain *next
     }
 
     if (!ret)
-        dev->context = ctx_id; /* update device context*/
+        pdev->context = ctx_id; /* update device context*/
 
 unlock:
     pcidevs_unlock();
@@ -1114,6 +1164,8 @@ unlock:
     return ret;
 }
 
+#endif /* CONFIG_HAS_PCI */
+
 int cf_check iommu_context_teardown(struct domain *d, struct iommu_context *ctx, u32 flags)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -1126,9 +1178,12 @@ int cf_check iommu_context_teardown(struct domain *d, struct iommu_context *ctx,
     /* first reattach devices back to default context if needed */
     if ( flags & IOMMU_TEARDOWN_REATTACH_DEFAULT )
     {
+#ifdef CONFIG_HAS_PCI
         struct pci_dev *device;
+
         list_for_each_entry(device, &ctx->devices, context_list)
             iommu_reattach_context(d, d, device, 0);
+#endif
     }
     else if (!list_empty(&ctx->devices))
         return -EBUSY; /* there is a device in context */
@@ -1157,7 +1212,8 @@ int cf_check iommu_context_free(struct domain *d, uint16_t ctx_id, u32 flags)
     return ret;
 }
 
-int iommu_quarantine_dev_init(device_t *dev)
+#ifdef CONFIG_HAS_PCI
+int iommu_quarantine_dev_init(struct pci_dev *pdev)
 {
     int ret;
     uint16_t ctx_id;
@@ -1172,7 +1228,7 @@ int iommu_quarantine_dev_init(device_t *dev)
 
     /** TODO: Setup scratch page, mappings... */
 
-    ret = iommu_reattach_context(dev->domain, dom_io, dev, ctx_id);
+    ret = iommu_reattach_context(pdev->domain, dom_io, pdev, ctx_id);
 
     if ( ret )
     {
@@ -1182,6 +1238,7 @@ int iommu_quarantine_dev_init(device_t *dev)
 
     return ret;
 }
+#endif /* CONFIG_HAS_PCI */
 
 int __init iommu_quarantine_init(void)
 {

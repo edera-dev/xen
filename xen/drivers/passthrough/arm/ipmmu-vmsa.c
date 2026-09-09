@@ -1023,7 +1023,9 @@ out:
 }
 
 /* Xen IOMMU ops */
-static int __must_check ipmmu_iotlb_flush(struct domain *d, dfn_t dfn,
+static int __must_check ipmmu_iotlb_flush(struct domain *d,
+                                          struct iommu_context *ctx,
+                                          dfn_t dfn,
                                           unsigned long page_count,
                                           unsigned int flush_flags)
 {
@@ -1482,6 +1484,8 @@ static const struct iommu_ops ipmmu_iommu_ops =
     .page_sizes      = PAGE_SIZE_4K,
     .init            = ipmmu_iommu_domain_init,
     .hwdom_init      = arch_iommu_hwdom_init,
+    .context_init    = arm_iommu_context_init,
+    .context_teardown = arm_iommu_context_teardown,
     .teardown        = ipmmu_iommu_domain_teardown,
     .iotlb_flush     = ipmmu_iotlb_flush,
     .assign_device   = ipmmu_assign_device,

@@ -2688,7 +2688,9 @@ static int force_stage = 2;
  */
 static u32 platform_features = ARM_SMMU_FEAT_COHERENT_WALK;
 
-static int __must_check arm_smmu_iotlb_flush(struct domain *d, dfn_t dfn,
+static int __must_check arm_smmu_iotlb_flush(struct domain *d,
+					     struct iommu_context *ctx,
+					     dfn_t dfn,
 					     unsigned long page_count,
 					     unsigned int flush_flags)
 {
@@ -2950,6 +2952,8 @@ static const struct iommu_ops arm_smmu_iommu_ops = {
     .page_sizes = PAGE_SIZE_4K,
     .init = arm_smmu_iommu_domain_init,
     .hwdom_init = arch_iommu_hwdom_init,
+    .context_init = arm_iommu_context_init,
+    .context_teardown = arm_iommu_context_teardown,
     .add_device = arm_smmu_dt_add_device_generic,
     .remove_device = arm_smmu_dt_remove_device_generic,
     .teardown = arm_smmu_iommu_domain_teardown,

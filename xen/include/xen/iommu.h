@@ -408,6 +408,19 @@ struct iommu_ops {
      * node back to the device it probed.
      */
     int (*acpi_xlate)(device_t *dev, const void *node, uint32_t id);
+
+    /*
+     * Device tree devices are not covered by the IOMMU context model: the
+     * Arm drivers have a single, implicit context per domain, built out of
+     * the shared P2M.  They keep the pre-context device operations, driven
+     * by drivers/passthrough/device_tree.c.
+     */
+    int (*add_device)(uint8_t devfn, device_t *dev);
+    int (*remove_device)(uint8_t devfn, device_t *dev);
+    int (*assign_device)(struct domain *d, uint8_t devfn, device_t *dev,
+                         uint32_t flag);
+    int (*reassign_device)(struct domain *s, struct domain *t,
+                           uint8_t devfn, device_t *dev);
 #endif
     /* Inhibit all interrupt generation, to be used at shutdown. */
     void (*quiesce)(void);
@@ -549,9 +562,10 @@ void iommu_quiesce(void);
 int iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt);
 
 int __init iommu_quarantine_init(void);
-int iommu_quarantine_dev_init(device_t *dev);
 
 #ifdef CONFIG_HAS_PCI
+int iommu_quarantine_dev_init(struct pci_dev *pdev);
+
 int iommu_do_pci_domctl(struct xen_domctl *domctl, struct domain *d,
                         XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl);
 #endif
@@ -574,10 +588,16 @@ int iommu_context_teardown(struct domain *d, struct iommu_context *ctx, u32 flag
 int iommu_context_alloc(struct domain *d, u16 *ctx_id, u32 flags);
 int iommu_context_free(struct domain *d, u16 ctx_id, u32 flags);
 
+#ifdef CONFIG_HAS_PCI
+/*
+ * Devices only enter a context through PCI: device tree devices keep the
+ * pre-context assign_device()/reassign_device() model.
+ */
 int iommu_reattach_context(struct domain *prev_dom, struct domain *next_dom,
-                           device_t *dev, u16 ctx_id);
-int iommu_attach_context(struct domain *d, device_t *dev, u16 ctx_id);
-int iommu_detach_context(struct domain *d, device_t *dev);
+                           struct pci_dev *pdev, u16 ctx_id);
+int iommu_attach_context(struct domain *d, struct pci_dev *pdev, u16 ctx_id);
+int iommu_detach_context(struct domain *d, struct pci_dev *pdev);
+#endif
 
 /*
  * The purpose of the iommu_dont_flush_iotlb optional cpu flag is to
