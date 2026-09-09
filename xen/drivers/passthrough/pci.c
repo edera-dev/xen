@@ -726,7 +726,7 @@ static int pci_reassign_device(struct domain *prev_dom, struct domain *next_dom,
         ASSERT_UNREACHABLE();
     }
 
-    rc = iommu_reattach_context(prev_dom, next_dom, pci_to_dev(pdev), 0);
+    rc = iommu_reattach_context(prev_dom, next_dom, pdev, 0);
 
     if ( rc )
         goto done;
@@ -1639,7 +1639,7 @@ static int iommu_add_device(struct pci_dev *pdev)
     if ( !is_iommu_enabled(pdev->domain) )
         return 0;
 
-    return iommu_attach_context(pdev->domain, pci_to_dev(pdev), 0);
+    return iommu_attach_context(pdev->domain, pdev, 0);
 }
 
 static int iommu_remove_device(struct pci_dev *pdev)
