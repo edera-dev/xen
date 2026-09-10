@@ -96,6 +96,7 @@ struct ns16550_config {
         param_exar_xr17v354,
         param_exar_xr17v358,
         param_intel_lpss,
+        param_amazon,
     } param;
 };
 
@@ -889,6 +890,13 @@ static const struct ns16550_config_param __initconst uart_param[] = {
         .mmio = 1,
         .max_ports = 1,
     },
+    [param_amazon] = {
+        .reg_width = 1,
+        .lsr_mask = UART_LSR_THRE,
+        .bar0 = 1,
+        .mmio = 1,
+        .max_ports = 1,
+    },
 };
 
 static const struct ns16550_config __initconst uart_config[] =
@@ -1216,6 +1224,12 @@ static const struct ns16550_config __initconst uart_config[] =
         .vendor_id = PCI_VENDOR_ID_INTEL,
         .dev_id = 0x7adc,
         .param = param_intel_lpss
+    },
+    /* Amazon EC2 bare metal UART, the only serial port on those systems */
+    {
+        .vendor_id = PCI_VENDOR_ID_AMAZON,
+        .dev_id = 0x8250,
+        .param = param_amazon
     },
 };
 
