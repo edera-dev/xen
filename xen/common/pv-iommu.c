@@ -112,8 +112,6 @@ static long capabilities_op(struct pv_iommu_capabilities *cap, struct domain *d)
     if ( !dom_iommu(d)->no_dma )
         cap->cap_flags |= IOMMUCAP_default_identity;
 
-    cap->cap_flags |= IOMMUCAP_deferred_flush;
-
     cap->pgsize_mask = PAGE_SIZE_4K;
 
     return 0;
@@ -284,37 +282,13 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
         }
     }
 
-    if ( map->map_flags & IOMMU_MAP_no_flush )
-        flush_ret = 0;
-    else
-        flush_ret = iommu_iotlb_flush(d, dfn0, i, flush_flags, map->ctx_no);
+    flush_ret = iommu_iotlb_flush(d, dfn0, i, flush_flags, map->ctx_no);
 
     iommu_put_context(ctx);
 
     if ( flush_ret )
         gprintk(XENLOG_G_WARNING, PVIOMMU_PREFIX
                 "Flush operation failed for %d (%d)\n", ctx->id, flush_ret);
-
-    return ret;
-}
-
-static long flush_pages_op(struct pv_iommu_flush_pages *flush, struct domain *d)
-{
-    struct iommu_context *ctx;
-    int ret;
-
-    if ( !flush->ctx_no || !(ctx = iommu_get_context(d, flush->ctx_no)) )
-        return -EINVAL;
-
-    /*
-     * The mappings this covers were installed with the flush suppressed, so
-     * name both flags rather than tracking what each of those calls did.
-     */
-    ret = iommu_iotlb_flush(d, _dfn(flush->dfn), flush->nr_pages,
-                            IOMMU_FLUSHF_added | IOMMU_FLUSHF_modified,
-                            flush->ctx_no);
-
-    iommu_put_context(ctx);
 
     return ret;
 }
@@ -513,21 +487,6 @@ static long do_iommu_subop(int subop, XEN_GUEST_HANDLE_PARAM(void) arg,
 
             if ( unlikely(copy_to_guest(arg, &map, 1)) )
                 ret = -EFAULT;
-
-            break;
-        }
-
-        case IOMMU_flush_pages:
-        {
-            struct pv_iommu_flush_pages flush;
-
-            if ( unlikely(copy_from_guest(&flush, arg, 1)) )
-            {
-                ret = -EFAULT;
-                break;
-            }
-
-            ret = flush_pages_op(&flush, d);
 
             break;
         }
