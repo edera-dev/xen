@@ -168,26 +168,6 @@ int vpci_assign_device(struct pci_dev *pdev)
 }
 #endif /* __XEN__ */
 
-#ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
-/*
- * Find the physical device a domain sees at the given virtual SBDF. Returns
- * NULL if the domain has no such device.
- */
-const struct pci_dev *vpci_get_pdev_by_guest_sbdf(const struct domain *d,
-                                                  pci_sbdf_t guest_sbdf)
-{
-    const struct pci_dev *pdev;
-
-    ASSERT(rw_is_locked(&d->pci_lock));
-
-    for_each_pdev ( d, pdev )
-        if ( pdev->vpci && (pdev->vpci->guest_sbdf.sbdf == guest_sbdf.sbdf) )
-            return pdev;
-
-    return NULL;
-}
-#endif /* CONFIG_HAS_VPCI_GUEST_SUPPORT */
-
 /*
  * Find the physical device which is mapped to the virtual device
  * and translate virtual SBDF to the physical one.
@@ -199,13 +179,16 @@ static const struct pci_dev *translate_virtual_device(const struct domain *d,
     const struct pci_dev *pdev;
 
     ASSERT(has_vpci_bridge(d));
+    ASSERT(rw_is_locked(&d->pci_lock));
 
-    pdev = vpci_get_pdev_by_guest_sbdf(d, *sbdf);
-    if ( pdev )
+    for_each_pdev ( d, pdev )
     {
-        /* Replace guest SBDF with the physical one. */
-        *sbdf = pdev->sbdf;
-        return pdev;
+        if ( pdev->vpci && (pdev->vpci->guest_sbdf.sbdf == sbdf->sbdf) )
+        {
+            /* Replace guest SBDF with the physical one. */
+            *sbdf = pdev->sbdf;
+            return pdev;
+        }
     }
 #else /* !CONFIG_HAS_VPCI_GUEST_SUPPORT */
     ASSERT_UNREACHABLE();
