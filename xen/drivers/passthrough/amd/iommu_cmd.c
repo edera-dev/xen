@@ -28,30 +28,19 @@ static void send_iommu_command(struct amd_iommu *iommu,
 {
     uint32_t tail;
     unsigned long flags;
-    s_time_t timeout;
 
     spin_lock_irqsave(&iommu->lock, flags);
-
-    if ( iommu->cmd_buffer_dead )
-        goto out;
 
     tail = iommu->cmd_buffer.tail + sizeof(cmd_entry_t);
     if ( tail == iommu->cmd_buffer.size )
         tail = 0;
 
-    timeout = NOW() + MILLISECS(100);
     while ( tail == (readl(iommu->mmio_base +
                            IOMMU_CMD_BUFFER_HEAD_OFFSET) &
                      IOMMU_RING_BUFFER_PTR_MASK) )
     {
-        if ( NOW() > timeout )
-        {
-            printk(XENLOG_ERR
-                   "AMD IOMMU %pp: command buffer never drains, "
-                   "giving up on invalidation\n", &iommu->sbdf);
-            iommu->cmd_buffer_dead = true;
-            goto out;
-        }
+        printk_once(XENLOG_ERR "AMD IOMMU %pp: no cmd slot available\n",
+                    &iommu->sbdf);
         cpu_relax();
     }
 
@@ -62,7 +51,6 @@ static void send_iommu_command(struct amd_iommu *iommu,
 
     writel(tail, iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET);
 
- out:
     spin_unlock_irqrestore(&iommu->lock, flags);
 }
 
@@ -84,15 +72,9 @@ static void flush_command_buffer(struct amd_iommu *iommu,
     s_time_t start, timeout;
     static unsigned int __read_mostly threshold = 1;
 
-    if ( iommu->cmd_buffer_dead )
-        return;
-
     ACCESS_ONCE(*this_poll_slot) = CMD_COMPLETION_INIT;
 
     send_iommu_command(iommu, cmd);
-
-    if ( iommu->cmd_buffer_dead )
-        return;
 
     start = NOW();
     timeout = start + (timeout_base ?: 100) * MILLISECS(threshold);
@@ -114,9 +96,6 @@ static void flush_command_buffer(struct amd_iommu *iommu,
                    readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET),
                    readl(iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET),
                    readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET));
-            if ( !(readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET) &
-                   IOMMU_RING_BUFFER_PTR_MASK) )
-                iommu->cmd_buffer_dead = true;
             return;
         }
         cpu_relax();
