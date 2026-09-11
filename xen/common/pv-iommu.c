@@ -157,7 +157,7 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
                                struct domain *d)
 {
     int ret;
-    const device_t *pdev = NULL;
+    const device_t *pdev;
     struct physdev_pci_device dev = reattach->dev;
     pci_sbdf_t sbdf = PCI_SBDF(dev.seg, dev.bus, dev.devfn);
 
@@ -165,14 +165,10 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
 
     /*
      * The hardware domain sees machine addresses, so its BDFs are the real
-     * ones and a plain lookup works.
-     *
-     * A guest sees whatever it was given. With vPCI that is a virtual SBDF
-     * this domain invented, so translate it. Failing that, accept a machine
-     * SBDF naming a device this domain owns -- a PV guest driving pcifront
-     * gets its virtual BDF from pciback in the hardware domain, which the
-     * hypervisor never sees and so cannot translate, and instead learns the
-     * machine BDF out of its own xenstore entries.
+     * ones. Anyone else sees whatever vPCI handed it, and has no way of
+     * knowing where the device really lives, so translate before looking it
+     * up. A domain without vPCI (a PV guest driving pcifront) gets no
+     * mapping here and so cannot name its devices at all.
      */
     if ( !is_hardware_domain(d) )
     {
@@ -180,8 +176,7 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
         pdev = vpci_get_pdev_by_guest_sbdf(d, sbdf);
         read_unlock(&d->pci_lock);
     }
-
-    if ( !pdev )
+    else
         pdev = pci_get_pdev(d, sbdf);
 
     if ( !pdev )
