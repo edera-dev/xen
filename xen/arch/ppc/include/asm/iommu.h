@@ -5,7 +5,4 @@
 struct arch_iommu {
 };
 
-struct arch_iommu_context {
-};
-
 #endif /* __ASM_PPC_IOMMU_H__ */

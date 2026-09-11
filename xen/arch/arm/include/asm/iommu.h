@@ -20,10 +20,6 @@ struct arch_iommu
     void *priv;
 };
 
-struct arch_iommu_context
-{
-};
-
 const struct iommu_ops *iommu_get_ops(void);
 void iommu_set_ops(const struct iommu_ops *ops);
 

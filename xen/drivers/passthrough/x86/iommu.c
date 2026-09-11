@@ -12,12 +12,6 @@
  * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <xen/keyhandler.h>
-#include <xen/lib.h>
-#include <xen/pci.h>
-#include <xen/bitmap.h>
-#include <xen/list.h>
-#include <xen/mm.h>
 #include <xen/cpu.h>
 #include <xen/sched.h>
 #include <xen/iocap.h>
@@ -35,9 +29,6 @@
 #include <asm/mem_paging.h>
 #include <asm/pt-contig-markers.h>
 #include <asm/setup.h>
-#include <asm/iommu.h>
-#include <asm/page.h>
-#include <asm/p2m.h>
 
 const struct iommu_init_ops *__initdata iommu_init_ops;
 struct iommu_ops __ro_after_init iommu_ops;
@@ -201,55 +192,26 @@ void __hwdom_init arch_iommu_check_autotranslated_hwdom(struct domain *d)
 
 int arch_iommu_domain_init(struct domain *d)
 {
-    INIT_PAGE_LIST_HEAD(&dom_iommu(d)->arch.free_queue);
-    return 0;
-}
-
-int arch_iommu_context_init(struct domain *d, struct iommu_context *ctx, u32 flags)
-{
-    INIT_PAGE_LIST_HEAD(&ctx->arch.pgtables);
-    INIT_LIST_HEAD(&ctx->arch.identity_maps);
-
-    return 0;
-}
-
-int arch_iommu_context_teardown(struct domain *d, struct iommu_context *ctx, u32 flags)
-{
-    /* Cleanup all page tables */
-    while ( iommu_free_pgtables(d, ctx) == -ERESTART )
-        /* nothing */;
-
-    return 0;
-}
-
-int arch_iommu_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_order)
-{
     struct domain_iommu *hd = dom_iommu(d);
 
-    if ( arena_order == 0 )
-        return 0;
+    spin_lock_init(&hd->arch.mapping_lock);
 
-    return iommu_arena_initialize(&hd->arch.pt_arena, NULL, arena_order, 0);
-}
-
-int arch_iommu_pviommu_teardown(struct domain *d)
-{
-    struct domain_iommu *hd = dom_iommu(d);
-
-    if ( iommu_arena_teardown(&hd->arch.pt_arena, true) )
-    {
-        printk(XENLOG_WARNING "IOMMU Arena used while being destroyed\n");
-        WARN();
-
-        /* Teardown anyway */
-        iommu_arena_teardown(&hd->arch.pt_arena, false);
-    }
+    INIT_PAGE_LIST_HEAD(&hd->arch.pgtables.list);
+    spin_lock_init(&hd->arch.pgtables.lock);
+    INIT_LIST_HEAD(&hd->arch.identity_maps);
 
     return 0;
 }
 
 void arch_iommu_domain_destroy(struct domain *d)
 {
+    /*
+     * There should be not page-tables left allocated by the time the
+     * domain is destroyed. Note that arch_iommu_domain_destroy() is
+     * called unconditionally, so pgtables may be uninitialized.
+     */
+    ASSERT(!dom_iommu(d)->platform_ops ||
+           page_list_empty(&dom_iommu(d)->arch.pgtables.list));
 }
 
 struct identity_map {
@@ -259,116 +221,32 @@ struct identity_map {
     unsigned int count;
 };
 
-static int unmap_identity_region(struct domain *d, struct iommu_context *ctx,
-                                 unsigned int base_pfn, unsigned int end_pfn)
-{
-    int ret = 0;
-
-    if ( ctx->opaque && !ctx->id )
-    {
-        #ifdef CONFIG_HVM
-        this_cpu(iommu_dont_flush_iotlb) = true;
-        while ( base_pfn < end_pfn )
-        {
-            if ( p2m_remove_identity_entry(d, base_pfn) )
-                ret = -ENXIO;
-
-            base_pfn++;
-        }
-        this_cpu(iommu_dont_flush_iotlb) = false;
-        #else
-        ASSERT_UNREACHABLE();
-        #endif
-    }
-    else
-    {
-        size_t page_count = end_pfn - base_pfn + 1;
-        unsigned int flush_flags;
-
-        ret = iommu_unmap(d, _dfn(base_pfn), page_count, 0, &flush_flags,
-                          ctx->id);
-
-        if ( ret )
-            return ret;
-
-        ret = iommu_iotlb_flush(d, _dfn(base_pfn), page_count,
-                                flush_flags, ctx->id);
-    }
-
-    return ret;
-}
-
-static int map_identity_region(struct domain *d, struct iommu_context *ctx,
-                               unsigned int base_pfn, unsigned int end_pfn,
-                               p2m_access_t p2ma, unsigned int flag)
-{
-    int ret = 0;
-    unsigned int flush_flags = 0;
-    size_t page_count = end_pfn - base_pfn + 1;
-
-    if ( ctx->opaque && !ctx->id )
-    {
-        #ifdef CONFIG_HVM
-        int i;
-        this_cpu(iommu_dont_flush_iotlb) = true;
-
-        for (i = 0; i < page_count; i++)
-        {
-            ret = p2m_add_identity_entry(d, base_pfn + i, p2ma, flag);
-
-            if ( ret )
-                break;
-
-            base_pfn++;
-        }
-        this_cpu(iommu_dont_flush_iotlb) = false;
-        #else
-        ASSERT_UNREACHABLE();
-        #endif
-    }
-    else
-    {
-        int i;
-
-        for (i = 0; i < page_count; i++)
-        {
-            ret = iommu_map(d, _dfn(base_pfn + i), _mfn(base_pfn + i), 1,
-                            p2m_access_to_iommu_flags(p2ma), &flush_flags,
-                            ctx->id);
-
-            if ( ret )
-                break;
-        }
-    }
-
-    ret = iommu_iotlb_flush(d, _dfn(base_pfn), page_count, flush_flags,
-                            ctx->id);
-
-    return ret;
-}
-
-/* p2m_access_x removes the mapping */
-int iommu_identity_mapping(struct domain *d, struct iommu_context *ctx,
-                           p2m_access_t p2ma, paddr_t base, paddr_t end,
+int iommu_identity_mapping(struct domain *d, p2m_access_t p2ma,
+                           paddr_t base, paddr_t end,
                            unsigned int flag)
 {
     unsigned long base_pfn = base >> PAGE_SHIFT_4K;
     unsigned long end_pfn = PAGE_ALIGN_4K(end) >> PAGE_SHIFT_4K;
     struct identity_map *map;
-    int ret = 0;
+    struct domain_iommu *hd = dom_iommu(d);
 
     ASSERT(pcidevs_locked());
     ASSERT(base < end);
 
-    list_for_each_entry( map, &ctx->arch.identity_maps, list )
+    /*
+     * No need to acquire hd->arch.mapping_lock: Both insertion and removal
+     * get done while holding pcidevs_lock.
+     */
+    list_for_each_entry( map, &hd->arch.identity_maps, list )
     {
         if ( map->base == base && map->end == end )
         {
+            int ret = 0;
+
             if ( p2ma != p2m_access_x )
             {
                 if ( map->access != p2ma )
                     return -EADDRINUSE;
-
                 ++map->count;
                 return 0;
             }
@@ -376,9 +254,12 @@ int iommu_identity_mapping(struct domain *d, struct iommu_context *ctx,
             if ( --map->count )
                 return 0;
 
-            printk("Unmapping [%"PRI_mfn"x:%"PRI_mfn"] for d%dc%d\n", base_pfn, end_pfn,
-                   d->domain_id, ctx->id);
-            ret = unmap_identity_region(d, ctx, base_pfn, end_pfn);
+            while ( base_pfn < end_pfn )
+            {
+                if ( clear_identity_p2m_entry(d, base_pfn) )
+                    ret = -ENXIO;
+                base_pfn++;
+            }
 
             list_del(&map->list);
             xfree(map);
@@ -402,42 +283,40 @@ int iommu_identity_mapping(struct domain *d, struct iommu_context *ctx,
     map->access = p2ma;
     map->count = 1;
 
-    printk("Mapping [%"PRI_mfn"x:%"PRI_mfn"] for d%dc%d\n", base_pfn, end_pfn,
-           d->domain_id, ctx->id);
-    ret = map_identity_region(d, ctx, base_pfn, end_pfn, p2ma, flag);
+    /*
+     * Insert into list ahead of mapping, so the range can be found when
+     * trying to clean up.
+     */
+    list_add_tail(&map->list, &hd->arch.identity_maps);
 
-    if ( ret )
+    for ( ; base_pfn < end_pfn; ++base_pfn )
     {
-        xfree(map);
-        return ret;
+        int err = set_identity_p2m_entry(d, base_pfn, p2ma, flag);
+
+        if ( !err )
+            continue;
+
+        if ( (map->base >> PAGE_SHIFT_4K) == base_pfn )
+        {
+            list_del(&map->list);
+            xfree(map);
+        }
+        return err;
     }
 
-    list_add(&map->list, &ctx->arch.identity_maps);
     return 0;
 }
 
-void iommu_identity_map_teardown(struct domain *d, struct iommu_context *ctx)
+void iommu_identity_map_teardown(struct domain *d)
 {
+    struct domain_iommu *hd = dom_iommu(d);
     struct identity_map *map, *tmp;
 
-    list_for_each_entry_safe ( map, tmp, &ctx->arch.identity_maps, list )
+    list_for_each_entry_safe ( map, tmp, &hd->arch.identity_maps, list )
     {
         list_del(&map->list);
         xfree(map);
     }
-}
-
-bool iommu_identity_map_check(struct domain *d, struct iommu_context *ctx,
-                              mfn_t mfn)
-{
-    struct identity_map *map;
-    uint64_t addr = pfn_to_paddr(mfn_x(mfn));
-
-    list_for_each_entry ( map, &ctx->arch.identity_maps, list )
-        if (addr >= map->base && addr < map->end)
-            return true;
-
-    return false;
 }
 
 struct handle_iomemcap {
@@ -509,7 +388,7 @@ static int __hwdom_init cf_check identity_map(unsigned long s, unsigned long e,
             if ( iomem_access_permitted(d, s, s) )
             {
                 rc = iommu_map(d, _dfn(s), _mfn(s), 1, perms,
-                               &info->flush_flags, 0);
+                               &info->flush_flags);
                 if ( rc < 0 )
                     break;
                 /* Must map a frame at least, which is what we request for. */
@@ -519,7 +398,7 @@ static int __hwdom_init cf_check identity_map(unsigned long s, unsigned long e,
             s++;
         }
         while ( (rc = iommu_map(d, _dfn(s), _mfn(s), e - s + 1,
-                                perms, &info->flush_flags, 0)) > 0 )
+                                perms, &info->flush_flags)) > 0 )
         {
             s += rc;
             process_pending_softirqs();
@@ -548,10 +427,6 @@ void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
     /* Reserved IOMMU mappings are enabled by default. */
     if ( iommu_hwdom_reserved == -1 )
         iommu_hwdom_reserved = 1;
-
-    if ( iommu_hwdom_no_dma )
-        /* Skip special mappings with no-dma mode */
-        return;
 
     if ( iommu_hwdom_inclusive )
     {
@@ -650,17 +525,21 @@ void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
                map_data.mmio_ro ? "read-only " : "", rc);
 
     /* Use if to avoid compiler warning */
-    if ( iommu_iotlb_flush_all(d, 0, map_data.flush_flags) )
+    if ( iommu_iotlb_flush_all(d, map_data.flush_flags) )
         return;
 }
 
 void arch_pci_init_pdev(struct pci_dev *pdev)
 {
+    pdev->arch.pseudo_domid = DOMID_INVALID;
 }
 
 unsigned long *__init iommu_init_domid(domid_t reserve)
 {
     unsigned long *map;
+
+    if ( !iommu_quarantine )
+        return ZERO_BLOCK_PTR;
 
     BUILD_BUG_ON(DOMID_MASK * 2U >= UINT16_MAX);
 
@@ -676,29 +555,41 @@ unsigned long *__init iommu_init_domid(domid_t reserve)
 
 domid_t iommu_alloc_domid(unsigned long *map)
 {
-    /* TODO: Consider nr_doms ? */
-    unsigned int idx = find_next_zero_bit(map, UINT16_MAX, 0);
+    /*
+     * This is used uniformly across all IOMMUs, such that on typical
+     * systems we wouldn't re-use the same ID very quickly (perhaps never).
+     */
+    static unsigned int start;
+    unsigned int idx = find_next_zero_bit(map, UINT16_MAX - DOMID_MASK, start);
 
-    if ( idx >= UINT16_MAX )
-        return UINT16_MAX;
+    ASSERT(pcidevs_locked());
+
+    if ( idx >= UINT16_MAX - DOMID_MASK )
+        idx = find_first_zero_bit(map, UINT16_MAX - DOMID_MASK);
+    if ( idx >= UINT16_MAX - DOMID_MASK )
+        return DOMID_INVALID;
 
     __set_bit(idx, map);
 
-    return idx;
+    start = idx + 1;
+
+    return idx | (DOMID_MASK + 1);
 }
 
 void iommu_free_domid(domid_t domid, unsigned long *map)
 {
     ASSERT(pcidevs_locked());
 
-    if ( domid == UINT16_MAX )
+    if ( domid == DOMID_INVALID )
         return;
+
+    ASSERT(domid > DOMID_MASK);
 
     if ( !__test_and_clear_bit(domid & DOMID_MASK, map) )
         BUG();
 }
 
-int cf_check iommu_free_pgtables(struct domain *d, struct iommu_context *ctx)
+int iommu_free_pgtables(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
     struct page_info *pg;
@@ -707,18 +598,18 @@ int cf_check iommu_free_pgtables(struct domain *d, struct iommu_context *ctx)
     if ( !is_iommu_enabled(d) )
         return 0;
 
+    /* After this barrier, no new IOMMU mappings can be inserted. */
+    spin_barrier(&hd->arch.mapping_lock);
+
     /*
      * Pages will be moved to the free list below. So we want to
      * clear the root page-table to avoid any potential use after-free.
      */
-    iommu_vcall(hd->platform_ops, clear_root_pgtable, d, ctx);
+    iommu_vcall(hd->platform_ops, clear_root_pgtable, d);
 
-    while ( (pg = page_list_remove_head(&ctx->arch.pgtables)) )
+    while ( (pg = page_list_remove_head(&hd->arch.pgtables.list)) )
     {
-        if (ctx->id == 0)
-            free_domheap_page(pg);
-        else
-            iommu_arena_free_page(&hd->arch.pt_arena, pg);
+        free_domheap_page(pg);
 
         if ( !(++done & 0xff) && general_preempt_check() )
             return -ERESTART;
@@ -728,7 +619,6 @@ int cf_check iommu_free_pgtables(struct domain *d, struct iommu_context *ctx)
 }
 
 struct page_info *iommu_alloc_pgtable(struct domain_iommu *hd,
-                                      struct iommu_context *ctx,
                                       uint64_t contig_mask)
 {
     unsigned int memflags = 0;
@@ -740,11 +630,7 @@ struct page_info *iommu_alloc_pgtable(struct domain_iommu *hd,
         memflags = MEMF_node(hd->node);
 #endif
 
-    if (ctx->id == 0)
-        pg = alloc_domheap_page(NULL, memflags);
-    else
-        pg = iommu_arena_allocate_page(&hd->arch.pt_arena);
-
+    pg = alloc_domheap_page(NULL, memflags);
     if ( !pg )
         return NULL;
 
@@ -777,7 +663,9 @@ struct page_info *iommu_alloc_pgtable(struct domain_iommu *hd,
 
     unmap_domain_page(p);
 
-    page_list_add(pg, &ctx->arch.pgtables);
+    spin_lock(&hd->arch.pgtables.lock);
+    page_list_add(pg, &hd->arch.pgtables.list);
+    spin_unlock(&hd->arch.pgtables.lock);
 
     return pg;
 }
@@ -816,21 +704,17 @@ static void cf_check free_queued_pgtables(void *arg)
     }
 }
 
-void iommu_queue_free_pgtable(struct domain *d, struct iommu_context *ctx,
-                              struct page_info *pg)
+void iommu_queue_free_pgtable(struct domain_iommu *hd, struct page_info *pg)
 {
     unsigned int cpu = smp_processor_id();
 
-    page_list_del(pg, &ctx->arch.pgtables);
+    spin_lock(&hd->arch.pgtables.lock);
+    page_list_del(pg, &hd->arch.pgtables.list);
+    spin_unlock(&hd->arch.pgtables.lock);
 
-    if ( !ctx->id )
-    {
-        page_list_add_tail(pg, &per_cpu(free_pgt_list, cpu));
+    page_list_add_tail(pg, &per_cpu(free_pgt_list, cpu));
 
-        tasklet_schedule(&per_cpu(free_pgt_tasklet, cpu));
-    }
-    else
-        iommu_arena_free_page(&dom_iommu(d)->arch.pt_arena, pg);
+    tasklet_schedule(&per_cpu(free_pgt_tasklet, cpu));
 }
 
 static int cf_check cpu_callback(
