@@ -28,6 +28,9 @@
 static unsigned char keypress_key;
 static bool alt_key_handling;
 
+/* How long 'd' waits for one CPU to answer before giving up on it. */
+#define STATE_DUMP_TIMEOUT  SECONDS(1)
+
 static keyhandler_fn_t cf_check show_handlers, cf_check dump_hwdom_registers,
     cf_check dump_domains, cf_check read_clocks;
 static irq_keyhandler_fn_t cf_check do_toggle_alt_key, cf_check dump_registers,
@@ -157,13 +160,26 @@ static void cf_check auto_keys_expired(void *unused)
 
 static int __init cf_check auto_debug_keys_init(void)
 {
+    unsigned int cpu;
+
     if ( !auto_keys[0] || !auto_runs )
         return 0;
 
-    printk("Debug keys '%s' will run %u time%s, every %us from now\n",
-           auto_keys, auto_runs, auto_runs == 1 ? "" : "s", auto_period);
+    /*
+     * Deliberately not the boot CPU.  The boot CPU is where the first vCPU of
+     * the hardware domain is placed, and "Xen never gets back off that CPU" is
+     * precisely the kind of fault these dumps exist to describe -- a timer
+     * queued there would be waiting behind the thing it was meant to report
+     * on.  Every other pCPU is idle until a guest is put on it, so take the
+     * highest-numbered one, and pair this with dom0_vcpus_pin if the hardware
+     * domain has enough vCPUs to reach that far.
+     */
+    cpu = cpumask_last(&cpu_online_map);
 
-    init_timer(&auto_keys_timer, auto_keys_expired, NULL, smp_processor_id());
+    printk("Debug keys '%s' will run %u time%s on CPU%u, every %us from now\n",
+           auto_keys, auto_runs, auto_runs == 1 ? "" : "s", cpu, auto_period);
+
+    init_timer(&auto_keys_timer, auto_keys_expired, NULL, cpu);
     set_timer(&auto_keys_timer, NOW() + SECONDS(auto_period));
 
     return 0;
@@ -289,9 +305,27 @@ static void cf_check dump_registers(
     /* Normal handling: synchronously dump the remaining CPUs' states. */
     for_each_cpu ( cpu, &dump_execstate_mask )
     {
+        s_time_t deadline = NOW() + STATE_DUMP_TIMEOUT;
+
         smp_send_state_dump(cpu);
         while ( cpumask_test_cpu(cpu, &dump_execstate_mask) )
+        {
+            /*
+             * A CPU that never answers is not a reason to lose the rest of
+             * the dump.  It is usually the most interesting thing in it: the
+             * request is an IPI, so silence here says the CPU is not taking
+             * interrupts at all, which is a different fault from a CPU stuck
+             * somewhere visible -- and waiting forever to say so costs every
+             * CPU after it as well.
+             */
+            if ( NOW() > deadline )
+            {
+                cpumask_clear_cpu(cpu, &dump_execstate_mask);
+                printk("CPU%u did not answer the state dump request\n", cpu);
+                break;
+            }
             cpu_relax();
+        }
     }
 
     console_end_sync();

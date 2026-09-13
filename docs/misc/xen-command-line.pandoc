@@ -236,9 +236,15 @@ and the debug keys cannot be used at all -- which is exactly when they are
 wanted.  Repeating the dump is what separates a guest spinning in its own
 interrupt handler from one that has stopped.
 
-For example, `auto_debug_keys=0dq,10,3` dumps the hardware domain's
-registers, every pCPU's registers and the domain list ten, twenty and thirty
-seconds after Xen's initcalls run.
+The timer runs on the highest-numbered online CPU rather than the boot CPU,
+because the boot CPU is where the hardware domain's first vCPU is placed and a
+wedged vCPU would hold up the dump that was meant to describe it.  Pair this
+with `dom0_vcpus_pin` when the hardware domain has enough vCPUs to reach that
+far.
+
+For example, `auto_debug_keys=dq0,10,3` dumps every pCPU's registers, the
+domain list and the hardware domain's registers ten, twenty and thirty seconds
+after Xen's initcalls run.
 
 ### ats (x86)
 > `= <boolean>`
