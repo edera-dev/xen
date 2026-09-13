@@ -719,17 +719,131 @@ dump and obvious in three. Read the next boot like this:
 | Timer works, dom0's PC is identical in all three dumps and `q` shows d0v0 blocked | Case 3: dom0 is not running and nothing is left to wake it — look at what it is blocked on. |
 | Timer works, dom0's PC is identical in all three dumps and `q` shows d0v0 runnable | dom0 is spinning at EL1 with interrupts enabled and no interrupt ever arriving: delivery *into* the guest, i.e. the LRs, rather than delivery to Xen. |
 
-One assumption is still unproven rather than ruled out: item 8, the EL2
-physical timer. Nothing in these logs needs PPI 26 — Xen's boot reads the
-counter rather than waiting on the interrupt, and dom0's tick comes from the
-*virtual* timer PPI 27 trapped into `vtimer_interrupt()`, not from a Xen soft
-timer. A dead hyp timer would not explain the silence and would not have
-shown up yet; it would, however, be a second reason interrupt delivery is the
-area to look at.
+### Boot 5: the hyp timer is fine, and the debugging was on the wrong CPU
+
+Boot 5 (`git:80f4d93dbb`) is the first boot with both of those changes in it.
+It stops at the same `sched_clock:` line as boots 3 and 4, and it settles one
+thing outright:
+
+**`Hypervisor timer IRQ26 works` — item 8 is dead.** That line is worth
+believing precisely. The self-test's wait only runs softirqs that are already
+pending, and `TIMER_SOFTIRQ` is raised by exactly two things: `set_timer()`
+when the new timer becomes the earliest on the CPU, which happened once, at
+arm time, with the deadline 10 ms in the future; and `htimer_interrupt()`,
+the PPI 26 handler. So the run that found the timer expired can only have
+followed the interrupt. PPI 26 is delivered, at virtual EL2, on the boot CPU,
+while Xen is running. The least-corroborated hardware assumption in the plan
+is now a measured fact.
+
+**And then nothing.** No `*** auto_debug_keys ***`, no dumps, and `CTRL-a`
+three times gets no response. The `Debug keys '0dq' will run 3 times, every
+10s from now` line is the last anyone hears of them.
+
+That is not a measurement. It is the same mistake the previous section was
+written to avoid, made one level down: everything doing the looking was on the
+CPU being looked at.
+
+- `auto_debug_keys_init()` is an initcall, so `smp_processor_id()` there is
+  the boot CPU, and that is where its timer was queued.
+- `vtcon_init_postirq()` calls `init_timer(&v->rx_timer, vtcon_rx_poll, port,
+  0)` — CPU 0, hard-coded, because when it runs no other CPU is online yet.
+  That poll is the only thing that ever reads console input.
+- dom0's first vCPU is placed on the boot CPU too.
+
+So the timer fires and the tasklet is scheduled, but a tasklet runs from
+`do_softirq()`, and softirqs on a CPU run only when that CPU passes through
+the return-to-guest path or the idle loop. The whole of the boot-5 evidence is
+therefore one fact: **after dom0 starts, Xen does not get back onto CPU0.**
+Every one of case 1, case 2 and case 3 still produces exactly that, so the
+table above is not yet usable. It does, however, add a fourth candidate that
+has nothing to do with interrupts at all.
+
+### The console can wedge the machine by itself
+
+`vtcon` puts one character in one descriptor, has 64 of them, and the serial
+layer's synchronous path is:
+
+```
+while ( !(n = port->driver->tx_ready(port)) )
+    cpu_relax();
+```
+
+with `port->tx_lock` held and interrupts off. For a UART that is right: a FIFO
+drains on its own, so the wait is a few character times and always ends. A
+virtio ring does not drain on its own. It drains because something on the host
+is consuming it, and if that stops there is nothing this side can do to
+restart it — Xen spins there forever.
+
+Follow what that looks like from outside. dom0's `earlycon=xenboot` is
+`HYPERVISOR_console_io`, so every dom0 `printk` is a hypercall that ends in
+that loop: dom0 stops mid-`printk` and never returns to EL1. The CPU it stops
+on is CPU0, which is where the input poll and the auto-keys timer were queued,
+so neither ever runs again. No dumps, no `CTRL-a`, no more output from anyone.
+Every symptom of boot 5, with nothing wrong with interrupt delivery at all.
+
+The last line of the log being a complete one (`sched_clock: ... wraps every
+4398046511097ns`, newline and all) argues against it a little — a stall would
+more likely strand a line in the middle — but only a little: the ring drained
+that write and could have stopped before the next one, which is the moment
+`local_irq_enable()` makes the interesting thing possible too. It is a
+hypothesis to eliminate, not to believe.
+
+### What boot 6 changes
+
+Three changes, all of them removing a dependency on the CPU under suspicion:
+
+- **`vtcon_tx_ready()` gives up.** Once the ring has been full for 200 ms it
+  returns an error rather than zero, which makes the serial layer discard the
+  character instead of waiting for it, and `vtcon_rx_poll()` prints `vtcon:
+  device stopped draining the transmit ring; N characters dropped` once the
+  device is consuming again — from the poll, because `tx_ready()` runs inside
+  `printk()` with the port lock held and is the one place in the driver that
+  cannot report anything. A console that loses output is a nuisance; a console
+  that stops the hypervisor is a bug, and it is one this driver has had since
+  it was written.
+- **The console's input poll moves off the boot CPU**, to
+  `cpumask_last(&cpu_online_map)`, by an initcall that `migrate_timer()`s it
+  once the other CPUs are up. This is what makes `CTRL-a` survive a wedged
+  CPU0, which is the whole point of having it.
+- **`auto_debug_keys` queues its timer there too**, and `dom0_vcpus_pin` is
+  now on the command line so that dom0's two pinned vCPUs reach CPU1 and no
+  further, leaving CPU5 genuinely idle.
+
+One more, in `dump_registers()`: the per-CPU wait for a state dump is bounded
+at a second, and prints `CPU%u did not answer the state dump request` instead
+of spinning. The request is an IPI, so a CPU that does not answer it is not
+taking interrupts at all — which is the single most decisive line boot 6 can
+produce, and the old code would have hung the dumping CPU forever rather than
+print it.
+
+The keys are now `dq0`: `d` first because it is the one that names CPU0's
+state, `0` last because it schedules a tasklet on the hardware domain vCPU's
+own pCPU and so is the one dump that a wedged CPU0 will swallow.
+
+| What the log shows | What it means |
+|---|---|
+| `vtcon: device stopped draining the transmit ring` | The console stalled. Interrupt delivery was never the problem; look at the host end of the virtio-console. |
+| Dumps appear, `d` puts CPU0 in `__serial_putc`/`vtcon_tx_ready` | The same, caught in the act. |
+| Dumps appear, `CPU0 did not answer the state dump request` | CPU0 takes no interrupts at all while dom0 runs. That is physical IRQ delivery to virtual EL2 during guest execution — the nested `HCR_EL2.IMO`, flagged in §4 and never yet exercised, since boot's PPI 26 arrived while *Xen* was running. |
+| Dumps appear, CPU0 in `gic_interrupt`/`do_IRQ`/`maintenance_interrupt` | Case 2. The storm is on Xen's side of the LR, and `gic_interrupt()`'s read-IAR-until-spurious loop never exits, which is why no softirq ever runs. |
+| Dumps appear, CPU0 in the guest and its PC moves between dumps | Case 1: dom0 is storming at EL1 where Xen cannot see it. |
+| Dumps appear, CPU0 in the guest with the same PC three times, `q` says d0v0 runnable | Injection rather than delivery: the LRs. |
+| Dumps appear, `q` says d0v0 blocked | Case 3. Look at what it is blocked on. |
+| Still nothing at all | The fault is not specific to CPU0: either no Xen timer fires anywhere, or output is dead for every CPU. `console=none` and the ring then become the next move. |
+
+What the hyp timer's self-test does *not* reach is the case that matters now.
+It ran from `start_xen()`, on a CPU with no guest on it, so it proves PPI 26
+arrives while Xen is the thing executing. Whether a physical interrupt reaches
+virtual EL2 while the CPU is executing a guest at EL1 is a different question
+with a different answer — it is the one that depends on macOS honouring the
+nested `HCR_EL2.IMO` — and boot 5 says nothing about it either way. Boot 6 is
+built to.
 
 ### The list
 
-In rough order of likelihood:
+In rough order of likelihood — though after boot 5 the two that matter are
+11 and 12, and everything above them is either settled or about a stage the
+boot now gets past:
 
 1. **`Could not set up d0 guest OS (rc = -22)`**, right after `Loading
    ramdisk from boot module @ ...`. This is the first thing that actually
@@ -787,14 +901,13 @@ In rough order of likelihood:
    do stop coming up, the assumption in §1 that macOS traps SMC from virtual
    EL2 is wrong. Symptom: Xen boots on one CPU and `setup_virt_paging`'s
    `smp_call_function` never returns.
-8. **The EL2 physical timer.** Xen needs `CNTHP_EL2` and PPI 26 delivered.
-   The GTDT declares it (§1) but nothing in the guest exercises it, since
-   Linux at EL1 uses PPI 30 and nVHE KVM does not use the hyp timer for the
-   host — so the one workload Apple's nested virtualisation obviously has to
-   support never programs the register Xen depends on. This is the
-   least-corroborated hardware assumption in the whole plan, and boot 5 either
-   confirms or kills it in one line: see `check_timer_interrupt_delivery()`
-   above.
+8. **The EL2 physical timer.** *Ruled out by boot 5: `Hypervisor timer IRQ26
+   works`.* Xen needs `CNTHP_EL2` and PPI 26 delivered, and nothing in the
+   guest exercises it — Linux at EL1 uses PPI 30 and nVHE KVM does not use the
+   hyp timer for the host — so the one workload Apple's nested virtualisation
+   obviously has to support never programs the register Xen depends on. It
+   works anyway. What that line covers is delivery to a CPU that is running
+   Xen; delivery to a CPU that is running a guest is item 11.
 9. **dom0 has no disk.** MSIs (§4). Check with `xl dmesg` for the
    `GICv2m: dom0: frame 0x1fff0000, SPIs 128-255` line, then in dom0 for
    `GICv2m: range[mem 0x1fff0000-0x1fff0fff], SPI[128:255]` and for
@@ -802,3 +915,19 @@ In rough order of likelihood:
 10. **dom0's `hvc0` is the wrong thing.** If `virtio_console` is still built
    into the dom0 kernel it will race Xen's PV console for the `hvc0` name and
    fight Xen for the device. §2, and §6's kernel prerequisites.
+11. **No physical interrupt reaches virtual EL2 while a guest is running.**
+   Xen runs guests with `HCR_EL2.IMO` set, so every physical IRQ is supposed
+   to be taken at EL2 rather than by the guest. Under nested virtualisation
+   that is macOS's job to honour, on a path nothing else needs: KVM's guests
+   are at EL1 under an EL2 that is *not* itself a guest. Everything boot 5
+   proved about interrupts — the `smp_call_function` in `setup_virt_paging()`,
+   the hypervisor timer's PPI — was proved on a CPU that was running Xen at
+   the time. This is the first suspect, and `CPU0 did not answer the state
+   dump request` is what it looks like.
+12. **The console's transmit ring stops draining.** One character per
+   descriptor, 64 descriptors, and until boot 6 an unbounded spin in
+   `__serial_putc()` when they are all in flight. Any CPU that printed while
+   the host was not consuming would stop there for good, holding the port
+   lock, with dom0's `earlycon` hypercall inside it. Item 5 is the same
+   failure seen from further away. Boot 6 announces it instead: `vtcon: device
+   stopped draining the transmit ring`.

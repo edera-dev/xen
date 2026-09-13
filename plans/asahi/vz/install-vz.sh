@@ -159,15 +159,19 @@ menuentry '$title' --class xen {
 	# stops a panic from rebooting into this same entry and destroying the
 	# only copy of the panic message.
 	#
-	# auto_debug_keys runs the '0', 'd' and 'q' keyhandlers by itself, ten
+	# auto_debug_keys runs the 'd', 'q' and '0' keyhandlers by itself, ten
 	# seconds apart, three times over.  Typing them would need console
 	# input, and console input is polled off a Xen timer -- so on a machine
-	# that is not delivering the hypervisor timer's interrupt, which is one
-	# of the things being looked for here, nothing typed ever arrives.
+	# where Xen cannot get back onto the CPU the hardware domain is on,
+	# which is what boot 5 showed, nothing typed ever arrives.  That timer
+	# and the console's input poll now both run on the highest-numbered
+	# CPU for the same reason, and dom0_vcpus_pin is what keeps a dom0 vCPU
+	# off it: pinned 1:1, two vCPUs reach CPU1 and no further.
 	xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 \\
+		dom0_vcpus_pin \\
 		$console console_to_ring conring_size=512 \\
 		loglvl=all guest_loglvl=all noreboot \\
-		auto_debug_keys=0dq,10,3
+		auto_debug_keys=dq0,10,3
 
 	# hvc0 last, so it is dom0's /dev/console: that is Xen's console, which
 	# comes out of the same serial terminal as Xen's own output.
