@@ -160,7 +160,7 @@ menuentry '$title' --class xen {
 	# only copy of the panic message.
 	#
 	# auto_debug_keys runs the 'd', 'p' and 'q' keyhandlers by itself, ten
-	# seconds apart, five times over.  Typing them would need console
+	# seconds apart, three times over.  Typing them would need console
 	# input, and console input is polled off a Xen timer -- so on a machine
 	# where Xen cannot get back onto the CPU the hardware domain is on,
 	# which is what boot 5 showed, nothing typed ever arrives.  That timer
@@ -177,7 +177,7 @@ menuentry '$title' --class xen {
 		dom0_vcpus_pin \\
 		$console console_to_ring conring_size=512 \\
 		loglvl=all guest_loglvl=all noreboot \\
-		auto_debug_keys=dpq,10,5
+		auto_debug_keys=dpq,10,3
 
 	# hvc0 last, so it is dom0's /dev/console: that is Xen's console, which
 	# comes out of the same serial terminal as Xen's own output.

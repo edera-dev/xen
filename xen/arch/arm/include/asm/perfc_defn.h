@@ -72,6 +72,7 @@ PERFCOUNTER(guest_irqs,           "#GUEST-IRQS")
 
 PERFCOUNTER(hyp_timer_irqs,   "Hypervisor timer interrupts")
 PERFCOUNTER(virt_timer_irqs,  "Virtual timer interrupts")
+PERFCOUNTER(virt_timer_stuck, "Virtual timer interrupts while masked")
 PERFCOUNTER(maintenance_irqs, "Maintenance interrupts")
 
 PERFCOUNTER(atomics_guest,    "atomics: guest access")

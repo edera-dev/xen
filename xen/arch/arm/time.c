@@ -251,8 +251,36 @@ static void htimer_interrupt(int irq, void *dev_id)
     WRITE_SYSREG(0, CNTHP_CTL_EL2);
 }
 
+/*
+ * Say this once, with everything needed to tell the two failures apart: a
+ * platform that ignores the write, and a platform that takes the write but
+ * drives the interrupt line from somewhere else.
+ */
+static void vtimer_report_stuck(register_t before, register_t after)
+{
+    static bool reported;
+
+    if ( reported )
+        return;
+    reported = true;
+
+    printk(XENLOG_ERR
+           "CPU%u: %pv's virtual timer fired again with IMASK already set\n",
+           smp_processor_id(), current);
+    printk(XENLOG_ERR
+           "  CNTV_CTL %"PRIregister" -> %"PRIregister", CNTVCT %016"PRIx64", CNTV_CVAL %016"PRIx64", CNTVOFF %016"PRIx64"\n",
+           before, after, READ_SYSREG64(CNTVCT_EL0),
+           READ_SYSREG64_EL0(CNTV_CVAL), READ_SYSREG64(CNTVOFF_EL2));
+    printk(XENLOG_ERR "  %s\n",
+           (after & CNTx_CTL_ENABLE)
+           ? "ENABLE did not clear either: this timer cannot be stopped from EL2"
+           : "timer disabled instead; the guest re-arms it from its own handler");
+}
+
 static void vtimer_interrupt(int irq, void *dev_id)
 {
+    register_t ctl;
+
     /*
      * Edge-triggered interrupts can be used for the virtual timer. Even
      * if the timer output signal is masked in the context switch, the
@@ -268,8 +296,36 @@ static void vtimer_interrupt(int irq, void *dev_id)
 
     perfc_incr(virt_timer_irqs);
 
-    current->arch.virt_timer.ctl = READ_SYSREG_EL0(CNTV_CTL);
-    WRITE_SYSREG_EL0(current->arch.virt_timer.ctl | CNTx_CTL_MASK, CNTV_CTL);
+    ctl = READ_SYSREG_EL0(CNTV_CTL);
+
+    /*
+     * IMASK is set here by Xen and by nobody else: a guest that wants its
+     * timer quiet clears ENABLE, and a guest that has taken the interrupt
+     * re-arms with IMASK clear.  So finding it already set means the line
+     * asserted while masked, and the mask is not what gates it on this
+     * platform.  Masking again would return straight back here -- boot 7 of
+     * the Virtualization.framework bring-up counted 15.5 million of these on
+     * the one pCPU running dom0 in fifty seconds, one every time the handler
+     * returned, which is why dom0 appeared to hang.
+     *
+     * Take the timer's other lever instead and clear ENABLE.  The guest gets
+     * nothing it has not already been given: the first interrupt is queued in
+     * its vGIC, and its handler re-arms the timer with an untrapped write to
+     * CNTV_CTL_EL0.
+     */
+    if ( unlikely(ctl & CNTx_CTL_MASK) )
+    {
+        perfc_incr(virt_timer_stuck);
+
+        WRITE_SYSREG_EL0((ctl & ~CNTx_CTL_ENABLE) | CNTx_CTL_MASK, CNTV_CTL);
+        isb();
+        vtimer_report_stuck(ctl, READ_SYSREG_EL0(CNTV_CTL));
+
+        return;
+    }
+
+    current->arch.virt_timer.ctl = ctl;
+    WRITE_SYSREG_EL0(ctl | CNTx_CTL_MASK, CNTV_CTL);
     vgic_inject_irq(current->domain, current, current->arch.virt_timer.irq, true);
 }
 

@@ -466,7 +466,7 @@ For reference, and for typing at the GRUB prompt (`c`) when bisecting:
 insmod xen_boot
 search --no-floppy --fs-uuid --set=root <the /boot filesystem UUID>
 devicetree /xen/vz.dtb
-xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=dpq,10,5
+xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=dpq,10,3
 xen_module /vmlinuz-xen-dom0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=/root selinux=0 console=tty0 console=hvc0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
@@ -485,8 +485,8 @@ Notes on the command lines:
   only.
 - `console_to_ring conring_size=512` per §2. These are the difference between
   having a log and not.
-- `auto_debug_keys=dpq,10,5` runs the `d`, `p` and `q` keyhandlers every ten
-  seconds, five times over, without anything being typed. Why it cannot be
+- `auto_debug_keys=dpq,10,3` runs the `d`, `p` and `q` keyhandlers every ten
+  seconds, three times over, without anything being typed. Why it cannot be
   typed instead is the first part of §7; why these three keys in this order,
   and why `p` needs `CONFIG_PERF_COUNTERS=y`, is "What boot 7 changes".
 - `noreboot` because the default is not what you want here. `panic()` calls
@@ -706,8 +706,8 @@ Two changes make the next boot answer this on its own:
   that never delivers it boots to the very end looking healthy.
 - **`auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`**, which runs the same
   keyhandlers off a timer instead of off input. `install-vz.sh` now puts
-  `auto_debug_keys=dpq,10,5` on the hypervisor command line, so every pCPU's
-  registers, the performance counters and the domain list are dumped five
+  `auto_debug_keys=dpq,10,3` on the hypervisor command line, so every pCPU's
+  registers, the performance counters and the domain list are dumped three
   times at ten-second intervals with nothing typed. It runs them from a
   tasklet, not from the timer callback, because the handlers that pause a vCPU
   must not run from a timer that interrupted that same vCPU — a tasklet runs
@@ -977,7 +977,7 @@ it ran on CPU5 like the others and blocked there.
   `guest_cpu_user_regs()` fallback is by construction a guest frame — on an
   idle vCPU, so `dump_execstate()` skips both of its two cases and returns.
   That is why boot 6's dump has CPU0 through CPU4 in it and no CPU5.
-- **The keys become `dpq,10,5`**, and the build gets
+- **The keys become `dpq`**, and the build gets
   `CONFIG_PERF_COUNTERS=y`. `d` first because CPU0's guest PC is the
   measurement; `p` second because **the difference between two samples of
   `trap: sysreg access` is the number** — it converts "is dom0 moving?" into
@@ -997,10 +997,112 @@ it ran on CPU5 like the others and blocked there.
 | Guest PC moves but the trap counters barely do | The cost is not the traps. Look at the counter reads (`random_get_entropy()` is `CNTVCT_EL0`) and at `flush_tlb_kernel_range()` from `kfence_protect()`. |
 | dom0 prints again, anywhere | It was only ever slow. The next question is how slow, and `p` answers that too. |
 
+### Boot 7: fifteen million virtual timer interrupts
+
+Boot 7 (`git:253d0589b6`) ran all its dumps — CPU5 included, the `need_context`
+fix works — and the performance counters end the guessing in one line:
+
+```
+(XEN) Virtual timer interrupts   TOTAL[15475868]  CPU00[15475882]
+(XEN) #PPIs                      TOTAL[15479567]  CPU00[15475520]  CPU05[4063]
+(XEN) Maintenance interrupts     TOTAL[      0]
+(XEN) Hypervisor timer interrupts TOTAL[   4140]  CPU00[     77]  CPU05[4063]
+(XEN) 'q' pressed -> dumping domain info (now = 50555588666)
+```
+
+**15,475,882 virtual timer interrupts on CPU0 in fifty seconds — about
+310,000 a second.** Every PPI CPU0 took was that one. Nothing else on the
+machine is busy: CPU5's 4,063 hypervisor timer interrupts are the console's
+input poll at its normal 81 Hz, and CPU1–CPU4 are idle. Xen's own timers are
+fine; CPU0 is drowning in a single interrupt.
+
+That is the missing factor of a hundred from the last section's arithmetic,
+and it is item 13's answer with the emphasis in a different place. Nested
+exits are not the problem. **A physical interrupt that never stops asserting
+is**, and dom0 gets whatever slivers of CPU0 are left between one handler
+returning and the next one entering — about three microseconds apart.
+
+It also names the *right* one of the original three cases. This is case 2,
+the storm on Xen's side of the LR — but not the maintenance interrupt, which
+the counters say has never fired once. It is the virtual timer's own PPI 27.
+
+### Why PPI 27 never stops
+
+The sequence is supposed to be self-limiting. `vtimer_interrupt()` in
+`arch/arm/time.c` is Xen's handler for the guest's virtual timer:
+
+```c
+current->arch.virt_timer.ctl = READ_SYSREG_EL0(CNTV_CTL);
+WRITE_SYSREG_EL0(current->arch.virt_timer.ctl | CNTx_CTL_MASK, CNTV_CTL);
+vgic_inject_irq(current->domain, current, current->arch.virt_timer.irq, true);
+```
+
+PPI 27 is level-triggered — `check_timer_irq_cfg()` confirms it on every
+boot, and boot 4 already recorded that it does not warn. The level is the
+timer's output, `ISTATUS && ENABLE && !IMASK`. Setting `IMASK` is what
+deasserts it, and it stays deasserted until the guest takes the interrupt
+Xen just queued and re-arms the timer with a write Xen does not trap. On
+every other machine this fires once per guest tick.
+
+Here it fires until the counter overflows the page. dom0 cannot break the
+loop: it is still before `local_irq_enable()`, `CPSR.I` is set in every dump,
+and `q` says `Inflight irq=27` from the *first* injection, unchanged fifty
+seconds later. So the `IMASK` write is not deasserting the line.
+
+Two things can produce that, and they need different fixes:
+
+- **The write does not take.** Xen is at virtual EL2 with `HCR_EL2.E2H=0`, so
+  `WRITE_SYSREG_EL0(..., CNTV_CTL)` is a write to `CNTV_CTL_EL0` — the right
+  register for non-VHE, and the same one the AIC driver reaches as
+  `CNTV_CTL_EL02` when Xen runs bare-metal in VHE mode. Under FEAT_NV2 it is
+  also a register macOS may be shadowing.
+- **The write takes and the line does not care.** macOS is emulating Xen's
+  GIC, and if its PPI 27 input is driven from something other than a live
+  re-evaluation of `CNTV_CTL_EL0`, no write Xen makes will quiet it.
+
+### What boot 8 changes
+
+One change, in `vtimer_interrupt()`, which both measures and stops it.
+
+Detecting the re-entry costs nothing and needs no new state. `IMASK` on this
+timer is set by Xen and by nobody else — a guest silencing its timer clears
+`ENABLE`, and a guest that has serviced the interrupt re-arms with `IMASK`
+clear — so **finding `IMASK` already set on the way into the handler means
+the line asserted while masked**. Masking again just returns straight back
+here, so the handler takes the timer's other lever and clears `ENABLE`
+instead, reads the register back, and says once what it found:
+
+```
+CPU0: d0v0's virtual timer fired again with IMASK already set
+  CNTV_CTL <before> -> <after>, CNTVCT ..., CNTV_CVAL ..., CNTVOFF ...
+  timer disabled instead; the guest re-arms it from its own handler
+```
+
+or, if `ENABLE` is ignored too, `ENABLE did not clear either: this timer
+cannot be stopped from EL2`. Nothing is taken from the guest either way: the
+interrupt it is owed is already queued in its vGIC, and its handler re-arms
+the timer with an untrapped write to `CNTV_CTL_EL0`.
+
+A new counter, `Virtual timer interrupts while masked`, sits next to
+`Virtual timer interrupts` in the `p` dump, so the two numbers together say
+whether the storm was stopped or only counted.
+
+| What the log shows | What it means |
+|---|---|
+| `timer disabled instead`, and `while masked` stays near zero | Fixed. `ENABLE` is honoured where `IMASK` is not, dom0 gets CPU0 back, and the next question is simply how far it boots. |
+| `timer disabled instead`, but `while masked` still in the millions | `ENABLE` is honoured and the line still asserts, so PPI 27 is not driven by this timer at all. The lever left is the GIC: mask the PPI while the guest's vIRQ is inflight and re-enable it when the guest retires it. |
+| `ENABLE did not clear either` | Neither bit reaches the hardware. Xen cannot use the hardware virtual timer for guests on this platform, and the answer is to emulate the guest's vtimer in software off Xen's own `CNTHP_EL2`, which already works (boot 5). |
+| No such line at all, `while masked` zero, and dom0 still crawls | The storm is not a re-entry — each interrupt is a genuinely new timer expiry. Then look at `CNTVOFF_EL2`: `init_timer_interrupt()` writes 0 to it, and if macOS applies an L1 write to it directly rather than composing it, the guest's `CNTV_CVAL` is permanently in the past. |
+
+One gap in boot 7's evidence worth naming: only the last of the five `dpq`
+runs was captured, so there is no second sample of the counters and no rate
+*over time* — just the fifty-second average. Three runs rather than five from
+here, so the whole log fits in one paste.
+
 ### The list
 
-In rough order of likelihood — though after boot 6 the only one that matters
-is 13, and everything above it is either settled or about a stage the boot
+In rough order of likelihood — though after boot 7 the only one that matters
+is 14, and everything above it is either settled or about a stage the boot
 now gets past:
 
 1. **`Could not set up d0 guest OS (rc = -22)`**, right after `Loading
@@ -1091,11 +1193,17 @@ now gets past:
    lines of dump after dom0 went quiet. *Ruled out for the window up to the
    first dump*; the driver's `tx_ready()` bound stays regardless, because an
    unbounded spin there is a bug whether or not it has fired yet.
-13. **Nested exits are slow enough to look like a hang.** dom0 is executing
-   at EL1 and making forward progress; it is in `kfence_init()`, in a loop
-   that costs about two thousand trapped `ID_AA64ISAR0_EL1` reads, and it has
-   no timestamps of its own to say how long anything took. This is the one
-   left, and the `p` key in boot 7 measures it directly. If it is confirmed,
-   the shape of the fix is on dom0's side and outside Xen — starting with
-   `kfence.sample_interval=0`, which removes this loop, and then whatever the
-   next such loop turns out to be.
+13. **Nested exits are slow enough to look like a hang.** *Subsumed by 14:
+   real, but a hundred times too small.* dom0 is executing at EL1 and making
+   forward progress, in a `kfence_init()` loop that costs about two thousand
+   trapped `ID_AA64ISAR0_EL1` reads. Boot 7 counted 176,103 sysreg traps in
+   fifty seconds, which is a genuine tax and nowhere near enough to explain
+   what dom0 is not getting done. `kfence.sample_interval=0` on dom0's
+   command line still removes this particular loop, if it is ever worth
+   removing.
+14. **PPI 27 asserts continuously and CPU0 does nothing else.** 15,475,882
+   virtual timer interrupts in fifty seconds, all on the pCPU running dom0,
+   with `Maintenance interrupts` at zero and every other pCPU idle. Xen masks
+   the guest's virtual timer in `vtimer_interrupt()` and the level does not
+   follow. This is the one left, and boot 8 both measures which register the
+   platform is ignoring and stops the storm with the other one.
