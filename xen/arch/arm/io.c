@@ -47,6 +47,18 @@ static const struct mmio_handler unmapped_handler = {
     .ops = &unmapped_ops
 };
 
+/*
+ * Make a range read as all ones and swallow writes, for a domain that is not
+ * meant to find anything there.  The fallback above does the same thing, but
+ * only for a domain without XEN_DOMCTL_CDF_trap_unmapped_accesses; saying it
+ * explicitly works whatever the domain's default for unmapped memory is.
+ */
+void register_unmapped_mmio_handler(struct domain *d, paddr_t addr,
+                                    paddr_t size)
+{
+    register_mmio_handler(d, &unmapped_ops, addr, size, NULL);
+}
+
 static enum io_state handle_read(const struct mmio_handler *handler,
                                  struct vcpu *v,
                                  mmio_info_t *info)

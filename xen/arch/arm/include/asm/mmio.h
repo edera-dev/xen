@@ -86,6 +86,8 @@ enum io_state try_handle_mmio(struct cpu_user_regs *regs,
 void register_mmio_handler(struct domain *d,
                            const struct mmio_handler_ops *ops,
                            paddr_t addr, paddr_t size, void *priv);
+void register_unmapped_mmio_handler(struct domain *d, paddr_t addr,
+                                    paddr_t size);
 int domain_io_init(struct domain *d, unsigned int max_count);
 void domain_io_free(struct domain *d);
 
