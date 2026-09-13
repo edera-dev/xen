@@ -1682,6 +1682,62 @@ dumps back out to ten seconds so the third lands after it has spoken.
 | Nothing from khungtaskd, dom0 still idle | The blocked task is interruptible, which `khungtaskd` does not report. `sysctl.kernel.softlockup_panic` will not help either; the next lever is `initcall_debug` plus sysrq over `hvc0`. |
 | dom0 wakes up and carries on after twenty seconds | It was waiting on a timeout all along, and the timeout is long. Read what it says next. |
 
+### Boot 17: the wrong question, and the right answer anyway
+
+The experiment was void before it ran. `CONFIG_DETECT_HUNG_TASK is not set` in
+this dom0 kernel, so there is no `khungtaskd` and
+`sysctl.kernel.hung_task_timeout_secs` had nothing to configure. Checking the
+config costs one `grep` and would have saved a boot.
+
+The boot answered a better question anyway, and the answer is a bug in Xen.
+Comparing the `p` dumps at twenty seconds and at thirty:
+
+```
+Hypervisor timer interrupts  CPU00[ 124]  CPU01[   4]  CPU05[1673]   (20s)
+Hypervisor timer interrupts  CPU00[ 124]  CPU01[   4]  CPU05[2502]   (30s)
+```
+
+**Xen's own timer has not fired on CPU0 or CPU1 in twenty-eight seconds**,
+while CPU5 — the pCPU with no guest on it — takes 829 more. A pCPU takes a
+hypervisor timer interrupt only when Xen has a timer queued on it, so Xen has
+*nothing queued* for either of the pCPUs carrying dom0. In particular it has no
+software fallback virtual timer, and that is the only thing that can wake a
+blocked vCPU when its deadline arrives. dom0 is asleep with no way to wake,
+and what it is waiting for stops mattering.
+
+### Why nothing was armed
+
+`virt_timer_save()` armed the fallback like this:
+
+```c
+if ( (v->arch.virt_timer.ctl & CNTx_CTL_ENABLE) &&
+     !(v->arch.virt_timer.ctl & CNTx_CTL_MASK) )
+    set_timer(&v->arch.virt_timer.timer, ...);
+```
+
+`IMASK` in that register is **Xen's, not the guest's**. `vtimer_interrupt()`
+sets it to quiesce a line whose interrupt has already been injected, and the
+only thing that clears it is the guest re-arming its timer. So a vCPU that
+blocks after an interrupt and before the guest re-arms looks, to that test,
+like a vCPU whose timer the guest does not want — and loses its fallback.
+
+On ordinary hardware the guest re-arms within microseconds and the window never
+matters. Here it is not a window at all: boot 10 measured that `CNTV_CTL_EL0`
+does not read back live on this platform, so once Xen has set `IMASK` the read
+may keep saying `IMASK`, indefinitely.
+
+Boot 18 arms on `ENABLE` alone. A spurious virtual timer interrupt costs the
+guest one interrupt it dismisses; a missing one costs it the boot. Two counters
+say which branch is taken, so if `ENABLE` reads stale as well the next log says
+so rather than leaving it to be inferred.
+
+| What the log shows | What it means |
+|---|---|
+| dom0 boots on | Fixed, and the last four sections were chasing a symptom of this. |
+| `software fallback armed` climbing, dom0 still asleep | The fallback is armed and the interrupt still is not reaching dom0: look at `virt_timer_expired()` and the injection, not the arming. |
+| `software fallback not armed` climbing | `ENABLE` reads stale too, and Xen cannot learn the guest's timer state from this register at all. Then the guest's virtual timer has to be tracked from the values Xen itself writes. |
+| Hypervisor timer counts on CPU0/CPU1 still frozen | Nothing is being queued for them at all, which is a different fault from this one. |
+
 ### The list
 
 In rough order of likelihood — though after boot 12 the timer is settled and

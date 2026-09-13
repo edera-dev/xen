@@ -201,17 +201,14 @@ menuentry '$title' --class xen {
 	# appears twice.  nokaslr makes the PCs in Xen's guest-state dumps
 	# resolvable straight against the dom0 kernel's System.map.
 	#
-	# hung_task_timeout_secs is the one thing Xen cannot supply.  Boot 16
-	# showed both dom0 vCPUs parked in cpu_do_idle(), so whatever stopped
-	# the boot is a *task* blocked inside an initcall, and only dom0 can
-	# name it.  khungtaskd prints that task's stack after the timeout; the
-	# default of 120 seconds is longer than anyone waits at a console, so
-	# ask for twenty.
+	# No sysctl.kernel.hung_task_timeout_secs here: boot 17 asked for one
+	# and this kernel is built with CONFIG_DETECT_HUNG_TASK off, so there
+	# is no khungtaskd for it to configure.  Check the config before
+	# spending a boot on a knob.
 	xen_module $DOM0_KERNEL \\
 		root=UUID=$ROOT_SPEC ro$ROOT_FLAGS selinux=0 \\
 		console=tty0 console=hvc0 \\
-		earlycon=xenboot keep_bootcon nokaslr \\
-		sysctl.kernel.hung_task_timeout_secs=20
+		earlycon=xenboot keep_bootcon nokaslr
 
 	xen_module --nounzip $DOM0_INITRD
 }
