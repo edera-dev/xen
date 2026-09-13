@@ -23,6 +23,7 @@
 #include <xen/sched.h>
 #include <xen/softirq.h>
 #include <xen/time.h>
+#include <xen/timer.h>
 
 #include <asm/cpufeature.h>
 #include <asm/platform.h>
@@ -252,21 +253,84 @@ static void htimer_interrupt(int irq, void *dev_id)
 }
 
 /*
- * Say this once, with everything needed to tell the two failures apart: a
- * platform that ignores the write, and a platform that takes the write but
- * drives the interrupt line from somewhere else.
+ * How long the virtual timer's PPI stays disabled at the GIC once it has been
+ * caught asserting with nothing left to deliver.  It bounds the wasted
+ * interrupt rate, and it bounds the delay added to a guest timer interrupt
+ * that becomes deliverable while the PPI is off -- a millisecond, which no
+ * part of a guest's boot can tell from jitter.
+ */
+#define VTIMER_QUIESCE_PERIOD  MILLISECS(1)
+
+static DEFINE_PER_CPU(struct timer, vtimer_requiesce);
+static DEFINE_PER_CPU(bool, vtimer_requiesce_ready);
+
+static void vtimer_ppi_set_enabled(bool enable)
+{
+    struct irq_desc *desc = irq_to_desc(timer_irq[TIMER_VIRT_PPI]);
+    unsigned long flags;
+
+    spin_lock_irqsave(&desc->lock, flags);
+    if ( enable )
+        desc->handler->enable(desc);
+    else
+        desc->handler->disable(desc);
+    spin_unlock_irqrestore(&desc->lock, flags);
+}
+
+static void cf_check vtimer_requiesce_expired(void *unused)
+{
+    vtimer_ppi_set_enabled(true);
+}
+
+/*
+ * Nothing Xen can write to the timer stops the line, so stop listening to it
+ * instead, and look again in a millisecond.  The guest is owed exactly one
+ * virtual timer interrupt and already has it queued in its vGIC, so there is
+ * nothing to deliver in the meantime.
+ */
+static void vtimer_ppi_quiesce(void)
+{
+    struct timer *t = &this_cpu(vtimer_requiesce);
+
+    perfc_incr(virt_timer_quiesce);
+
+    vtimer_ppi_set_enabled(false);
+
+    /*
+     * Initialised here rather than in init_timer_interrupt(), which runs on
+     * each CPU before the timer subsystem is usable.  Nothing can reach this
+     * until a guest is running, by which point it long since is.
+     */
+    if ( unlikely(!this_cpu(vtimer_requiesce_ready)) )
+    {
+        init_timer(t, vtimer_requiesce_expired, NULL, smp_processor_id());
+        this_cpu(vtimer_requiesce_ready) = true;
+    }
+
+    set_timer(t, NOW() + VTIMER_QUIESCE_PERIOD);
+}
+
+/*
+ * Say this with everything needed to tell the failures apart: a platform that
+ * ignores the write, a platform that takes the write but drives the interrupt
+ * line from somewhere else, and a platform where Xen is not writing the copy
+ * of the register the guest is using -- for which CNTV_CVAL is the tell, since
+ * Xen never programs it and the guest always does.
+ *
+ * Repeat it rather than saying it once.  The first of these happens seconds
+ * into a boot, at the top of a log that is the easiest part to lose.
  */
 static void vtimer_report_stuck(register_t before, register_t after)
 {
-    static bool reported;
+    static unsigned long count;
+    unsigned long n = ++count;
 
-    if ( reported )
+    if ( n > 4 && (n & 0xfff) )
         return;
-    reported = true;
 
     printk(XENLOG_ERR
-           "CPU%u: %pv's virtual timer fired again with IMASK already set\n",
-           smp_processor_id(), current);
+           "CPU%u: %pv's virtual timer fired again with IMASK already set (#%lu)\n",
+           smp_processor_id(), current, n);
     printk(XENLOG_ERR
            "  CNTV_CTL %"PRIregister" -> %"PRIregister", CNTVCT %016"PRIx64", CNTV_CVAL %016"PRIx64", CNTVOFF %016"PRIx64"\n",
            before, after, READ_SYSREG64(CNTVCT_EL0),
@@ -274,7 +338,7 @@ static void vtimer_report_stuck(register_t before, register_t after)
     printk(XENLOG_ERR "  %s\n",
            (after & CNTx_CTL_ENABLE)
            ? "ENABLE did not clear either: this timer cannot be stopped from EL2"
-           : "timer disabled instead; the guest re-arms it from its own handler");
+           : "timer disabled; PPI masked at the GIC for a millisecond instead");
 }
 
 static void vtimer_interrupt(int irq, void *dev_id)
@@ -317,9 +381,21 @@ static void vtimer_interrupt(int irq, void *dev_id)
     {
         perfc_incr(virt_timer_stuck);
 
+        /*
+         * Boot 8 said this is not enough: ENABLE was cleared here on the
+         * previous interrupt and the line came back anyway.  Whether it came
+         * back because the write never reached the guest's copy of the
+         * register is what "while masked+off" counts -- it is the number of
+         * times ENABLE was found set again after being cleared.
+         */
+        if ( ctl & CNTx_CTL_ENABLE )
+            perfc_incr(virt_timer_stuck_on);
+
         WRITE_SYSREG_EL0((ctl & ~CNTx_CTL_ENABLE) | CNTx_CTL_MASK, CNTV_CTL);
         isb();
         vtimer_report_stuck(ctl, READ_SYSREG_EL0(CNTV_CTL));
+
+        vtimer_ppi_quiesce();
 
         return;
     }

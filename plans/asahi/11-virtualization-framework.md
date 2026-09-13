@@ -1099,9 +1099,97 @@ runs was captured, so there is no second sample of the counters and no rate
 *over time* — just the fifty-second average. Three runs rather than five from
 here, so the whole log fits in one paste.
 
+### Boot 8: the timer is not the lever
+
+Boot 8 (`git:bd978701d3`) put the detector in and it fired on essentially
+every interrupt:
+
+```
+(XEN) Virtual timer interrupts              TOTAL[9372994]  CPU00[9373008]
+(XEN) Virtual timer interrupts while masked TOTAL[9373192]  CPU00[9373206]
+                                                    now = 30339115875
+```
+
+Two numbers, two conclusions.
+
+**The rate has not changed.** 9,373,008 in 30.3 seconds is 309,000 a second,
+against boot 7's 310,000. Clearing `ENABLE` did nothing at all.
+
+**Every interrupt found `IMASK` already set.** The two counters are equal to
+within the few thousand the `p` dump itself races past while printing, so
+from the second interrupt onwards the handler has never once seen a timer
+that was not already masked. That is worth stating precisely: the bit Xen
+writes to `CNTV_CTL_EL0` *persists* — Xen reads its own `IMASK` back nine
+million times in a row. **The register is writable and holds its value. The
+interrupt line does not care.**
+
+dom0 is where it always is: PC `__read_sysreg_by_encoding`, `X19` holding the
+sanitised `ID_AA64ISAR0_EL1`, the stack running back through
+`__get_random_u32_below` to `kfence_init_pool` — at shuffle iteration 253 of
+255 after thirty seconds, against 254 after ten in boot 6. `trap: sysreg
+access` reached 176,093, within ten of boot 7's total at fifty seconds. The
+sliver of CPU0 dom0 gets is small and varies a lot between boots; nothing
+else about it has moved.
+
+### Three ways for a register to hold a value and mean nothing
+
+The report line `vtimer_interrupt()` prints names them, and it prints
+`CNTVCT`, `CNTV_CVAL` and `CNTVOFF` because those separate the third from the
+first two:
+
+1. **The write lands and the line is driven from elsewhere.** macOS emulates
+   Xen's GIC; if its PPI 27 input is not a live re-evaluation of
+   `CNTV_CTL_EL0`, no write Xen makes will quiet it.
+2. **The write lands in a copy the guest does not use.** Xen is at virtual
+   EL2 with `HCR_EL2.E2H=0`, so it reaches the guest's timer as
+   `CNTV_CTL_EL0` — the same physical EL1 virtual timer the guest uses. Under
+   nested virtualisation that sharing is macOS's to arrange, and if it keeps
+   a separate copy for the L1 then Xen has been masking its own timer for
+   nine million interrupts while the guest's ran free. **`CNTV_CVAL` is the
+   tell**: Xen never programs it and the guest always does, so a plausible
+   deadline near `CNTVCT` means Xen is looking at the guest's copy and a zero
+   means it is not.
+3. **`ENABLE` is not sticking either.** Boot 8 cannot rule this out from its
+   counters, because it only counted the entries, not what they contained.
+
+Boot 9 settles 3 from the counters alone — a new `Virtual timer interrupts
+while masked+off` counts the entries that found `ENABLE` set again after the
+previous entry cleared it — and settles 2 from the report line, which now
+repeats rather than being said once at the top of a log.
+
+### What boot 9 changes: stop listening to the line
+
+Nothing Xen can write to the timer stops it, so `vtimer_interrupt()` stops
+listening instead. On the stuck path it now **disables PPI 27 at the GIC for
+this pCPU** and arms a one-millisecond Xen timer to turn it back on.
+
+It is safe for the same reason the early return is: the guest is owed exactly
+one virtual timer interrupt and already has it queued in its vGIC, so there
+is nothing to deliver while the PPI is off. What it costs is latency — a
+timer interrupt that becomes deliverable while the PPI is masked waits up to
+a millisecond — and that is beneath anything a guest's boot can distinguish
+from jitter.
+
+What it buys is the whole machine. The wasted interrupt rate goes from
+309,000 a second to 1,000, CPU0 goes from spending all of its time in
+`vtimer_interrupt()` to spending a fraction of a percent, and dom0 gets a CPU
+for the first time since it started. It also degrades correctly if case 1 is
+what is happening and the line never deasserts: the steady state is then one
+wasted interrupt per millisecond forever, and the guest still gets each real
+tick the first time it is deliverable, because the handler only injects when
+`IMASK` is clear — which only the guest ever makes it.
+
+| What the log shows | What it means |
+|---|---|
+| dom0 prints again and boots on | Fixed, at the cost of 1,000 interrupts a second. The next question is what dom0 does next, and `while masked` says how much the workaround is still absorbing. |
+| `while masked+off` climbing with `while masked` | Case 2 or 3: the `ENABLE` write is not reaching the register the line is derived from. Check `CNTV_CVAL` in the report — if it is zero, Xen has been masking its own timer, and the guest's virtual timer needs to be emulated in software off `CNTHP_EL2`. |
+| `while masked+off` stays at zero | Case 1: both bits land, and PPI 27 is simply not this timer's output. Nothing Xen writes will ever quiet it, and the millisecond poll is the permanent shape of the fix rather than a workaround. |
+| `Virtual timer PPI disabled at the GIC` near zero, storm gone | The line does follow `ENABLE` after all and boot 8's reading was wrong. |
+| Storm unchanged at 309,000/s | The PPI is not being disabled — the redistributor write is going the same way as the timer write, and the only lever left is not to route the guest's timer through the hardware at all. |
+
 ### The list
 
-In rough order of likelihood — though after boot 7 the only one that matters
+In rough order of likelihood — though after boot 8 the only one that matters
 is 14, and everything above it is either settled or about a stage the boot
 now gets past:
 
@@ -1202,8 +1290,11 @@ now gets past:
    command line still removes this particular loop, if it is ever worth
    removing.
 14. **PPI 27 asserts continuously and CPU0 does nothing else.** 15,475,882
-   virtual timer interrupts in fifty seconds, all on the pCPU running dom0,
-   with `Maintenance interrupts` at zero and every other pCPU idle. Xen masks
-   the guest's virtual timer in `vtimer_interrupt()` and the level does not
-   follow. This is the one left, and boot 8 both measures which register the
-   platform is ignoring and stops the storm with the other one.
+   virtual timer interrupts in fifty seconds in boot 7, 9,373,008 in thirty
+   in boot 8 — the same 310,000 a second — all on the pCPU running dom0, with
+   `Maintenance interrupts` at zero and every other pCPU idle. Xen masks the
+   guest's virtual timer in `vtimer_interrupt()`, the write sticks, and the
+   line does not follow; clearing `ENABLE` as well changed nothing. This is
+   the one left. Boot 9 stops listening to the line rather than trying to
+   quiet it, and its counters say which of the three readings above is the
+   right one.
