@@ -76,8 +76,17 @@ int domain_vtimer_init(struct domain *d, struct xen_arch_domainconfig *config)
      */
     if ( is_hardware_domain(d) )
     {
-        if ( acpi_disabled &&
-             !vgic_reserve_virq(d, timer_get_irq(TIMER_PHYS_SECURE_PPI)) )
+        unsigned int sec_ppi = timer_get_irq(TIMER_PHYS_SECURE_PPI);
+
+        /*
+         * Without a Secure world there is no secure physical timer interrupt
+         * to inherit; make_timer_node() puts the architectural PPI in dom0's
+         * device tree instead, so reserve the same one here.
+         */
+        if ( !sec_ppi )
+            sec_ppi = GUEST_TIMER_PHYS_S_PPI;
+
+        if ( acpi_disabled && !vgic_reserve_virq(d, sec_ppi) )
             BUG();
 
         if ( !vgic_reserve_virq(d, timer_get_irq(TIMER_PHYS_NONSECURE_PPI)) )
