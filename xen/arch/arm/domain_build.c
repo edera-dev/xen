@@ -1689,7 +1689,22 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
      * used_by DOMID_XEN so this check comes first.
      */
     if ( device_get_class(node) == DEVICE_INTERRUPT_CONTROLLER )
+    {
+        /*
+         * The controller itself is emulated, so it is never handed over by
+         * handle_device().  Its GICv2m MSI frames are not emulated, though,
+         * and the hardware domain cannot reach them any other way: do for
+         * them what handle_device() would have.  See gic-v2m.c.
+         */
+        if ( is_hardware_domain(d) && node == dt_interrupt_controller )
+        {
+            res = gicv2m_hwdom_setup(d, node, p2mt);
+            if ( res )
+                return res;
+        }
+
         return make_gic_node(d, kinfo->fdt, node);
+    }
     if ( dt_match_node(timer_matches, node) )
         return make_timer_node(kinfo);
 
