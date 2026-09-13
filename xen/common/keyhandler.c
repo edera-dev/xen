@@ -28,7 +28,10 @@
 static unsigned char keypress_key;
 static bool alt_key_handling;
 
-/* How long 'd' waits for one CPU to answer before giving up on it. */
+/*
+ * How long 'd' waits for one CPU, and '0' for one vCPU, to answer before
+ * giving up on it and moving on to the next.
+ */
 #define STATE_DUMP_TIMEOUT  SECONDS(1)
 
 static keyhandler_fn_t cf_check show_handlers, cf_check dump_hwdom_registers,
@@ -144,8 +147,15 @@ static void cf_check auto_keys_action(void *unused)
     printk("*** auto_debug_keys: '%s', %u run%s left ***\n",
            auto_keys, auto_runs, auto_runs == 1 ? "" : "s");
 
+    /*
+     * need_context: this is tasklet context, so there is no interrupted
+     * register frame to describe.  Without it 'd' prints nothing at all for
+     * the CPU it runs on -- get_irq_regs() is NULL outside an interrupt, and
+     * the guest_cpu_user_regs() fallback is by definition a guest frame on an
+     * idle vCPU, so dump_execstate() skips both of its cases.
+     */
     for ( k = auto_keys; *k; k++ )
-        handle_keypress(*k, false);
+        handle_keypress(*k, true);
 
     if ( --auto_runs )
         set_timer(&auto_keys_timer, NOW() + SECONDS(auto_period));
@@ -334,13 +344,50 @@ static void cf_check dump_registers(
 
 static DECLARE_TASKLET(dump_hwdom_tasklet, NULL, NULL);
 
+/*
+ * vcpu_show_execution_state() pauses the vCPU it is about to describe, and
+ * pausing a running one waits for the pCPU underneath it to reach a
+ * scheduling point.  That pCPU is very often the subject of the
+ * investigation, so wait for it here, where the wait can be bounded: ask the
+ * vCPU to stop, give it a moment, and say who did not stop rather than
+ * spinning forever.  Spinning forever costs more than this one dump -- it is
+ * done from a tasklet, so it takes out softirqs on the dumping CPU as well,
+ * and with them every other dump and the console's own input poll.
+ *
+ * The vCPU stays paused across the dump either way, so the vcpu_pause()
+ * inside vcpu_show_execution_state() returns immediately.
+ */
+static void dump_hwdom_vcpu(struct vcpu *v)
+{
+    s_time_t deadline;
+
+    if ( v == current )
+    {
+        vcpu_show_execution_state(v);
+        return;
+    }
+
+    vcpu_pause_nosync(v);
+
+    deadline = NOW() + STATE_DUMP_TIMEOUT;
+    while ( v->is_running && NOW() <= deadline )
+        cpu_relax();
+
+    if ( v->is_running )
+        printk("*** %pv did not stop running on CPU%u ***\n", v, v->processor);
+    else
+        vcpu_show_execution_state(v);
+
+    vcpu_unpause(v);
+}
+
 static void cf_check dump_hwdom_action(void *data)
 {
     struct vcpu *v = data;
 
     for ( ; ; )
     {
-        vcpu_show_execution_state(v);
+        dump_hwdom_vcpu(v);
         if ( (v = v->next_in_list) == NULL )
             break;
         if ( softirq_pending(smp_processor_id()) )
@@ -370,7 +417,7 @@ static void cf_check dump_hwdom_registers(unsigned char key)
             tasklet_schedule_on_cpu(&dump_hwdom_tasklet, v->processor);
             return;
         }
-        vcpu_show_execution_state(v);
+        dump_hwdom_vcpu(v);
     }
 }
 
