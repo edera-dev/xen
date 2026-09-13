@@ -49,6 +49,7 @@
  * GNU General Public License for more details.
  */
 
+#include <xen/cpumask.h>
 #include <xen/device_tree.h>
 #include <xen/errno.h>
 #include <xen/init.h>
@@ -200,6 +201,12 @@ static struct vtcon {
 
     /* Receive is polled: see the comment on vtcon_rx_poll(). */
     struct timer rx_timer;
+
+    /* Transmit stall accounting: see the comment on vtcon_tx_ready(). */
+    s_time_t tx_give_up;            /* when to start discarding, 0 if not full */
+    bool tx_stalled;                /* discarding now */
+    bool tx_recovered;              /* stalled, then drained: say so once */
+    unsigned long tx_dropped;       /* characters lost to the stall */
 } vtcon_com;
 
 /* vtcon=<bus>:<dev>.<fn>, to override which device is used. */
@@ -208,6 +215,9 @@ string_param("vtcon", opt_vtcon);
 
 #define RX_POLL_INTERVAL    MILLISECS(10)
 #define RX_POLL_BUDGET      64
+
+/* How long a full transmit ring is given to drain: see vtcon_tx_ready(). */
+#define TX_STALL_TIMEOUT    MILLISECS(200)
 
 /*
  * A bounded spin for the handful of places the specification says to wait for
@@ -622,9 +632,29 @@ static void cf_check vtcon_rx_poll(void *data)
     struct serial_port *port = data;
     struct vtcon *v = port->uart;
     unsigned int budget = RX_POLL_BUDGET;
+    unsigned long flags, dropped = 0;
 
     while ( budget-- && vq_used_pending(&v->rx) )
         serial_rx_interrupt(port);
+
+    /*
+     * Say when output was lost, from here rather than from vtcon_tx_ready():
+     * that runs inside printk() with the port lock held and with the device
+     * demonstrably not listening, so it is the one place in the driver that
+     * cannot report anything.
+     */
+    spin_lock_irqsave(&port->tx_lock, flags);
+    if ( v->tx_recovered )
+    {
+        v->tx_recovered = false;
+        dropped = v->tx_dropped;
+        v->tx_dropped = 0;
+    }
+    spin_unlock_irqrestore(&port->tx_lock, flags);
+
+    if ( dropped )
+        printk("vtcon: device stopped draining the transmit ring; "
+               "%lu character%s dropped\n", dropped, dropped == 1 ? "" : "s");
 
     set_timer(&v->rx_timer, NOW() + RX_POLL_INTERVAL);
 }
@@ -636,26 +666,92 @@ static void __init vtcon_init_postirq(struct serial_port *port)
     if ( !v->ready )
         return;
 
+    /*
+     * The boot CPU is the only one online this early; vtcon_rx_off_cpu0()
+     * moves the poll somewhere better as soon as there is somewhere better.
+     */
     init_timer(&v->rx_timer, vtcon_rx_poll, port, 0);
     set_timer(&v->rx_timer, NOW() + RX_POLL_INTERVAL);
 }
 
 /*
+ * Console input is how a stuck machine gets asked what it is doing, so the
+ * poll that collects it must not be queued behind the thing being asked
+ * about.  On the boot CPU it would be: that is where the hardware domain's
+ * first vCPU is placed, and a hardware domain that has wedged its CPU -- or a
+ * Xen that cannot get back off it -- takes the 'CTRL-a' escape with it, which
+ * is exactly when it is wanted.  Any other pCPU is idle until a guest is put
+ * on it, so use the highest-numbered one.
+ */
+static int __init cf_check vtcon_rx_off_cpu0(void)
+{
+    struct vtcon *v = &vtcon_com;
+
+    if ( v->ready )
+        migrate_timer(&v->rx_timer, cpumask_last(&cpu_online_map));
+
+    return 0;
+}
+__initcall(vtcon_rx_off_cpu0);
+
+/*
  * Free transmit descriptors.  Reclaiming here rather than in putc() is what
  * lets the serial layer do the waiting: it spins on this returning zero.
+ *
+ * That spin is bounded, and has to be.  The serial layer waits with the port
+ * lock held, interrupts off on the printing CPU and no softirq served, which
+ * is right for a UART -- a FIFO drains on its own, so the wait is measured in
+ * character times and always ends.  A virtio ring is not a FIFO: it drains
+ * only because something on the host is consuming it, and if that stops, no
+ * amount of waiting on this side will start it again.  Xen would then be spun
+ * in the middle of a printk forever, taking with it whichever CPU was
+ * unlucky enough to be printing -- which, with a hardware domain whose early
+ * console is HYPERVISOR_console_io, is a CPU running the hardware domain, and
+ * so looks exactly like a guest that hung.
+ *
+ * So once the ring has been full for TX_STALL_TIMEOUT, report an error
+ * instead, which makes the serial layer discard the character and carry on.
+ * A console that loses output is a nuisance.  A console that stops the
+ * hypervisor is the failure this driver exists to avoid.
  */
 static int cf_check vtcon_tx_ready(struct serial_port *port)
 {
     struct vtcon *v = port->uart;
     unsigned int used;
+    int free;
 
     if ( !v->ready )
         return -EINVAL;             /* discard rather than spin forever */
 
     v->tx.last_used += vq_used_pending(&v->tx);
     used = (uint16_t)(v->tx.next_avail - v->tx.last_used);
+    free = v->tx.size - used;
 
-    return v->tx.size - used;
+    if ( free )
+    {
+        v->tx_give_up = 0;
+        /* Leave the count alone; vtcon_rx_poll() reports and clears it. */
+        if ( v->tx_stalled )
+        {
+            v->tx_stalled = false;
+            v->tx_recovered = true;
+        }
+
+        return free;
+    }
+
+    /* Full.  Give the device a bounded amount of time to catch up. */
+    if ( !v->tx_give_up )
+        v->tx_give_up = NOW() + TX_STALL_TIMEOUT;
+    else if ( NOW() > v->tx_give_up )
+    {
+        v->tx_stalled = true;
+        v->tx_dropped++;
+
+        return -EINVAL;
+    }
+
+    return 0;
 }
 
 static void cf_check vtcon_putc(struct serial_port *port, char c)
