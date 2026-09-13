@@ -8,6 +8,7 @@
 #include <xen/libfdt/libfdt.h>
 #include <xen/mm.h>
 #include <xen/sched.h>
+#include <xen/serial.h>
 #include <xen/sizes.h>
 #include <xen/static-shmem.h>
 #include <xen/types.h>
@@ -481,6 +482,22 @@ int __init make_chosen_node(const struct kernel_info *kinfo)
         res = fdt_property(fdt, "bootargs", bootargs, strlen(bootargs) + 1);
         if ( res )
            return res;
+    }
+
+    /*
+     * Xen's console is a PCI function on this machine, and Linux's generic
+     * PCI host driver assigns every BAR it finds rather than claiming what
+     * the VMM already programmed.  Re-assigning BAR0 of the console moves the
+     * device out from under Xen mid-sentence: boot 10 of the
+     * Virtualization.framework bring-up printed its last line immediately
+     * before dom0 wrote 00:05.0's new address.  linux,pci-probe-only exists
+     * for exactly this -- claim what is there, assign nothing.
+     */
+    if ( vtcon_in_use() )
+    {
+        res = fdt_property_cell(fdt, "linux,pci-probe-only", 1);
+        if ( res )
+            return res;
     }
 
     /*

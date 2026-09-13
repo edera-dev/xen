@@ -1314,11 +1314,87 @@ it was harmful.
 | `ISTATUS survived ...` | The register is a write-only shadow as far as the comparison is concerned. Same conclusion, one step sooner. |
 | `IRQs taken while disabled` in single digits, `#PPIs` still millions | The ten million are not the disabled PPI 27 and this section's arithmetic is wrong. Find which PPI by adding per-INTID counting. |
 
+### Boot 10: the storm is over, and the console gets moved out from under Xen
+
+Boot 10 is the first boot where dom0 runs at speed. Its own clock and the
+things on it look like an ordinary arm64 boot: `kfence` at 0.008, both
+consoles at 0.010, `smp: Brought up 1 node, 2 CPUs` at 0.073, `devtmpfs` at
+0.090, the network stack at 0.146, a 275 MB initramfs unpacked between 0.155
+and 0.503, then `io scheduler bfq registered` and PCI enumeration out to
+0.556. Every boot before this one stopped at `sched_clock`.
+
+**Two stuck virtual timer interrupts in the entire boot**, against boot 9's
+112 in twenty seconds with ten million dropped interrupts behind them. The
+report prints the first four and there are only two, so that is the whole
+count. Pushing the deadline out is the lever.
+
+What it is not is an explanation. The report says so:
+
+```
+(XEN) CPU0: d0v0's virtual timer fired again with IMASK already set (#1)
+(XEN)   CNTV_CTL 0000000000000007 -> 0000000000000007, CNTVCT 0000000002056b0f,
+        CNTV_CVAL 7fffffffffffffff, CNTVOFF 0000000012ead2b7
+```
+
+`CNTV_CVAL` reads back as the pushed value, so the write landed. `CNTVCT` is
+`0x02056b0f`, twenty-four thousand years short of it. And `CNTV_CTL` still
+reads `0x7` — `ISTATUS` set, immediately after an `isb`, with the deadline in
+the far future. **The register Xen reads and the comparison the interrupt
+line is derived from are not the same thing.** The write reaches the one that
+matters; the read does not come from it. That also retires the puzzle of
+boots 7 and 8: `IMASK` and `ENABLE` "persisting" across nine million
+interrupts was the same stale read, not proof that the writes had taken.
+
+So the shape of this platform's virtual timer is: writes work, reads of
+`CNTV_CTL` do not reflect them, and the interrupt line follows the
+comparator and nothing else. Xen's handler now works entirely by writing.
+
+### Where boot 10 stops: dom0 moves Xen's console
+
+The last two lines of the log are:
+
+```
+[    0.555589] pci 0000:00:01.0: BAR 0 [mem 0x280000000-0x28000ffff 64bit]: assigned
+[    0.556070] pci 0000:00:05.0: BAR 0 [mem 0x280010000-0x28001ffff 64bit]: assigned
+```
+
+`00:05.0` is Xen's console — `vtcon: virtio-console at 00:05.0, BAR0
+0x00000280060000` from the top of the same log. dom0 has just decided to move
+BAR0 from `0x280060000` to `0x280010000`, and the next thing
+`pci_assign_resource()` does is write that address into the device's
+configuration space. Xen's mapping still points at `0x280060000`, where there
+is now nothing. The log ends on the line before the write.
+
+This is §2's "dom0 must not drive the same device", one layer lower than §2
+expected: not a driver binding to the console, but the PCI core moving it
+before any driver is involved. Linux's generic host driver (`pci-host-generic`,
+the DT path) assigns BARs rather than claiming what the VMM already
+programmed, so every device in the machine gets a new address — `00:01.0`
+moved to where `00:0c.0` used to be, and `00:05.0` to where `00:0b.0` was.
+
+`linux,pci-probe-only` in `/chosen` is the property that exists for exactly
+this case: with it set, `pci_host_probe()` claims the existing resources and
+assigns nothing. Xen builds dom0's device tree, so boot 11 adds it — and only
+when `vtcon_in_use()`, i.e. only when Xen actually owns a PCI function that
+must not move.
+
+### Two things in boot 10 that are not the bug, and one that is next
+
+- **`kvm [1]: HYP mode not available`.** dom0 is at EL1 under Xen. Correct.
+- **`ARM FF-A: FFA_VERSION returned not supported`** after `Unhandled SMC/HVC:
+  0x84000063`. Linux probing for a firmware framework that is not there.
+- **`PHYSDEVOP cmd=25: not implemented`, `cmd=15: not implemented`**, once per
+  PCI function, each followed by `Failed to add - passthrough or MSI/MSI-X
+  might fail!`. `arch/arm/physdev.c` returns `-ENOSYS` for everything, so
+  `xen_add_device()` cannot register any of dom0's PCI devices with Xen. This
+  is item 9 arriving on schedule: the root filesystem is on `00:06.0` or
+  `00:07.0` (`[1af4:1042]`, virtio-blk) and it needs MSI-X through the v2m
+  frame. It is the next thing after the console.
+
 ### The list
 
-In rough order of likelihood — though after boot 9 the only one that matters
-is 14, and everything above it is either settled or about a stage the boot
-now gets past:
+In rough order of likelihood — though after boot 10 the timer is settled and
+the two that matter are 9 and 15:
 
 1. **`Could not set up d0 guest OS (rc = -22)`**, right after `Loading
    ramdisk from boot module @ ...`. This is the first thing that actually
@@ -1422,7 +1498,12 @@ now gets past:
    `Maintenance interrupts` at zero and every other pCPU idle. Xen masks the
    guest's virtual timer in `vtimer_interrupt()`, the write sticks, and the
    line does not follow; clearing `ENABLE` as well changed nothing. This is
-   the one left. Boot 9 made the interrupts cheap rather than absent, which
-   was worth a factor of a hundred and the whole of dom0's boot so far, and
-   its report line proved Xen is looking at the guest's own timer registers.
-   `ISTATUS` is the last input to the line that has not been tried.
+   *Fixed in boot 10 by pushing the deadline out.* Two stuck interrupts in a
+   whole boot, and dom0 runs at speed. The line follows the comparator and
+   nothing else, and `CNTV_CTL` reads back stale — which is why `IMASK` and
+   `ENABLE` appeared to persist across nine million interrupts without
+   helping.
+15. **dom0 moves Xen's console.** Linux's DT PCI host driver assigns BARs
+   rather than claiming them, so `00:05.0` gets a new BAR0 and Xen's mapping
+   stops pointing at the device. Boot 11 sets `linux,pci-probe-only` in the
+   device tree Xen builds for dom0, and only when Xen owns a PCI function.

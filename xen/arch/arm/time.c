@@ -338,8 +338,8 @@ static void vtimer_report_stuck(register_t before, register_t after)
            READ_SYSREG64_EL0(CNTV_CVAL), READ_SYSREG64(CNTVOFF_EL2));
     printk(XENLOG_ERR "  %s\n",
            (after & CNTx_CTL_PENDING)
-           ? "ISTATUS survived the deadline being pushed out: nothing in this timer drives the line"
-           : "ISTATUS cleared by pushing the deadline out; the guest re-arms it itself");
+           ? "ISTATUS still reads set with the deadline in the future: this read is not live"
+           : "ISTATUS cleared with the deadline; the guest re-arms it itself");
 }
 
 static void vtimer_interrupt(int irq, void *dev_id)
@@ -400,6 +400,14 @@ static void vtimer_interrupt(int irq, void *dev_id)
          * the guest un-pushes the deadline itself when it re-arms -- it is
          * about to, because the interrupt this is all about is already queued
          * in its vGIC.
+         *
+         * Boot 10 says this is the lever: two of these in a whole boot, where
+         * boot 9 had a hundred and twelve and ten million interrupts behind
+         * them.  It also says not to trust the read-back -- ISTATUS still
+         * reads set immediately after a deadline twenty-four thousand years
+         * out -- so the register Xen reads and the comparison the interrupt
+         * line is derived from are not the same thing.  The write reaches the
+         * one that matters.
          */
         current->arch.virt_timer.cval = READ_SYSREG64_EL0(CNTV_CVAL);
         WRITE_SYSREG64_EL0(VTIMER_CVAL_PUSHED, CNTV_CVAL);

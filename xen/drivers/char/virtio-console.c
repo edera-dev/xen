@@ -514,6 +514,11 @@ static unsigned int vq_used_pending(struct vtcon_vq *vq)
     return (uint16_t)(idx - vq->last_used);
 }
 
+bool vtcon_in_use(void)
+{
+    return vtcon_com.ready;
+}
+
 static void __init vtcon_init_preirq(struct serial_port *port)
 {
     struct vtcon *v = port->uart;
