@@ -149,6 +149,33 @@ void vcpu_timer_destroy(struct vcpu *v)
     kill_timer(&v->arch.phys_timer.timer);
 }
 
+/*
+ * How long a blocked vCPU may go with nothing armed.
+ *
+ * The software fallback is the only thing that can wake a blocked vCPU: the
+ * PPI is masked while no guest is on the pCPU, and vtimer_interrupt() does not
+ * inject for an idle vCPU even when it is unmasked.  Both of the decisions
+ * below not to arm it rest on CNTV_CTL_EL0 reading back what was last written
+ * to it -- which is the very property this platform does not offer, and the
+ * reason the rest of this file exists.
+ *
+ * So never let "nothing armed" be permanent.  A second is far longer than any
+ * timer a guest would notice being late by, far shorter than the twenty-one
+ * seconds it takes RCU to declare a stall, and costs one wakeup per second on
+ * a vCPU that is doing nothing anyway.  The guest re-arming on the way past is
+ * what ends it.
+ *
+ * This is a backstop, not a mechanism: on a machine whose timer reads back
+ * correctly it changes nothing that was going to happen anyway.
+ */
+#define VTIMER_BACKSTOP  SECONDS(1)
+
+static void vtimer_arm_backstop(struct vcpu *v)
+{
+    perfc_incr(virt_timer_backstop);
+    set_timer(&v->arch.virt_timer.timer, NOW() + VTIMER_BACKSTOP);
+}
+
 void virt_timer_save(struct vcpu *v)
 {
     ASSERT(!is_idle_vcpu(v));
@@ -194,16 +221,22 @@ void virt_timer_save(struct vcpu *v)
         else
         {
             /*
-             * Due, and already injected.  Arming here is a livelock: the timer
-             * fires the instant it is armed, wakes the vCPU, which switches
-             * in, saves, and arms it again, leaving the guest no time to
-             * re-arm its own deadline.
+             * Due, and already injected.  Arming for the deadline itself is a
+             * livelock: the timer fires the instant it is armed, wakes the
+             * vCPU, which switches in, saves, and arms it again, leaving the
+             * guest no time to re-arm its own deadline.  The guest has the
+             * interrupt and only it can move things on, so wait -- but not
+             * forever, hence the backstop.
              */
             perfc_incr(virt_timer_sw_past);
+            vtimer_arm_backstop(v);
         }
     }
     else
+    {
         perfc_incr(virt_timer_sw_idle);
+        vtimer_arm_backstop(v);
+    }
 }
 
 void virt_timer_restore(struct vcpu *v)
