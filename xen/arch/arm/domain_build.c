@@ -710,6 +710,10 @@ static int __init write_properties(struct domain *d, struct kernel_info *kinfo,
                 return res;
         }
 
+        res = make_chosen_pci_probe_only(kinfo->fdt);
+        if ( res )
+            return res;
+
         /*
          * If the bootloader provides an initrd, we must create a placeholder
          * for the initrd properties. The values will be replaced later.

@@ -1378,6 +1378,24 @@ assigns nothing. Xen builds dom0's device tree, so boot 11 adds it — and only
 when `vtcon_in_use()`, i.e. only when Xen actually owns a PCI function that
 must not move.
 
+### Boot 11: the same ending, because the property went to the wrong builder
+
+Boot 11 stops on the same two lines, and says so before it gets there:
+`Loading d0 DTB to 0x0000000078000000-0x000000007800085c`, byte for byte the
+size boot 10's was. A new property would have made it bigger. Linux agrees —
+`of_pci_check_probe_only()` prints `PCI: PROBE_ONLY enabled` when it finds
+one, and nothing of the sort is in the log.
+
+`make_chosen_node()` is not the function that builds a normal dom0's
+`/chosen`. It serves the ACPI path and dom0less; a dom0 whose device tree is
+copied from the host gets its `/chosen` patched by `write_properties()` in
+`arch/arm/domain_build.c`, which is where `bootargs` and the initrd
+placeholders are written. Boot 12 says it in both places, through one helper,
+so neither can drift from the other.
+
+Everything else in boot 11 repeats boot 10 exactly, including two stuck
+virtual timer interrupts and no third.
+
 ### Two things in boot 10 that are not the bug, and one that is next
 
 - **`kvm [1]: HYP mode not available`.** dom0 is at EL1 under Xen. Correct.
