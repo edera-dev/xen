@@ -2057,6 +2057,37 @@ int __init construct_domain(struct domain *d, struct kernel_info *kinfo)
     return 0;
 }
 
+/*
+ * How much memory the hardware domain gets when nothing has said.
+ *
+ * A fixed number cannot be right on two machines of different sizes, and the
+ * 512M this used to fall back to is not enough to reach a login prompt with a
+ * distribution initramfs.  Take a share of the host's memory instead, which
+ * Xen has already measured -- from the EFI memory map when booted as an EFI
+ * application, from the device tree otherwise.
+ *
+ * A quarter, so that three quarters of a machine of any size is still
+ * available for guests, with a floor of 1G because below that a general
+ * purpose dom0 struggles whatever the machine is, and a ceiling of 4G because
+ * a dom0 that runs the toolstack and the back-ends does not get better with
+ * more.  The floor gives way on a machine too small to honour it: leaving the
+ * hypervisor no memory to run guests in would defeat the purpose.
+ *
+ * This is only the default.  dom0_mem= overrides it and is still the right
+ * thing to pass on a machine with a particular job to do.
+ */
+static uint64_t __init default_dom0_mem(void)
+{
+    uint64_t avail = (uint64_t)total_pages << PAGE_SHIFT;
+    uint64_t mem = avail / 4;
+
+    mem = max(mem, (uint64_t)MB(1024));
+    mem = min(mem, (uint64_t)GB(4));
+    mem = min(mem, avail - avail / 4);
+
+    return mem & PAGE_MASK;
+}
+
 static int __init construct_dom0(struct domain *d)
 {
     struct kernel_info kinfo = KERNEL_INFO_INIT;
@@ -2073,8 +2104,9 @@ static int __init construct_dom0(struct domain *d)
 
     if ( dom0_mem <= 0 )
     {
-        warning_add("PLEASE SPECIFY dom0_mem PARAMETER - USING 512M FOR NOW\n");
-        dom0_mem = MB(512);
+        dom0_mem = default_dom0_mem();
+        printk("No dom0_mem, using %"PRIu64" MiB of the host's %lu MiB\n",
+               dom0_mem >> 20, ((uint64_t)total_pages << PAGE_SHIFT) >> 20);
     }
 
     d->max_pages = dom0_mem >> PAGE_SHIFT;
