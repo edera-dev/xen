@@ -15,6 +15,7 @@
 #include <xen/mm.h>
 #include <xen/sched.h>
 #include <xen/acpi.h>
+#include <xen/serial.h>
 #include <xen/event.h>
 #include <xen/iocap.h>
 #include <xen/device_tree.h>
@@ -322,8 +323,10 @@ static int __init acpi_create_xsdt(struct domain *d, struct membank tbl_add[])
     table = acpi_os_map_memory(rsdp_tbl->xsdt_physical_address,
                                sizeof(struct acpi_table_header));
 
-    /* Add place for STAO table in XSDT table */
+    /* Add places for the tables Xen appends rather than replaces. */
     table_size = table->length + sizeof(u64);
+    if ( tbl_add[TBL_SSDT].size )
+        table_size += sizeof(u64);
     entry_count = (table->length - sizeof(struct acpi_table_header))
                   / sizeof(u64);
     base_ptr = d->arch.efi_acpi_table
@@ -340,7 +343,9 @@ static int __init acpi_create_xsdt(struct domain *d, struct membank tbl_add[])
     if ( tbl_add[TBL_IORT].size )
         acpi_xsdt_modify_entry(xsdt->table_offset_entry, entry_count,
                                ACPI_SIG_IORT, tbl_add[TBL_IORT].start);
-    xsdt->table_offset_entry[entry_count] = tbl_add[TBL_STAO].start;
+    xsdt->table_offset_entry[entry_count++] = tbl_add[TBL_STAO].start;
+    if ( tbl_add[TBL_SSDT].size )
+        xsdt->table_offset_entry[entry_count++] = tbl_add[TBL_SSDT].start;
 
     xsdt->header.length = table_size;
     checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, xsdt), table_size);
@@ -386,6 +391,94 @@ static int __init acpi_create_stao(struct domain *d, struct membank tbl_add[])
 
     tbl_add[TBL_STAO].start = d->arch.efi_acpi_gpa + offset;
     tbl_add[TBL_STAO].size = table_size;
+
+    return 0;
+}
+
+/*
+ * A supplementary SSDT giving the PCI host bridge a "PCI Boot Configuration"
+ * _DSM, which tells the hardware domain to keep the BAR assignments it was
+ * handed rather than making its own.
+ *
+ * This is the ACPI counterpart of the "linux,pci-probe-only" property Xen puts
+ * in a device-tree hardware domain's /chosen, and it is needed for the same
+ * reason: where Xen's console is a PCI function, the domain must not move it.
+ * It matters more here than it does there.  Xen hides the function it owns, so
+ * the domain cannot see it at all, and an allocator that reassigns every BAR
+ * will happily give the address behind that hole to some other device -- which
+ * then decodes the same addresses as Xen's console.
+ *
+ * The device tree form cannot be used on this path: a domain booted with ACPI
+ * never unflattens the device tree, so nothing reads /chosen.  Function 5 of
+ * the PCI Firmware Specification's _DSM is the mechanism that exists for this,
+ * and returning zero from it is what asks for the firmware's assignment to be
+ * preserved.
+ *
+ * Emitted only when Xen owns a PCI function, since it constrains the domain's
+ * resource allocation for every device on the bridge.
+ *
+ * Regenerate with `iasl -p pci-preserve pci-preserve.asl` from:
+ *
+ *   DefinitionBlock ("", "SSDT", 2, "XenARM", "PCIPRSV", 0x00000001)
+ *   {
+ *       External (\_SB.PCI0, DeviceObj)
+ *
+ *       Scope (\_SB.PCI0)
+ *       {
+ *           Method (_DSM, 4, NotSerialized)
+ *           {
+ *               If ((Arg0 == ToUUID ("e5c937d0-3553-4d7a-9117-ea4d19c3434d")))
+ *               {
+ *                   If ((Arg2 == Zero))
+ *                   {
+ *                       Return (Buffer (One) { 0x21 })   // functions 0 and 5
+ *                   }
+ *
+ *                   If ((Arg2 == 0x05))
+ *                   {
+ *                       Return (Zero)                    // preserve
+ *                   }
+ *               }
+ *
+ *               Return (Buffer (One) { 0x00 })
+ *           }
+ *       }
+ *   }
+ */
+static const uint8_t __initconst pci_preserve_ssdt[] =
+{
+    0x53, 0x53, 0x44, 0x54, 0x77, 0x00, 0x00, 0x00, 0x02, 0x2a, 0x58, 0x65,
+    0x6e, 0x41, 0x52, 0x4d, 0x50, 0x43, 0x49, 0x50, 0x52, 0x53, 0x56, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x49, 0x4e, 0x54, 0x4c, 0x08, 0x04, 0x26, 0x20,
+    0xa0, 0x0f, 0x00, 0x15, 0x5c, 0x2e, 0x5f, 0x53, 0x42, 0x5f, 0x50, 0x43,
+    0x49, 0x30, 0x06, 0x00, 0x10, 0x42, 0x04, 0x5c, 0x2e, 0x5f, 0x53, 0x42,
+    0x5f, 0x50, 0x43, 0x49, 0x30, 0x14, 0x35, 0x5f, 0x44, 0x53, 0x4d, 0x04,
+    0xa0, 0x29, 0x93, 0x68, 0x11, 0x13, 0x0a, 0x10, 0xd0, 0x37, 0xc9, 0xe5,
+    0x53, 0x35, 0x7a, 0x4d, 0x91, 0x17, 0xea, 0x4d, 0x19, 0xc3, 0x43, 0x4d,
+    0xa0, 0x09, 0x93, 0x6a, 0x00, 0xa4, 0x11, 0x03, 0x01, 0x21, 0xa0, 0x07,
+    0x93, 0x6a, 0x0a, 0x05, 0xa4, 0x00, 0xa4, 0x11, 0x03, 0x01, 0x00,
+};
+
+static int __init acpi_create_ssdt(struct domain *d, struct membank tbl_add[])
+{
+    u32 table_size = sizeof(pci_preserve_ssdt);
+    u32 offset = acpi_get_table_offset(tbl_add, TBL_SSDT);
+    struct acpi_table_header *ssdt;
+    u8 *base_ptr, checksum;
+
+    if ( !vtcon_in_use() )
+        return 0;
+
+    base_ptr = d->arch.efi_acpi_table + offset;
+    memcpy(base_ptr, pci_preserve_ssdt, table_size);
+
+    ssdt = (struct acpi_table_header *)base_ptr;
+    ssdt->checksum = 0;
+    checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, ssdt), table_size);
+    ssdt->checksum -= checksum;
+
+    tbl_add[TBL_SSDT].start = d->arch.efi_acpi_gpa + offset;
+    tbl_add[TBL_SSDT].size = table_size;
 
     return 0;
 }
@@ -497,6 +590,7 @@ static int __init estimate_acpi_efi_size(struct domain *d,
 
     acpi_len = ROUNDUP(sizeof(struct acpi_table_fadt), 8);
     acpi_len += ROUNDUP(sizeof(struct acpi_table_stao), 8);
+    acpi_len += ROUNDUP(sizeof(pci_preserve_ssdt), 8);
 
     madt_size = gic_get_hwdom_madt_size(d);
     acpi_len += ROUNDUP(madt_size, 8);
@@ -527,8 +621,8 @@ static int __init estimate_acpi_efi_size(struct domain *d,
         return -EINVAL;
     }
 
-    /* Add place for STAO table in XSDT table */
-    acpi_len += ROUNDUP(table->length + sizeof(u64), 8);
+    /* Add places for the tables Xen appends to the XSDT. */
+    acpi_len += ROUNDUP(table->length + 2 * sizeof(u64), 8);
     acpi_os_unmap_memory(table, sizeof(struct acpi_table_header));
 
     acpi_len += ROUNDUP(sizeof(struct acpi_table_rsdp), 8);
@@ -583,6 +677,10 @@ int __init prepare_acpi(struct domain *d, struct kernel_info *kinfo)
 
     /* A failure here is not fatal; see the comment on acpi_create_iort(). */
     acpi_create_iort(d, tbl_add);
+
+    rc = acpi_create_ssdt(d, tbl_add);
+    if ( rc != 0 )
+        return rc;
 
     rc = acpi_create_xsdt(d, tbl_add);
     if ( rc != 0 )
