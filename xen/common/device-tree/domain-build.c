@@ -8,6 +8,7 @@
 #include <xen/libfdt/libfdt.h>
 #include <xen/mm.h>
 #include <xen/sched.h>
+#include <xen/serial.h>
 #include <xen/sizes.h>
 #include <xen/static-shmem.h>
 #include <xen/types.h>
@@ -459,6 +460,26 @@ void __init initrd_load(struct kernel_info *kinfo,
 }
 
 /*
+ * Xen's console can be a PCI function, and Linux's generic PCI host driver
+ * assigns every BAR it finds rather than claiming what the VMM already
+ * programmed.  Re-assigning BAR0 of the console moves the device out from
+ * under Xen mid-sentence.  linux,pci-probe-only exists for exactly this --
+ * claim what is there, assign nothing.  A machine whose console is a UART
+ * never sees the property.
+ *
+ * Both places the hardware domain's /chosen is built have to say it: this one
+ * for ACPI and dom0less, and write_properties() for a device tree copied from
+ * the host, which is the path a normal dom0 takes.
+ */
+int __init make_chosen_pci_probe_only(void *fdt)
+{
+    if ( !vtcon_in_use() )
+        return 0;
+
+    return fdt_property_cell(fdt, "linux,pci-probe-only", 1);
+}
+
+/*
  * This function is used as part of the device tree generation for Dom0
  * on ACPI systems (on platform where CONFIG_ACPI=y), and DomUs started
  * directly from Xen based on device tree information.
@@ -482,6 +503,10 @@ int __init make_chosen_node(const struct kernel_info *kinfo)
         if ( res )
            return res;
     }
+
+    res = make_chosen_pci_probe_only(fdt);
+    if ( res )
+        return res;
 
     /*
      * If the bootloader provides an initrd, we must create a placeholder
