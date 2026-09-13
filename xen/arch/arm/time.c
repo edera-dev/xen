@@ -265,10 +265,16 @@ static void htimer_interrupt(int irq, void *dev_id)
 static DEFINE_PER_CPU(struct timer, vtimer_requiesce);
 static DEFINE_PER_CPU(bool, vtimer_requiesce_ready);
 
+static DEFINE_PER_CPU(bool, vtimer_ppi_masked);
+
 static void vtimer_ppi_set_enabled(bool enable)
 {
     struct irq_desc *desc = irq_to_desc(timer_irq[TIMER_VIRT_PPI]);
     unsigned long flags;
+
+    /* Idempotent: three different callers reach for this. */
+    if ( this_cpu(vtimer_ppi_masked) == !enable )
+        return;
 
     spin_lock_irqsave(&desc->lock, flags);
     if ( enable )
@@ -276,6 +282,18 @@ static void vtimer_ppi_set_enabled(bool enable)
     else
         desc->handler->disable(desc);
     spin_unlock_irqrestore(&desc->lock, flags);
+
+    this_cpu(vtimer_ppi_masked) = !enable;
+}
+
+/* Called from virt_timer_restore(), on the pCPU the guest is about to run on. */
+void vtimer_ppi_unmask(void)
+{
+    if ( unlikely(this_cpu(vtimer_ppi_masked)) )
+    {
+        perfc_incr(virt_timer_unmask);
+        vtimer_ppi_set_enabled(true);
+    }
 }
 
 static void cf_check vtimer_requiesce_expired(void *unused)
@@ -356,25 +374,26 @@ static void vtimer_interrupt(int irq, void *dev_id)
      * No guest on this pCPU, so there is nobody to inject into -- but there
      * is still a line to quiet.  Ignoring it is what upstream does, and it is
      * right on a platform where virt_timer_save()'s clearing of ENABLE stops
-     * the timer; here it does not, because the output follows the comparator
-     * and nothing else, so the guest's expired deadline keeps the line up
-     * with the idle vCPU in front of it.  Boot 18 took 9,609,700 of these on
-     * CPU0 in thirty seconds -- 330,000 a second, uncounted because this
-     * return is above the counter -- and starved the runnable dom0 vCPU that
-     * was waiting for that very pCPU to reach its scheduler.
+     * the timer; here it does not, so the guest's expired deadline keeps the
+     * line up with the idle vCPU in front of it and the handler returns into
+     * the same interrupt.  Boot 18 took 9,609,700 of these on CPU0 in thirty
+     * seconds and starved the runnable dom0 vCPU waiting for that pCPU.
      *
-     * Push the deadline out, the same lever that works for a running guest.
-     * Nothing is lost: the guest's real deadline is already saved in
-     * v->arch.virt_timer.cval and virt_timer_restore() writes it back before
-     * the guest runs again.
+     * Boot 19 tried pushing the deadline out here, the lever that works for a
+     * running guest, and it does not work for this one: 10,410,919 of them in
+     * twenty seconds, now counted rather than inferred.  Nothing Xen writes to
+     * this timer reaches the line while no guest is on the pCPU.
+     *
+     * Mask the PPI instead.  That lever is measured to work -- "IRQs taken
+     * while disabled at the GIC" has been zero across every boot that disabled
+     * it -- and there is nothing to lose by holding it: Xen does not use the
+     * virtual timer for itself, and virt_timer_restore() unmasks it before a
+     * guest runs here again.
      */
     if ( unlikely(is_idle_vcpu(current)) )
     {
         perfc_incr(virt_timer_no_guest);
-
-        WRITE_SYSREG64_EL0(VTIMER_CVAL_PUSHED, CNTV_CVAL);
-        WRITE_SYSREG_EL0(READ_SYSREG_EL0(CNTV_CTL) | CNTx_CTL_MASK, CNTV_CTL);
-        isb();
+        vtimer_ppi_set_enabled(false);
 
         return;
     }

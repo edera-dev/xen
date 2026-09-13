@@ -33,6 +33,14 @@ extern int domain_vtimer_init(struct domain *d,
                               struct xen_arch_domainconfig *config);
 extern int vcpu_vtimer_init(struct vcpu *v);
 extern bool vtimer_emulate(struct cpu_user_regs *regs, union hsr hsr);
+/*
+ * Re-enable the virtual timer's PPI on this pCPU.  vtimer_interrupt() masks it
+ * when an interrupt arrives with no guest to inject into, because on some
+ * platforms nothing Xen can write to the timer will quiet the line; switching a
+ * guest in is what makes it wanted again.
+ */
+void vtimer_ppi_unmask(void);
+
 extern void virt_timer_save(struct vcpu *v);
 extern void virt_timer_restore(struct vcpu *v);
 extern void vcpu_timer_destroy(struct vcpu *v);

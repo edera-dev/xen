@@ -1800,6 +1800,57 @@ will not have to infer this from a subtraction.
 | `no guest on the pCPU` in the millions | The push does not quiet the line when no guest is on the pCPU, though it does when one is. Then the PPI has to be masked at the GIC for as long as the pCPU is idle, and re-enabled in `virt_timer_restore()`. |
 | CPU0's PPI count still climbing with every counter flat | Something else on that pCPU, and every early return in an interrupt handler on this platform now needs the same audit. |
 
+### Boot 19: the counter says the deadline is not the lever either
+
+```
+Virtual timer interrupts with no guest on the pCPU  TOTAL[10410919]
+                                     CPU00[5191921]  CPU01[5219038]   (20s)
+```
+
+Counted now rather than subtracted, and the answer is no: pushing the deadline
+out does not quiet the line when no guest is on the pCPU. Both pCPUs are in it
+this time — 5.2 million each in twenty seconds — and everything about dom0 is
+frozen at the ten-second mark: `trap: wfi` 152, `sysreg access` 192,756,
+`context switches` 298, all identical at twenty. Both vCPUs are `pause_flags=0`,
+runnable, with `Inflight irq=27 lr=255`: an interrupt each, queued, and neither
+pCPU ever reaching a scheduler to run the vCPU that would take it.
+
+So the rule this platform has been teaching since boot 7 is now complete.
+**Nothing Xen writes to the virtual timer quiets its interrupt line.** Not
+`IMASK` (boot 8), not `ENABLE` (boot 8), and not `CNTV_CVAL` when the pCPU is
+idle (this one). Boot 10's apparent success with `CNTV_CVAL` was the guest
+re-arming its own timer a moment later, not the write.
+
+The same dump names the lever that does work, and it has been in every log
+since boot 14:
+
+```
+Virtual timer PPI disabled at the GIC    TOTAL[22]
+IRQs taken while disabled at the GIC     TOTAL[0]
+```
+
+Twenty-two windows in which the PPI was masked at the redistributor, and not
+one interrupt got through any of them. **The GIC mask is honoured.** It is the
+only thing on this machine that is.
+
+### What boot 20 changes: mask it and leave it masked
+
+`vtimer_interrupt()`'s no-guest path masks PPI 27 at the redistributor and
+stops there — no push, no millisecond timer. `virt_timer_restore()` unmasks it,
+on the pCPU the guest is about to run on, because that is exactly when the
+interrupt becomes wanted again. The mask is a per-CPU flag so the three callers
+that reach for it cannot fight.
+
+Nothing is lost by holding the mask: Xen does not use the virtual timer for
+itself, so between one guest leaving a pCPU and the next arriving there is
+nobody the interrupt could be for.
+
+| What the log shows | What it means |
+|---|---|
+| `no guest on the pCPU` a few dozen, `PPI re-enabled for a guest` tracking it | Fixed. One interrupt per idle transition, which is what it should always have been. |
+| `no guest on the pCPU` still in the millions | The redistributor mask is not honoured after all, and the 22-for-0 above was luck. Then nothing on this machine can gate PPI 27 and the guest's virtual timer has to be emulated in software off `CNTHP_EL2`. |
+| dom0 boots on | Read what it says next; item 9 and the `PHYSDEVOP` returns are still waiting. |
+
 ### The list
 
 In rough order of likelihood — though after boot 12 the timer is settled and
