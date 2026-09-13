@@ -176,6 +176,13 @@ void virt_timer_restore(struct vcpu *v)
     WRITE_SYSREG64(v->domain->arch.virt_timer_base.offset, CNTVOFF_EL2);
     WRITE_SYSREG64(v->arch.virt_timer.cval, CNTV_CVAL_EL0);
     WRITE_SYSREG(v->arch.virt_timer.ctl, CNTV_CTL_EL0);
+
+    /*
+     * There is a guest on this pCPU again, so its timer's interrupt is wanted
+     * again.  vtimer_interrupt() masks the PPI when one arrives with nobody to
+     * inject into, on a platform where that is the only way to stop it.
+     */
+    vtimer_ppi_unmask();
 }
 
 static bool vtimer_cntp_ctl(struct cpu_user_regs *regs, register_t *r,
