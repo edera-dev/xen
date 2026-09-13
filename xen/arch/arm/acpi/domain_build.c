@@ -360,7 +360,7 @@ static int __init acpi_create_xsdt(struct domain *d, struct membank tbl_add[])
 
 static int __init acpi_create_stao(struct domain *d, struct membank tbl_add[])
 {
-    struct acpi_table_header *table = NULL;
+    struct acpi_table_header *table = NULL, *spcr = NULL;
     struct acpi_table_stao *stao = NULL;
     u32 table_size = sizeof(struct acpi_table_stao);
     u32 offset = acpi_get_table_offset(tbl_add, TBL_STAO);
@@ -385,7 +385,18 @@ static int __init acpi_create_stao(struct domain *d, struct membank tbl_add[])
     memcpy(stao->header.signature, ACPI_SIG_STAO, 4);
     stao->header.revision = 1;
     stao->header.length = table_size;
-    stao->ignore_uart = 1;
+
+    /*
+     * ignore_uart says "the UART the SPCR describes belongs to the hypervisor,
+     * leave it alone".  Only say it where there is an SPCR to describe one:
+     * Xen's console on such a machine is that UART, because the SPCR is the
+     * only ACPI console binding uart_init() knows, but a machine that declares
+     * no SPCR has no UART for the claim to be about.  Claiming it anyway sends
+     * the hardware domain looking for a table that is not there, which is what
+     * Linux's "STAO table present, but SPCR is missing" warning is.
+     */
+    stao->ignore_uart = !ACPI_FAILURE(acpi_get_table(ACPI_SIG_SPCR, 0, &spcr));
+
     checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, stao), table_size);
     stao->header.checksum -= checksum;
 
