@@ -156,13 +156,54 @@ void virt_timer_save(struct vcpu *v)
     v->arch.virt_timer.ctl = READ_SYSREG(CNTV_CTL_EL0);
     WRITE_SYSREG(v->arch.virt_timer.ctl & ~CNTx_CTL_ENABLE, CNTV_CTL_EL0);
     v->arch.virt_timer.cval = READ_SYSREG64(CNTV_CVAL_EL0);
-    if ( (v->arch.virt_timer.ctl & CNTx_CTL_ENABLE) &&
-         !(v->arch.virt_timer.ctl & CNTx_CTL_MASK))
+
+    /*
+     * Arm on ENABLE alone.  IMASK in this register is Xen's, not the guest's:
+     * vtimer_interrupt() sets it to quiesce a line whose interrupt has already
+     * been injected, and only the guest clears it, by re-arming its timer.  A
+     * vCPU that blocks after an interrupt and before the guest re-arms
+     * therefore looks, to a test that also requires IMASK clear, like a vCPU
+     * whose timer the guest does not want -- and gets no software fallback,
+     * which is the only thing that can wake a blocked vCPU when its deadline
+     * arrives.
+     *
+     * A spurious virtual timer interrupt costs the guest one interrupt it
+     * dismisses.  A missing one costs it the boot.
+     */
+    if ( v->arch.virt_timer.ctl & CNTx_CTL_ENABLE )
     {
-        set_timer(&v->arch.virt_timer.timer,
-                  v->domain->arch.virt_timer_base.nanoseconds +
-                  ticks_to_ns(v->arch.virt_timer.cval));
+        s_time_t deadline = v->domain->arch.virt_timer_base.nanoseconds +
+                            ticks_to_ns(v->arch.virt_timer.cval);
+
+        if ( deadline > NOW() )
+        {
+            perfc_incr(virt_timer_sw_armed);
+            set_timer(&v->arch.virt_timer.timer, deadline);
+        }
+        else if ( !(v->arch.virt_timer.ctl & CNTx_CTL_MASK) )
+        {
+            /*
+             * Due already, and the guest has not been told.  Fire at once: a
+             * guest that arms a short deadline while the PPI is masked gets no
+             * hardware interrupt, and without this no fallback either, so it
+             * blocks with nothing left to wake it.
+             */
+            perfc_incr(virt_timer_sw_due);
+            set_timer(&v->arch.virt_timer.timer, NOW());
+        }
+        else
+        {
+            /*
+             * Due, and already injected.  Arming here is a livelock: the timer
+             * fires the instant it is armed, wakes the vCPU, which switches
+             * in, saves, and arms it again, leaving the guest no time to
+             * re-arm its own deadline.
+             */
+            perfc_incr(virt_timer_sw_past);
+        }
     }
+    else
+        perfc_incr(virt_timer_sw_idle);
 }
 
 void virt_timer_restore(struct vcpu *v)
