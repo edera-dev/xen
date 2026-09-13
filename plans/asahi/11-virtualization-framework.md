@@ -1447,11 +1447,57 @@ It costs dom0 one device it was never able to use anyway — Xen is holding it
 — and it costs nothing at all on a machine whose console is a UART, where
 `vtcon_config_space()` returns zero.
 
+### Boot 13: the right page, and exactly the wrong default
+
+The page was right. Xen unmapped `0x40028000` — `0x40000000 + (5 << 15)`, the
+ECAM function for `00:05.0` — and the console lived through the whole scan
+for the first time. dom0 did not.
+
+```
+(XEN) arch/arm/traps.c:1999:d0v0 HSR=0x00000093800007 pc=0xffff800080b903f8
+      gva=0xffff800090028000 gpa=0x00000040028000
+[    0.551988] Unable to handle kernel ttbr address size fault at ...
+[    0.559341] pc : pci_generic_config_read+0x40/0xd0
+...
+[    0.575217] Kernel panic - not syncing: Attempted to kill init!
+```
+
+The fault is the first configuration read of the bus scan,
+`pci_bus_read_dev_vendor_id()` on a slot Xen had just made disappear, with
+interrupts off in `kernel_init`. `HSR=0x93800007` decodes as a data abort from
+a lower EL with `ISV=1`, a four-byte read into `x0`, DFSC `0x07` — a
+translation fault, cleanly decoded, exactly the kind Xen is equipped to
+emulate. It injected it into dom0 instead.
+
+Because `XEN_DOMCTL_CDF_trap_unmapped_accesses` means the opposite of what the
+previous section assumed. In `try_handle_mmio()`:
+
+```c
+else if ( rc == IO_UNHANDLED && !trap_unmapped )
+    handler = &unmapped_handler;    /* reads all ones, writes dropped */
+else
+    return rc;                      /* -> inject_dabt_exception() */
+```
+
+The flag asks for unmapped accesses to be *trapped* — reported to the guest as
+a fault. Reading all ones is the behaviour of a domain **without** it, and
+`create_dom0()` sets it.
+
+So do not inherit a default that means the opposite: say what the page does.
+Boot 14 registers a handler over it, using the same `unmapped_ops` that
+`arch/arm/io.c` already has, through a new `register_unmapped_mmio_handler()`.
+An empty slot then reads as an empty slot whatever the domain's default is.
+
+(The handler functions have to live in `io.c` rather than beside the caller:
+`domain_build.c` is linked as `.init.o`, so everything in it must be
+`__init`, and these run for as long as dom0 does.)
+
 | What the log shows | What it means |
 |---|---|
 | No `00:05.0` in dom0's enumeration, boot continues | Fixed. The next question is whether the root filesystem appears, which is item 9 and the `PHYSDEVOP` returns below. |
-| `00:05.0` still enumerated | The page being unmapped is not the one dom0 reads. Check `vtcon: configuration space at ... hidden` against dom0's ECAM base and the bus/device/function in `vtcon:`'s own banner. |
-| Silence again at the same place, with no `auto_debug_keys` either | Something else on that probe path reaches the device — the BAR, most likely, which would mean hiding the MMIO too. |
+| `00:05.0` still enumerated | The page being handled is not the one dom0 reads. Check `vtcon: configuration space at ... hidden` against dom0's ECAM base and the bus/device/function in `vtcon:`'s own banner. |
+| Another abort at `0x40028000` | The handler is not being found: `find_mmio_handler()` before the p2m, so check the range and that dom0 has a spare slot of its `MAX_IO_HANDLER`. |
+| Silence again with no `auto_debug_keys` | Something else on that probe path reaches the device — the BAR, most likely, which would mean hiding the MMIO too. |
 
 ### Two things in boot 10 that are not the bug, and one that is next
 
@@ -1583,5 +1629,6 @@ the one that matters is 9:
    got a new BAR0 and Xen's mapping stopped pointing at the device;
    `linux,pci-probe-only` in the tree Xen builds for dom0 fixed that in boot
    12. Then `virtio_pci_probe()` reset the device where it stood. Boot 13
-   unmaps its configuration space from dom0 so it is never enumerated at
-   all.
+   unmapped its configuration space, which was the right page and the wrong
+   default — dom0 was trapped rather than told the slot was empty — and boot
+   14 puts an explicit empty-slot handler over it.
