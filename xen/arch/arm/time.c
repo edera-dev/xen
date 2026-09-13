@@ -254,13 +254,19 @@ static void htimer_interrupt(int irq, void *dev_id)
 }
 
 /*
- * How long the virtual timer's PPI stays disabled at the GIC once it has been
- * caught asserting with nothing left to deliver.  It bounds the wasted
- * interrupt rate, and it bounds the delay added to a guest timer interrupt
- * that becomes deliverable while the PPI is off -- a millisecond, which no
- * part of a guest's boot can tell from jitter.
+ * How long the virtual timer's PPI stays masked once it has been caught
+ * asserting with nothing left to deliver.  It is a floor under every guest
+ * timer: a deadline that falls inside the window is not delivered until the
+ * window ends.  A millisecond was fine for getting dom0 to a login prompt and
+ * is not fine for running on it -- a guest arming an hrtimer fifty
+ * microseconds out would wait a millisecond for it, which is what "timers are
+ * unreliable" feels like from inside.
+ *
+ * Fifty microseconds instead.  The cost of being wrong in this direction is
+ * one more spurious interrupt, which the counters show and which is bounded by
+ * how long the guest takes to service the one it already has.
  */
-#define VTIMER_QUIESCE_PERIOD  MILLISECS(1)
+#define VTIMER_QUIESCE_PERIOD  MICROSECS(50)
 
 static DEFINE_PER_CPU(struct timer, vtimer_requiesce);
 static DEFINE_PER_CPU(bool, vtimer_requiesce_ready);
@@ -339,7 +345,12 @@ static void vtimer_ppi_quiesce(void)
  * Repeat it rather than saying it once.  The first of these happens seconds
  * into a boot, at the top of a log that is the easiest part to lose.
  */
-static void vtimer_report_stuck(register_t before, register_t after)
+/*
+ * One spurious assertion per guest tick is the expected shape of this on a
+ * platform whose timer output does not follow IMASK, so say it rarely: the
+ * first few, then one every 4096.  The counters are where the rate lives.
+ */
+static void vtimer_report_stuck(register_t ctl)
 {
     static unsigned long count;
     unsigned long n = ++count;
@@ -348,16 +359,12 @@ static void vtimer_report_stuck(register_t before, register_t after)
         return;
 
     printk(XENLOG_ERR
-           "CPU%u: %pv's virtual timer fired again with IMASK already set (#%lu)\n",
+           "CPU%u: %pv's virtual timer asserted again while masked (#%lu)\n",
            smp_processor_id(), current, n);
     printk(XENLOG_ERR
-           "  CNTV_CTL %"PRIregister" -> %"PRIregister", CNTVCT %016"PRIx64", CNTV_CVAL %016"PRIx64", CNTVOFF %016"PRIx64"\n",
-           before, after, READ_SYSREG64(CNTVCT_EL0),
+           "  CNTV_CTL %"PRIregister", CNTVCT %016"PRIx64", CNTV_CVAL %016"PRIx64", CNTVOFF %016"PRIx64"\n",
+           ctl, READ_SYSREG64(CNTVCT_EL0),
            READ_SYSREG64_EL0(CNTV_CVAL), READ_SYSREG64(CNTVOFF_EL2));
-    printk(XENLOG_ERR "  %s\n",
-           (after & CNTx_CTL_PENDING)
-           ? "ISTATUS still reads set with the deadline in the future: this read is not live"
-           : "ISTATUS cleared with the deadline; the guest re-arms it itself");
 }
 
 static void vtimer_interrupt(int irq, void *dev_id)
@@ -412,55 +419,34 @@ static void vtimer_interrupt(int irq, void *dev_id)
      * the one pCPU running dom0 in fifty seconds, one every time the handler
      * returned, which is why dom0 appeared to hang.
      *
-     * Take the timer's other lever instead and clear ENABLE.  The guest gets
-     * nothing it has not already been given: the first interrupt is queued in
-     * its vGIC, and its handler re-arms the timer with an untrapped write to
-     * CNTV_CTL_EL0.
+     * The guest is owed nothing it has not already been given: its interrupt
+     * is queued in its vGIC and its handler re-arms the timer with an
+     * untrapped write to CNTV_CTL_EL0, which is the only thing that clears
+     * IMASK again.
      */
     if ( unlikely(ctl & CNTx_CTL_MASK) )
     {
         perfc_incr(virt_timer_stuck);
 
-        if ( ctl & CNTx_CTL_ENABLE )
-            perfc_incr(virt_timer_stuck_on);
-
         /*
-         * Boot 9 measured what the line actually follows.  Neither IMASK nor
-         * ENABLE: boot 8 cleared ENABLE on every one of nine million of these
-         * and the next one arrived anyway.  That leaves ISTATUS, the only
-         * other input to the timer's output, and the only way to clear it from
-         * here is to move the deadline the guest set.
+         * IMASK is Xen's and only the guest clears it, by re-arming, so this
+         * is the line asserting again for an interrupt the guest already has
+         * queued.  There is nothing to inject and nothing to write: boots 8
+         * and 19 measured that neither IMASK, nor ENABLE, nor CNTV_CVAL
+         * reaches whatever drives this line.  Mask the PPI, which is the one
+         * lever this machine honours, and let the quiesce timer bring it back.
          *
-         * Do that rather than clearing ENABLE.  Clearing ENABLE was not merely
-         * useless, it was harmful: virt_timer_save() arms the software
-         * fallback timer only for a vCPU whose timer is enabled and unmasked,
-         * so a vCPU descheduled after one of these had no timer left at all.
-         * Pushing the deadline out leaves both bits as the guest set them, and
-         * the guest un-pushes the deadline itself when it re-arms -- it is
-         * about to, because the interrupt this is all about is already queued
-         * in its vGIC.
-         *
-         * Boot 10 says this is the lever: two of these in a whole boot, where
-         * boot 9 had a hundred and twelve and ten million interrupts behind
-         * them.  It also says not to trust the read-back -- ISTATUS still
-         * reads set immediately after a deadline twenty-four thousand years
-         * out -- so the register Xen reads and the comparison the interrupt
-         * line is derived from are not the same thing.  The write reaches the
-         * one that matters.
+         * Writing CNTV_CVAL here was worse than useless.  This read does not
+         * return what the guest programmed -- the report below has printed
+         * 7fffffffffffffff for it, which is Xen's own previous write coming
+         * back -- so saving it into v->arch.virt_timer.cval replaced the
+         * guest's deadline with a sentinel, and virt_timer_restore() then put
+         * that sentinel into the guest's timer.  A guest whose next deadline
+         * is twenty-four thousand years away does not get a tick until it
+         * happens to re-arm for some other reason, which from inside looks
+         * exactly like timers that sometimes do not fire.
          */
-        current->arch.virt_timer.cval = READ_SYSREG64_EL0(CNTV_CVAL);
-        WRITE_SYSREG64_EL0(VTIMER_CVAL_PUSHED, CNTV_CVAL);
-        WRITE_SYSREG_EL0(ctl | CNTx_CTL_MASK, CNTV_CTL);
-        isb();
-        vtimer_report_stuck(ctl, READ_SYSREG_EL0(CNTV_CTL));
-
-        /*
-         * Still mask the PPI as a backstop, for the case where the line is not
-         * this timer's output at all.  "IRQs taken while disabled at the GIC"
-         * says whether that mask is being honoured -- boot 9 left ten million
-         * interrupts unaccounted for, and the silent drop here is where they
-         * would have gone.
-         */
+        vtimer_report_stuck(ctl);
         vtimer_ppi_quiesce();
 
         return;

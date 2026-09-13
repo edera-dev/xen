@@ -1851,6 +1851,61 @@ nobody the interrupt could be for.
 | `no guest on the pCPU` still in the millions | The redistributor mask is not honoured after all, and the 22-for-0 above was luck. Then nothing on this machine can gate PPI 27 and the guest's virtual timer has to be emulated in software off `CNTHP_EL2`. |
 | dom0 boots on | Read what it says next; item 9 and the `PHYSDEVOP` returns are still waiting. |
 
+### Boot 20: dom0 runs, and one bug is left in the timer
+
+Boot 20 reaches a login prompt. `Fedora Linux 44 (Workstation Edition)`,
+`Kernel 6.18.50-xen-dom0 on aarch64 (hvc0)`, cockpit on 9090, a network
+address. The machine boots Xen and Xen boots Fedora, which is where this
+document started.
+
+Masking PPI 27 while no guest is on the pCPU was the last of the storms. What
+is left is narrower: guest timers that sometimes do not fire. `ssh` fails at
+random, programs that sleep wake late or not at all, and the console carries
+this:
+
+```
+(XEN) CPU1: d0v1's virtual timer fired again with IMASK already set (#4096)
+(XEN)   CNTV_CTL 0000000000000007 -> 0000000000000007, CNTVCT 000000001d31bf67,
+        CNTV_CVAL 7fffffffffffffff, CNTVOFF 0000000018e232c7
+```
+
+`CNTV_CVAL 7fffffffffffffff` is the tell, and it is Xen's own doing. The stuck
+path was written when the deadline looked like the lever:
+
+```c
+current->arch.virt_timer.cval = READ_SYSREG64_EL0(CNTV_CVAL);
+WRITE_SYSREG64_EL0(VTIMER_CVAL_PUSHED, CNTV_CVAL);
+```
+
+Save the guest's deadline, push the sentinel in. But **that read does not
+return what the guest programmed** — it returns Xen's own previous write. So
+what gets saved into `v->arch.virt_timer.cval` is the sentinel, and
+`virt_timer_restore()` then writes the sentinel into the guest's timer. A vCPU
+whose next deadline is twenty-four thousand years out gets no tick until
+something else makes it re-arm. Every one of those 4,096 stuck interrupts
+destroyed a deadline.
+
+Boot 19 already established that the push achieves nothing. It was not merely
+useless; it was the last bug.
+
+### What boot 21 changes
+
+- **The stuck path writes nothing.** Count it, say it rarely, mask the PPI,
+  return. The sentinel and the machinery in `virt_timer_save()` that worked
+  around it are gone with it.
+- **The mask window drops from a millisecond to fifty microseconds.** It is a
+  floor under every guest timer — a deadline falling inside it is not
+  delivered until it ends — and a millisecond floor is exactly what
+  "unreliable timers" feels like from inside a guest arming an hrtimer fifty
+  microseconds out. Being wrong in this direction costs one more spurious
+  interrupt, which the counters show and which is bounded by how long the
+  guest takes to service the one it already has.
+
+If fifty microseconds still swallows short timers, the poll is the wrong shape
+and the right one is to unmask the moment the guest retires the interrupt —
+`gic_update_one_lr()` sees exactly that — rather than guessing at how long it
+will take.
+
 ### The list
 
 In rough order of likelihood — though after boot 12 the timer is settled and
