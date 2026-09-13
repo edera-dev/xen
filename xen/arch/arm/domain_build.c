@@ -2213,6 +2213,45 @@ static int __init construct_dom0(struct domain *d)
     return construct_hwdom(&kinfo, NULL);
 }
 
+/*
+ * Take the console's PCI function away from the hardware domain, by unmapping
+ * the one page of configuration space that describes it.  dom0 is created with
+ * XEN_DOMCTL_CDF_trap_unmapped_accesses, so reads of it return all ones and
+ * writes are dropped -- which is what an empty slot looks like, so the device
+ * is never enumerated, never claimed and never reset.
+ *
+ * Hiding only the BARs would not do, and neither does stopping dom0 moving
+ * them: it is not a console driver that takes the device away.
+ * virtio_pci_probe() resets it before any console driver is consulted, and
+ * boot 12 of the Virtualization.framework bring-up went silent between one
+ * virtio-pci probe and the next.
+ */
+static int __init hide_vtcon_from_hwdom(struct domain *d)
+{
+    paddr_t cfg = vtcon_config_space();
+    unsigned long pfn;
+    int rc;
+
+    if ( !cfg )
+        return 0;
+
+    pfn = PFN_DOWN(cfg);
+
+    rc = unmap_mmio_regions(d, _gfn(pfn), 1, _mfn(pfn));
+    if ( rc )
+        return rc;
+
+    /* And do not let it be mapped again. */
+    rc = iomem_deny_access(d, pfn, pfn);
+    if ( rc )
+        return rc;
+
+    printk("vtcon: configuration space at %#"PRIpaddr" hidden from Dom%u\n",
+           cfg, d->domain_id);
+
+    return 0;
+}
+
 int __init construct_hwdom(struct kernel_info *kinfo,
                            const struct dt_device_node *node)
 {
@@ -2257,6 +2296,10 @@ int __init construct_hwdom(struct kernel_info *kinfo,
     else
         rc = prepare_acpi(d, kinfo);
 
+    if ( rc < 0 )
+        return rc;
+
+    rc = hide_vtcon_from_hwdom(d);
     if ( rc < 0 )
         return rc;
 

@@ -1396,6 +1396,63 @@ so neither can drift from the other.
 Everything else in boot 11 repeats boot 10 exactly, including two stuck
 virtual timer interrupts and no third.
 
+### Boot 12: the BARs stay put, and the device is reset anyway
+
+`linux,pci-probe-only` worked. The tree grew — `Loading d0 DTB to
+0x0000000078000000-0x0000000078000881` against boot 11's `0x7800085c` — no
+`: assigned` line appears for any function, `00:05.0` keeps `BAR 0 [mem
+0x280060000-0x28006ffff 64bit]`, and dom0 goes past enumeration into
+`pci_bus 0000:00: resource 4`, the USB quirks, and the start of driver
+binding. Item 15 is fixed.
+
+The log then ends four lines later:
+
+```
+[    0.572030] pci 0000:00:0e.0: enabling device (0010 -> 0012)
+[    0.574621] virtio-pci 0000:00:01.0: of_irq_parse_pci: failed with rc=-22
+```
+
+The `-22` is not the problem: the generated tree gives the host bridge a
+`msi-parent` and no `interrupt-map`, because §4's whole point is that MSIs are
+the only interrupts this machine can deliver, so there is no legacy INTx to
+parse and Linux says so and carries on. What matters is which device is next.
+`virtio-pci` binds to every `1af4:` function in BDF order, and the one after
+`00:01.0` is `00:05.0` — Xen's console.
+
+`virtio_pci_probe()` does not need a console driver to take the device away.
+`vp_modern_probe()` resets it: status register to zero, queues gone, before
+`virtio_console` or anything else is consulted. There is no line for
+`00:05.0` in the log because the reset happens during its probe, and the
+probe's own messages had nowhere left to go.
+
+That the console rather than dom0 is what stopped is not an inference from
+the last line alone. The `auto_debug_keys` timer fires ten seconds in, on
+CPU5, which has no guest on it and nothing to do with PCI. `*** auto_debug_keys
+***` is not in the log. Xen is running; the console is not.
+
+### What boot 13 changes: dom0 never sees the device at all
+
+Stopping dom0 moving the BARs was necessary and is not sufficient, and
+neither would hiding the BARs be. The device has to be invisible.
+
+dom0 is created with `XEN_DOMCTL_CDF_trap_unmapped_accesses`, and
+`arch/arm/io.c` answers an unmapped access from such a domain with
+`unmapped_handler`: reads return all ones, writes are dropped. That is
+exactly what an empty PCI slot looks like. So `construct_hwdom()` now unmaps
+the one 4 KiB page of ECAM that describes the console's function and denies
+dom0 permission to map it again. Linux reads `ffff` for the vendor ID, skips
+the slot, and never enumerates, claims, or resets it.
+
+It costs dom0 one device it was never able to use anyway — Xen is holding it
+— and it costs nothing at all on a machine whose console is a UART, where
+`vtcon_config_space()` returns zero.
+
+| What the log shows | What it means |
+|---|---|
+| No `00:05.0` in dom0's enumeration, boot continues | Fixed. The next question is whether the root filesystem appears, which is item 9 and the `PHYSDEVOP` returns below. |
+| `00:05.0` still enumerated | The page being unmapped is not the one dom0 reads. Check `vtcon: configuration space at ... hidden` against dom0's ECAM base and the bus/device/function in `vtcon:`'s own banner. |
+| Silence again at the same place, with no `auto_debug_keys` either | Something else on that probe path reaches the device — the BAR, most likely, which would mean hiding the MMIO too. |
+
 ### Two things in boot 10 that are not the bug, and one that is next
 
 - **`kvm [1]: HYP mode not available`.** dom0 is at EL1 under Xen. Correct.
@@ -1411,8 +1468,8 @@ virtual timer interrupts and no third.
 
 ### The list
 
-In rough order of likelihood — though after boot 10 the timer is settled and
-the two that matter are 9 and 15:
+In rough order of likelihood — though after boot 12 the timer is settled and
+the one that matters is 9:
 
 1. **`Could not set up d0 guest OS (rc = -22)`**, right after `Loading
    ramdisk from boot module @ ...`. This is the first thing that actually
@@ -1521,7 +1578,10 @@ the two that matter are 9 and 15:
    nothing else, and `CNTV_CTL` reads back stale — which is why `IMASK` and
    `ENABLE` appeared to persist across nine million interrupts without
    helping.
-15. **dom0 moves Xen's console.** Linux's DT PCI host driver assigns BARs
-   rather than claiming them, so `00:05.0` gets a new BAR0 and Xen's mapping
-   stops pointing at the device. Boot 11 sets `linux,pci-probe-only` in the
-   device tree Xen builds for dom0, and only when Xen owns a PCI function.
+15. **dom0 takes Xen's console.** *Two halves, both now addressed.* Linux's
+   DT PCI host driver assigns BARs rather than claiming them, so `00:05.0`
+   got a new BAR0 and Xen's mapping stopped pointing at the device;
+   `linux,pci-probe-only` in the tree Xen builds for dom0 fixed that in boot
+   12. Then `virtio_pci_probe()` reset the device where it stood. Boot 13
+   unmaps its configuration space from dom0 so it is never enumerated at
+   all.

@@ -117,10 +117,13 @@ void apple_dockchannel_console_init(paddr_t base);
  * True when Xen's console is the virtio-console and bring-up succeeded, i.e.
  * when Xen owns a PCI function that the hardware domain must not move.
  */
+struct domain;
 #ifdef CONFIG_HAS_VIRTIO_CONSOLE
 bool vtcon_in_use(void);
+paddr_t vtcon_config_space(void);
 #else
 static inline bool vtcon_in_use(void) { return false; }
+static inline paddr_t vtcon_config_space(void) { return 0; }
 #endif
 
 /* 'Serial handles' are composed from the following fields. */

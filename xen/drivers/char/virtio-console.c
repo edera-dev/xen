@@ -189,6 +189,7 @@ struct vtcon_vq {
 static struct vtcon {
     /* Where the device was found, kept for the log and for init_preirq(). */
     void __iomem *ecam;             /* configuration space of this function */
+    paddr_t cfg_addr;               /* ...and where it is, for hiding it */
     unsigned int bus, dev, fn;
 
     void __iomem *common;
@@ -517,6 +518,16 @@ static unsigned int vq_used_pending(struct vtcon_vq *vq)
 bool vtcon_in_use(void)
 {
     return vtcon_com.ready;
+}
+
+/*
+ * Where the console's own PCI configuration space lives, so that the hardware
+ * domain can be denied it; zero when Xen is not using this device.  See
+ * hide_vtcon_from_hwdom() in arch/arm/domain_build.c for why that is wanted.
+ */
+paddr_t vtcon_config_space(void)
+{
+    return vtcon_com.ready ? vtcon_com.cfg_addr : 0;
 }
 
 static void __init vtcon_init_preirq(struct serial_port *port)
@@ -861,6 +872,8 @@ void __init virtio_console_init(void)
         return;
     }
 
+    vtcon_com.cfg_addr = ecam_base + ((paddr_t)bus << 20);
+
     if ( !vtcon_find(ecam, bus) )
     {
         printk(XENLOG_INFO "vtcon: no usable virtio-console on bus %02x\n",
@@ -885,6 +898,8 @@ void __init virtio_console_init(void)
     barbase = read_bar(bar);
     if ( !barbase )
         goto unmap;
+
+    vtcon_com.cfg_addr += PCI_ECAM_CFG_OFFSET(0, vtcon_com.dev, vtcon_com.fn);
 
     /*
      * Enable memory decoding and bus mastering explicitly.  The firmware has
@@ -914,6 +929,7 @@ void __init virtio_console_init(void)
  unmap:
     iounmap(ecam);
     vtcon_com.ecam = NULL;
+    vtcon_com.cfg_addr = 0;
 }
 
 /*
