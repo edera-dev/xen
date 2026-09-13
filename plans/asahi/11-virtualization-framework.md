@@ -466,7 +466,7 @@ For reference, and for typing at the GRUB prompt (`c`) when bisecting:
 insmod xen_boot
 search --no-floppy --fs-uuid --set=root <the /boot filesystem UUID>
 devicetree /xen/vz.dtb
-xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=dpq,10,3
+xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=dpq,2,5
 xen_module /vmlinuz-xen-dom0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=/root selinux=0 console=tty0 console=hvc0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
@@ -485,8 +485,8 @@ Notes on the command lines:
   only.
 - `console_to_ring conring_size=512` per §2. These are the difference between
   having a log and not.
-- `auto_debug_keys=dpq,10,3` runs the `d`, `p` and `q` keyhandlers every ten
-  seconds, three times over, without anything being typed. Why it cannot be
+- `auto_debug_keys=dpq,2,5` runs the `d`, `p` and `q` keyhandlers every two
+  seconds, five times over, without anything being typed. Why it cannot be
   typed instead is the first part of §7; why these three keys in this order,
   and why `p` needs `CONFIG_PERF_COUNTERS=y`, is "What boot 7 changes".
 - `noreboot` because the default is not what you want here. `panic()` calls
@@ -706,9 +706,9 @@ Two changes make the next boot answer this on its own:
   that never delivers it boots to the very end looking healthy.
 - **`auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`**, which runs the same
   keyhandlers off a timer instead of off input. `install-vz.sh` now puts
-  `auto_debug_keys=dpq,10,3` on the hypervisor command line, so every pCPU's
-  registers, the performance counters and the domain list are dumped three
-  times at ten-second intervals with nothing typed. It runs them from a
+  `auto_debug_keys=dpq,2,5` on the hypervisor command line, so every pCPU's
+  registers, the performance counters and the domain list are dumped five
+  times at two-second intervals with nothing typed. It runs them from a
   tasklet, not from the timer callback, because the handlers that pause a vCPU
   must not run from a timer that interrupted that same vCPU — a tasklet runs
   on the idle vCPU, which is where a real keypress ends up too.
@@ -1511,6 +1511,50 @@ An empty slot then reads as an empty slot whatever the domain's default is.
   is item 9 arriving on schedule: the root filesystem is on `00:06.0` or
   `00:07.0` (`[1af4:1042]`, virtio-blk) and it needs MSI-X through the v2m
   frame. It is the next thing after the console.
+
+### Boot 14: the slot is empty, and it was never the slot
+
+`vtcon: configuration space at 0x00000040028000 hidden from Dom0`, and dom0's
+scan steps from `00:01.0` straight to `00:06.0`. No fault, no panic, the
+whole bus enumerated, resources claimed, USB quirks run. The device Xen is
+using is invisible and the empty-slot handler does what it says.
+
+And the log ends on the same line as boot 12's:
+
+```
+[    0.586342] virtio-pci 0000:00:01.0: of_irq_parse_pci: failed with rc=-22
+```
+
+So the previous section's reasoning was wrong. It argued that the next device
+after `00:01.0` was `00:05.0` and that `vp_modern_probe()` reset it; `00:05.0`
+is now not there at all and the boot stops in the same place. Whatever ends
+it is inside `00:01.0`'s own probe — the virtio-net device — and `00:06.0`,
+which would print its own `of_irq_parse_pci` line, is never reached.
+
+Hiding the console was still worth doing: it is the difference between a
+device Xen holds and a device any dom0 driver may reset, and boot 13's panic
+proved dom0 does reach for it. It is simply not what stops boot 14.
+
+### What boot 15 changes: make the dumps land where the failure is
+
+The honest state is that the two candidates — Xen's console stopping, and
+dom0 stopping — are still not separated, and the thing that would separate
+them is `auto_debug_keys`, which fires ten seconds in. dom0's clock reads
+0.586 s when the log ends; Xen's wall clock at that moment is unknown and
+certainly much less than ten seconds. The dumps may simply not have happened
+yet.
+
+So stop guessing and move them: `auto_debug_keys=dpq,2,5` dumps at two, four,
+six, eight and ten seconds. A dump that appears says Xen is alive and names
+what dom0's CPUs are doing; no dump at all, with the log ending mid-boot,
+says the console is gone.
+
+| What the log shows | What it means |
+|---|---|
+| Dumps appear, dom0's PC in `virtio_pci_probe` or below it | dom0 is stuck in that probe. The guest PC names where, against the same `System.map`. |
+| Dumps appear, dom0 idle and runnable | dom0 is fine and the output is not getting out: the console's transmit path, and `vtcon: device stopped draining the transmit ring` is the line to look for. |
+| No dumps, log ends mid-boot | Xen's console died during `00:01.0`'s probe. What that device and Xen's share is the v2m frame at `0x1fff0000` and the ECAM window; neither should be fatal, so instrument whichever is touched first. |
+| Dumps appear and dom0 is running normally | The capture was just short. Read on. |
 
 ### The list
 

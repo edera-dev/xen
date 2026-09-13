@@ -159,8 +159,11 @@ menuentry '$title' --class xen {
 	# stops a panic from rebooting into this same entry and destroying the
 	# only copy of the panic message.
 	#
-	# auto_debug_keys runs the 'd', 'p' and 'q' keyhandlers by itself, ten
-	# seconds apart, three times over.  Typing them would need console
+	# auto_debug_keys runs the 'd', 'p' and 'q' keyhandlers by itself, two
+	# seconds apart, five times over.  Two rather than ten because dom0 now
+	# gets far enough that the interesting failures happen in the first few
+	# seconds, and a first dump at ten seconds can land after the capture
+	# has already stopped -- which is exactly what made boot 14 ambiguous.  Typing them would need console
 	# input, and console input is polled off a Xen timer -- so on a machine
 	# where Xen cannot get back onto the CPU the hardware domain is on,
 	# which is what boot 5 showed, nothing typed ever arrives.  That timer
@@ -177,7 +180,7 @@ menuentry '$title' --class xen {
 		dom0_vcpus_pin \\
 		$console console_to_ring conring_size=512 \\
 		loglvl=all guest_loglvl=all noreboot \\
-		auto_debug_keys=dpq,10,3
+		auto_debug_keys=dpq,2,5
 
 	# hvc0 last, so it is dom0's /dev/console: that is Xen's console, which
 	# comes out of the same serial terminal as Xen's own output.
