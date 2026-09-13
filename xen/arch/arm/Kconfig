@@ -147,6 +147,20 @@ config GICV3_ESPI
 	  range, from 4096 to 5119. This feature is introduced in GICv3.1
 	  architecture.
 
+config GICV2M
+	bool "GICv2m MSI frame support for the hardware domain"
+	depends on GICV3
+	help
+	  A GICv2m frame turns a device's MSI write into a shared peripheral
+	  interrupt.  Xen itself never uses one, but a hardware domain whose
+	  devices have no other way to raise an interrupt does, so with this
+	  enabled Xen maps each frame described in the host device tree to the
+	  hardware domain, routes the SPIs the frame owns, and re-advertises the
+	  frame under the domain's virtual GIC.
+
+	  Needed on machines with MSI-capable devices, a GICv3, and no ITS --
+	  Apple's Virtualization.framework platform is one.  If unsure, say N.
+
 config HAS_ITS
         bool "GICv3 ITS MSI controller support"
         depends on GICV3 && !NEW_VGIC && !ARM_32
