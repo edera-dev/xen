@@ -23,11 +23,13 @@
 #include <xen/sched.h>
 #include <xen/softirq.h>
 #include <xen/time.h>
+#include <xen/timer.h>
 
 #include <asm/cpufeature.h>
 #include <asm/platform.h>
 #include <asm/system.h>
 #include <asm/vgic.h>
+#include <asm/vtimer.h>
 
 uint64_t __read_mostly boot_count;
 
@@ -251,8 +253,165 @@ static void htimer_interrupt(int irq, void *dev_id)
     WRITE_SYSREG(0, CNTHP_CTL_EL2);
 }
 
+/*
+ * How long the virtual timer's PPI stays masked once it has been caught
+ * asserting with nothing left to deliver.  It is a floor under every guest
+ * timer: a deadline falling inside the window is not delivered until the
+ * window ends, so it has to stay well under what a guest arming a short
+ * hrtimer would notice.
+ *
+ * The cost of being too short is one more spurious interrupt, which the
+ * virt_timer_* performance counters show and which is bounded by how long the
+ * guest takes to service the one it already has.
+ */
+#define VTIMER_QUIESCE_PERIOD  MICROSECS(50)
+
+static DEFINE_PER_CPU(struct timer, vtimer_poll);
+static DEFINE_PER_CPU(bool, vtimer_poll_ready);
+static DEFINE_PER_CPU(bool, vtimer_ppi_masked);
+
+static void vtimer_ppi_set_enabled(bool enable)
+{
+    struct irq_desc *desc = irq_to_desc(timer_irq[TIMER_VIRT_PPI]);
+    unsigned long flags;
+
+    /* Idempotent: several callers reach for this. */
+    if ( this_cpu(vtimer_ppi_masked) == !enable )
+        return;
+
+    spin_lock_irqsave(&desc->lock, flags);
+    if ( enable )
+        desc->handler->enable(desc);
+    else
+        desc->handler->disable(desc);
+    spin_unlock_irqrestore(&desc->lock, flags);
+
+    this_cpu(vtimer_ppi_masked) = !enable;
+}
+
+static void cf_check vtimer_poll_expired(void *unused);
+
+/*
+ * Ask again in a little while.  A Xen timer rather than an interrupt, so while
+ * the PPI is held down the pCPU costs a softirq every so often instead of an
+ * exception every few microseconds, and the guest gets the CPU it needs to
+ * re-arm.
+ *
+ * Initialised on first use rather than in init_timer_interrupt(), which runs
+ * on each CPU before the timer subsystem is usable.  Nothing reaches this
+ * until a guest is running, by which point it long since is.
+ */
+static void vtimer_ppi_poll_again(void)
+{
+    struct timer *t = &this_cpu(vtimer_poll);
+
+    if ( unlikely(!this_cpu(vtimer_poll_ready)) )
+    {
+        init_timer(t, vtimer_poll_expired, NULL, smp_processor_id());
+        this_cpu(vtimer_poll_ready) = true;
+    }
+
+    set_timer(t, NOW() + VTIMER_QUIESCE_PERIOD);
+}
+
+/*
+ * Every path that wants the PPI back -- virt_timer_restore() on the pCPU a
+ * guest is about to run on, the retire hook when the guest finishes with the
+ * interrupt, and the poll above -- comes through here, and none of them may
+ * have it while IMASK is still set.
+ *
+ * IMASK is Xen's marker for an interrupt injected and not yet acknowledged, so
+ * unmasking under it puts a line that does not follow IMASK straight back into
+ * the handler, and the vCPU never runs long enough to re-arm the deadline that
+ * would have stopped it.  Defer instead, and keep polling, because only the
+ * guest can end this and it can only do so by running.
+ */
+void vtimer_ppi_unmask(void)
+{
+    if ( likely(!this_cpu(vtimer_ppi_masked)) )
+        return;
+
+    if ( READ_SYSREG(CNTV_CTL_EL0) & CNTx_CTL_MASK )
+    {
+        perfc_incr(virt_timer_unmask_no);
+        vtimer_ppi_poll_again();
+        return;
+    }
+
+    perfc_incr(virt_timer_unmask);
+    vtimer_ppi_set_enabled(true);
+}
+
+static void cf_check vtimer_poll_expired(void *unused)
+{
+    vtimer_ppi_unmask();
+}
+
+/*
+ * Stop listening to the line and look again shortly.  The guest is owed
+ * exactly one virtual timer interrupt and already has it queued in its vGIC,
+ * so there is nothing to deliver in the meantime.
+ */
+static void vtimer_ppi_quiesce(void)
+{
+    perfc_incr(virt_timer_quiesce);
+
+    vtimer_ppi_set_enabled(false);
+    vtimer_ppi_poll_again();
+}
+
+static DEFINE_PER_CPU(unsigned long, vtimer_noise);
+static DEFINE_PER_CPU(s_time_t, vtimer_noise_window);
+static DEFINE_PER_CPU(s_time_t, vtimer_noise_said);
+
+/*
+ * Report a line that will not quiet, with enough state to tell the failure
+ * modes apart: a platform that ignores the write, a platform that takes the
+ * write but drives the line from somewhere else, and a platform where Xen is
+ * not writing the copy of the register the guest is using -- for which
+ * CNTV_CVAL is the tell, since Xen never programs it and the guest always
+ * does.
+ *
+ * One spurious assertion per guest tick is the expected shape of this, so a
+ * count is not news and a line per interrupt would be a storm of its own.  A
+ * *rate* is news.  Say the first one, then at most one line a second for as
+ * long as the rate stays pathological, and nothing at all in between.
+ *
+ * The clock read is taken once every 4096 interrupts rather than on each one.
+ * At any rate worth reporting that is far more often than once a second; at a
+ * sane one it costs nothing that matters.
+ */
+static void vtimer_note(const char *what)
+{
+    unsigned long n = ++this_cpu(vtimer_noise);
+    s_time_t now;
+
+    if ( likely(n != 1 && (n & 0xfff)) )
+        return;
+
+    now = NOW();
+
+    if ( n == 1 ||
+         (now - this_cpu(vtimer_noise_window) < SECONDS(1) &&
+          now - this_cpu(vtimer_noise_said) >= SECONDS(1)) )
+    {
+        printk(XENLOG_ERR "CPU%u: virtual timer %s (#%lu)\n",
+               smp_processor_id(), what, n);
+        printk(XENLOG_ERR
+               "  CNTV_CTL %"PRIregister", CNTVCT %016"PRIx64", CNTV_CVAL %016"PRIx64", CNTVOFF %016"PRIx64"\n",
+               READ_SYSREG(CNTV_CTL_EL0), READ_SYSREG64(CNTVCT_EL0),
+               READ_SYSREG64(CNTV_CVAL_EL0), READ_SYSREG64(CNTVOFF_EL2));
+
+        this_cpu(vtimer_noise_said) = now;
+    }
+
+    this_cpu(vtimer_noise_window) = now;
+}
+
 static void vtimer_interrupt(int irq, void *dev_id)
 {
+    register_t ctl;
+
     /*
      * Edge-triggered interrupts can be used for the virtual timer. Even
      * if the timer output signal is masked in the context switch, the
@@ -260,16 +419,58 @@ static void vtimer_interrupt(int irq, void *dev_id)
      * disabled. As soon as IRQs are re-enabled, the virtual interrupt
      * will be injected to Xen.
      *
-     * If an IDLE vCPU was scheduled next then we should ignore the
-     * interrupt.
+     * If an IDLE vCPU was scheduled next there is nobody to inject into --
+     * but there may still be a line to quiet.  Ignoring it is right where
+     * virt_timer_save()'s clearing of ENABLE stops the timer; where it does
+     * not, the guest's expired deadline keeps the line up with the idle vCPU
+     * in front of it and the handler returns straight into the same
+     * interrupt, starving the pCPU.
+     *
+     * Mask the PPI instead.  Nothing is lost by holding it: Xen does not use
+     * the virtual timer for itself, and virt_timer_restore() unmasks it before
+     * a guest runs here again.
      */
     if ( unlikely(is_idle_vcpu(current)) )
+    {
+        perfc_incr(virt_timer_no_guest);
+        vtimer_note("asserted with no guest on the pCPU");
+        vtimer_ppi_set_enabled(false);
+
         return;
+    }
 
     perfc_incr(virt_timer_irqs);
 
-    current->arch.virt_timer.ctl = READ_SYSREG(CNTV_CTL_EL0);
-    WRITE_SYSREG(current->arch.virt_timer.ctl | CNTx_CTL_MASK, CNTV_CTL_EL0);
+    ctl = READ_SYSREG(CNTV_CTL_EL0);
+
+    /*
+     * IMASK is set here by Xen and by nobody else: a guest that wants its
+     * timer quiet clears ENABLE, and a guest that has taken the interrupt
+     * re-arms with IMASK clear.  So finding it already set means the line
+     * asserted while masked, and the mask is not what gates it on this
+     * platform.  Masking again would return straight back here.
+     *
+     * The guest is owed nothing it has not already been given: its interrupt
+     * is queued in its vGIC, and its handler re-arms the timer with an
+     * untrapped write to CNTV_CTL_EL0, which is the only thing that clears
+     * IMASK again.  There is nothing to inject and nothing useful to write --
+     * in particular not CNTV_CVAL, whose read need not return what the guest
+     * programmed, so saving it would replace the guest's deadline with
+     * whatever Xen last wrote and virt_timer_restore() would then hand that
+     * back to the guest.  Mask the PPI and let the quiesce timer bring it
+     * back.
+     */
+    if ( unlikely(ctl & CNTx_CTL_MASK) )
+    {
+        perfc_incr(virt_timer_stuck);
+        vtimer_note("asserted again while masked");
+        vtimer_ppi_quiesce();
+
+        return;
+    }
+
+    current->arch.virt_timer.ctl = ctl;
+    WRITE_SYSREG(ctl | CNTx_CTL_MASK, CNTV_CTL_EL0);
     vgic_inject_irq(current->domain, current, current->arch.virt_timer.irq, true);
 }
 

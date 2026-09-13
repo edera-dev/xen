@@ -72,6 +72,11 @@ PERFCOUNTER(guest_irqs,           "#GUEST-IRQS")
 
 PERFCOUNTER(hyp_timer_irqs,   "Hypervisor timer interrupts")
 PERFCOUNTER(virt_timer_irqs,  "Virtual timer interrupts")
+PERFCOUNTER(virt_timer_stuck, "Virtual timer interrupts while masked")
+PERFCOUNTER(virt_timer_quiesce, "Virtual timer PPI disabled at the GIC")
+PERFCOUNTER(virt_timer_no_guest, "Virtual timer interrupts with no guest on the pCPU")
+PERFCOUNTER(virt_timer_unmask,   "Virtual timer PPI re-enabled for a guest")
+PERFCOUNTER(virt_timer_unmask_no, "Virtual timer PPI kept masked, guest has not re-armed")
 PERFCOUNTER(maintenance_irqs, "Maintenance interrupts")
 
 PERFCOUNTER(atomics_guest,    "atomics: guest access")
