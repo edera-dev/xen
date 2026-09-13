@@ -1738,6 +1738,68 @@ so rather than leaving it to be inferred.
 | `software fallback not armed` climbing | `ENABLE` reads stale too, and Xen cannot learn the guest's timer state from this register at all. Then the guest's virtual timer has to be tracked from the values Xen itself writes. |
 | Hypervisor timer counts on CPU0/CPU1 still frozen | Nothing is being queued for them at all, which is a different fault from this one. |
 
+### Boot 18: the fallback works, and uncovers the next storm
+
+The fix took, exactly:
+
+```
+Virtual timer software fallback armed      TOTAL[313]  CPU00[114]  CPU01[199]
+Virtual timer software fallback not armed  TOTAL[  0]
+vtimer: virt expired, injected             66 -> 75 -> 87   (10s, 20s, 30s)
+```
+
+`not armed` is zero, so `ENABLE` reads true every time and the register is not
+stale in that bit. The fallback is armed and it fires: dom0's virtual timer is
+being delivered to a blocked vCPU for the first time. And dom0 is executing
+again — `trap: wfi` 300 → 309 → 321, `sched: context switches` 584 → 602 →
+626, all of it on CPU1, where d0v1 now runs.
+
+d0v0 does not. `q` says `pause_flags=0` — runnable, not blocked — with
+`Inflight irq=27 lr=255` and `Inflight irq=1 lr=255`: two interrupts queued
+for it and neither placed in a list register, because the vCPU never runs.
+And:
+
+```
+#PPIs  CPU00[2943098]  (10s)   CPU00[6277837]  (20s)   CPU00[9609700]  (30s)
+Hypervisor timer interrupts  CPU00[116]   Virtual timer interrupts  CPU00[38]
+IRQs taken while disabled at the GIC  TOTAL[0]
+```
+
+**CPU0 is taking 330,000 PPIs a second that reach no handler and no counter.**
+Not the disabled path, which is zero. In `do_IRQ()` every other route either
+runs a handler or prints. The only silent exits left are the two early returns
+at the tops of the timer handlers, and `htimer_interrupt()`'s is ruled out by
+CPU5 taking its 2,449 quite happily.
+
+So it is `vtimer_interrupt()`'s:
+
+```c
+if ( unlikely(is_idle_vcpu(current)) )
+    return;
+```
+
+Which is correct upstream and wrong here. `virt_timer_save()` clears `ENABLE`
+when a vCPU is switched out, and on ordinary hardware that drops the line, so
+an interrupt arriving with the idle vCPU in front is a leftover worth
+ignoring. On this platform the line follows the comparator and nothing else,
+so the guest's expired deadline holds it up, the handler returns without
+quieting anything, and it comes straight back. CPU0 never reaches its
+scheduler — `sched: runs through scheduler` is frozen at 387 — which is
+exactly why the vCPU it should be running is runnable and not running.
+
+This is the same fault as boots 7 through 10, in the one place that was still
+returning early instead of dealing with it. Boot 19 pushes the deadline out
+there too. Nothing is lost: the guest's real deadline is already saved in
+`v->arch.virt_timer.cval`, and `virt_timer_restore()` writes it back before
+the guest runs again. A counter now sits above the return, so the next log
+will not have to infer this from a subtraction.
+
+| What the log shows | What it means |
+|---|---|
+| dom0 boots on, `no guest on the pCPU` small | Fixed. Both halves of the timer are finally quiet. |
+| `no guest on the pCPU` in the millions | The push does not quiet the line when no guest is on the pCPU, though it does when one is. Then the PPI has to be masked at the GIC for as long as the pCPU is idle, and re-enabled in `virt_timer_restore()`. |
+| CPU0's PPI count still climbing with every counter flat | Something else on that pCPU, and every early return in an interrupt handler on this platform now needs the same audit. |
+
 ### The list
 
 In rough order of likelihood — though after boot 12 the timer is settled and

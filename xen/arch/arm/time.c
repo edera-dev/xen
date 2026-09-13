@@ -353,11 +353,31 @@ static void vtimer_interrupt(int irq, void *dev_id)
      * disabled. As soon as IRQs are re-enabled, the virtual interrupt
      * will be injected to Xen.
      *
-     * If an IDLE vCPU was scheduled next then we should ignore the
-     * interrupt.
+     * No guest on this pCPU, so there is nobody to inject into -- but there
+     * is still a line to quiet.  Ignoring it is what upstream does, and it is
+     * right on a platform where virt_timer_save()'s clearing of ENABLE stops
+     * the timer; here it does not, because the output follows the comparator
+     * and nothing else, so the guest's expired deadline keeps the line up
+     * with the idle vCPU in front of it.  Boot 18 took 9,609,700 of these on
+     * CPU0 in thirty seconds -- 330,000 a second, uncounted because this
+     * return is above the counter -- and starved the runnable dom0 vCPU that
+     * was waiting for that very pCPU to reach its scheduler.
+     *
+     * Push the deadline out, the same lever that works for a running guest.
+     * Nothing is lost: the guest's real deadline is already saved in
+     * v->arch.virt_timer.cval and virt_timer_restore() writes it back before
+     * the guest runs again.
      */
     if ( unlikely(is_idle_vcpu(current)) )
+    {
+        perfc_incr(virt_timer_no_guest);
+
+        WRITE_SYSREG64_EL0(VTIMER_CVAL_PUSHED, CNTV_CVAL);
+        WRITE_SYSREG_EL0(READ_SYSREG_EL0(CNTV_CTL) | CNTx_CTL_MASK, CNTV_CTL);
+        isb();
+
         return;
+    }
 
     perfc_incr(virt_timer_irqs);
 
