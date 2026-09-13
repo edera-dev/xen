@@ -2013,6 +2013,48 @@ So `virt_timer_save()` now distinguishes three cases rather than two — still t
 come, arm for it; passed and unmasked, fire at once; passed and masked, decline
 — each with a counter. The declining case is boot 21's loop and stays declined.
 
+### Boot 23: timers work
+
+Same measurements, same machine, from inside dom0:
+
+| | boot 22 | boot 23 |
+|---|---|---|
+| 200 x 5ms sleeps, p99 | 435 ms | 6.9 ms |
+| 200 x 5ms sleeps, max | 660 ms | 7.2 ms |
+| 2000 x 2ms sleeps, stalls > 20 ms | 23 | 1 |
+| worst stall | 6,576 ms | 26.7 ms |
+| wall clock for that run | 24.9 s | 5.0 s |
+
+The run taking five seconds instead of twenty-five is the clearest line of the
+lot: the stalls *were* the extra twenty seconds. A thirty-second soak at 1 ms
+with the other vCPU pinned busy gives 24,964 sleeps and **no stall over 20 ms
+at all**, and `dmesg` has nothing from Xen beyond the two cosmetic PCI lines.
+
+So the virtual timer is finished. What it took, in the end, was three separate
+facts about this platform, none of which are true anywhere else:
+
+- The interrupt line follows neither `IMASK` nor `ENABLE` nor anything Xen
+  writes to `CNTV_CVAL`; only masking the PPI at the redistributor stops it.
+- Because Xen must therefore mask the PPI after every tick, a guest arming a
+  deadline inside that window gets no hardware interrupt at all, and the
+  software fallback is the only thing that can deliver it.
+- `IMASK` is still useful, not as a mask but as Xen's own record of what it has
+  already injected, which is what tells the fallback whether a passed deadline
+  is owed to the guest or already paid.
+
+### What is left
+
+- **The Xen tools are not built.** `/dev/xen` has only `xenbus`; there is no
+  `xl`, so dom0 cannot read `xl dmesg`, press a debug key, or start a guest.
+  Everything in this document was diagnosed by rebooting and reading a serial
+  log, which is no longer the cheapest way to work now that dom0 runs.
+- **`PHYSDEVOP cmd=25`/`cmd=15: not implemented`**, once per PCI function, and
+  the `of_irq_parse_pci: failed with rc=-22` that follows. Both cosmetic: MSI-X
+  works regardless, which is what item 9 was about.
+- **`show_guest_stack()` cannot walk a non-current vCPU's stack**, because it
+  translates through the regime installed on the dumping CPU. It wants
+  `guest_walk_tables()`. Nothing has needed it yet.
+
 ### The list
 
 In rough order of likelihood — though after boot 12 the timer is settled and
