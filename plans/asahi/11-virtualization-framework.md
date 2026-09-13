@@ -466,7 +466,7 @@ For reference, and for typing at the GRUB prompt (`c`) when bisecting:
 insmod xen_boot
 search --no-floppy --fs-uuid --set=root <the /boot filesystem UUID>
 devicetree /xen/vz.dtb
-xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=dpq,2,5
+xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=0pq,2,3
 xen_module /vmlinuz-xen-dom0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=/root selinux=0 console=tty0 console=hvc0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
@@ -485,8 +485,8 @@ Notes on the command lines:
   only.
 - `console_to_ring conring_size=512` per §2. These are the difference between
   having a log and not.
-- `auto_debug_keys=dpq,2,5` runs the `d`, `p` and `q` keyhandlers every two
-  seconds, five times over, without anything being typed. Why it cannot be
+- `auto_debug_keys=0pq,2,3` runs the `0`, `p` and `q` keyhandlers every two
+  seconds, three times over, without anything being typed. Why it cannot be
   typed instead is the first part of §7; why these three keys in this order,
   and why `p` needs `CONFIG_PERF_COUNTERS=y`, is "What boot 7 changes".
 - `noreboot` because the default is not what you want here. `panic()` calls
@@ -706,9 +706,9 @@ Two changes make the next boot answer this on its own:
   that never delivers it boots to the very end looking healthy.
 - **`auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`**, which runs the same
   keyhandlers off a timer instead of off input. `install-vz.sh` now puts
-  `auto_debug_keys=dpq,2,5` on the hypervisor command line, so every pCPU's
-  registers, the performance counters and the domain list are dumped five
-  times at two-second intervals with nothing typed. It runs them from a
+  `auto_debug_keys=0pq,2,3` on the hypervisor command line, so the hardware
+  domain's registers, the performance counters and the domain list are dumped
+  three times at two-second intervals with nothing typed. It runs them from a
   tasklet, not from the timer callback, because the handlers that pause a vCPU
   must not run from a timer that interrupted that same vCPU — a tasklet runs
   on the idle vCPU, which is where a real keypress ends up too.
@@ -1544,7 +1544,7 @@ them is `auto_debug_keys`, which fires ten seconds in. dom0's clock reads
 certainly much less than ten seconds. The dumps may simply not have happened
 yet.
 
-So stop guessing and move them: `auto_debug_keys=dpq,2,5` dumps at two, four,
+So stop guessing and move them: `auto_debug_keys=0pq,2,3` dumps at two, four,
 six, eight and ten seconds. A dump that appears says Xen is alive and names
 what dom0's CPUs are doing; no dump at all, with the log ending mid-boot,
 says the console is gone.
@@ -1555,6 +1555,75 @@ says the console is gone.
 | Dumps appear, dom0 idle and runnable | dom0 is fine and the output is not getting out: the console's transmit path, and `vtcon: device stopped draining the transmit ring` is the line to look for. |
 | No dumps, log ends mid-boot | Xen's console died during `00:01.0`'s probe. What that device and Xen's share is the v2m frame at `0x1fff0000` and the ECAM window; neither should be fatal, so instrument whichever is touched first. |
 | Dumps appear and dom0 is running normally | The capture was just short. Read on. |
+
+### Boot 15: Xen is fine, and dom0 is blocked on nothing
+
+Moving the dumps to two seconds was the whole point and it worked on the
+first try. `*** auto_debug_keys: 'dpq', 5 runs left ***` appears immediately
+after dom0's last line, and everything after it is healthy: CPU5 in its
+tasklet, CPU0 through CPU4 in `idle_loop`, the console carrying two thousand
+lines of dump without a stumble.
+
+**So the console is not what stops. dom0 is**, and every boot from 12 onward
+was the same thing seen through an instrument pointed ten seconds too late.
+
+What `q` says about dom0:
+
+```
+(XEN)     VCPU0: CPU0 [has=F] ... upcall_mask=01
+(XEN)     pause_count=0 pause_flags=1
+(XEN)     VCPU1: CPU1 [has=F] ... upcall_mask=01
+(XEN)     pause_count=0 pause_flags=1
+```
+
+`pause_flags=1` is `VPF_blocked`. Both vCPUs are blocked, and neither has an
+`Inflight` or a `Pending` line — no virtual interrupt is queued for either of
+them. Nothing is going to wake them.
+
+And `p` says what they are not waiting for:
+
+- **`#SPIs TOTAL[0]`.** Not one SPI has ever been delivered, so no MSI has
+  ever arrived — but nor was one ever asked for.
+- **`vgicd: write TOTAL[1352]`**, which is the same 1352 as boot 4, all of it
+  `gic_dist_config()` inside `init_IRQ()`. dom0 has not touched the
+  distributor since. It never enabled an MSI SPI, so it never reached
+  `request_irq()`, so it never finished `vp_find_vqs()`.
+- **`Virtual timer interrupts TOTAL[4]`** and `vtimer: virt expired,
+  injected TOTAL[3]`, in the second and a half since dom0 went quiet. It is
+  not sleeping with a timeout — a `msleep()` loop would be a thousand of
+  these. It is blocked with nothing armed at all.
+
+Three other things worth having from the same dump. The virtual timer fix is
+holding: two stuck interrupts in the whole boot and `IRQs taken while disabled
+at the GIC TOTAL[0]`, which also retires boot 9's ten million unaccounted PPIs
+— they were the storm, and the storm is gone. `trap: sysreg access` is
+192,876 at two seconds against boot 9's 176,093 at twenty, so dom0 is running
+at speed right up to the moment it stops. And the hole Xen punched in dom0's
+configuration space is visible in its own rangeset: `I/O Memory { 1fff0,
+40000-40027, 40029-6ffdf, 280000-67ffff }`.
+
+### What boot 16 changes: ask the vCPU, not the pCPU
+
+The one thing the dump does not have is dom0's program counter, and that is
+not an accident. `d` dumps what is on each pCPU, and what is on each pCPU is
+the idle vCPU, because dom0's are blocked — so the `*** Dumping CPU0 guest
+state ***` block that every earlier boot had is simply absent.
+
+`0` is the handler for exactly that: it pauses the hardware domain's vCPUs and
+dumps them wherever they are. It was dropped after boot 6 because it hung, and
+it has been bounded since boot 7, and a blocked vCPU stops instantly, so the
+bound will not even be reached. The keys become `0pq` — `d` is redundant now
+that `0` covers the running case too, and dropping it halves the log.
+
+With dom0's PC and stack against the same `System.map`, "blocked inside
+`virtio_pci_probe()` waiting for X" stops being an inference.
+
+| What the log shows | What it means |
+|---|---|
+| d0v0 in `virtnet_probe` or `virtnet_send_command` | Waiting on the control virtqueue, i.e. the device is not answering a kick. That is DMA or the notify BAR, not interrupts. |
+| d0v0 in `wait_for_completion` under `really_probe` | Deferred or asynchronous probe waiting on another thread; find that thread in d0v1's dump. |
+| d0v0 in `msix_capability_init` or below | MSI-X setup itself, and the v2m frame is next. |
+| d0v0 somewhere unrelated to PCI | The `of_irq_parse_pci` line was a coincidence and the boot stops for its own reasons. |
 
 ### The list
 
