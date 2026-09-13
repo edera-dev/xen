@@ -168,13 +168,35 @@ void virt_timer_save(struct vcpu *v)
     if ( likely(cval != VTIMER_CVAL_PUSHED) )
         v->arch.virt_timer.cval = cval;
 
-    if ( (v->arch.virt_timer.ctl & CNTx_CTL_ENABLE) &&
-         !(v->arch.virt_timer.ctl & CNTx_CTL_MASK))
+    /*
+     * Arm on ENABLE alone.  IMASK in this register is Xen's, not the guest's:
+     * vtimer_interrupt() sets it to quiesce a line whose interrupt has already
+     * been injected, and only the guest clears it, by re-arming its timer.  So
+     * a vCPU that blocks after an interrupt and before the guest re-arms looks,
+     * to the test that used to be here, like a vCPU whose timer the guest does
+     * not want -- and gets no software fallback, which is the only thing that
+     * can wake a blocked vCPU when its deadline arrives.
+     *
+     * Boot 17 is what that costs.  Xen's hypervisor timer count on the two
+     * pCPUs carrying dom0 stayed at 124 and 4 from two seconds to thirty,
+     * against 2,502 on the pCPU with no guest on it: nothing was queued on
+     * them because nothing armed it, so dom0 slept with no way to wake.  On a
+     * platform where CNTV_CTL_EL0 does not read back live -- which boot 10
+     * measured -- this is worse than a race, because once Xen has set IMASK
+     * the read may keep saying so.
+     *
+     * A spurious virtual timer interrupt costs the guest one interrupt it
+     * dismisses.  A missing one costs it the boot.
+     */
+    if ( v->arch.virt_timer.ctl & CNTx_CTL_ENABLE )
     {
+        perfc_incr(virt_timer_sw_armed);
         set_timer(&v->arch.virt_timer.timer,
                   v->domain->arch.virt_timer_base.nanoseconds +
                   ticks_to_ns(v->arch.virt_timer.cval));
     }
+    else
+        perfc_incr(virt_timer_sw_idle);
 }
 
 void virt_timer_restore(struct vcpu *v)
