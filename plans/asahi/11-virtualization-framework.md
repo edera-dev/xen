@@ -2042,6 +2042,58 @@ facts about this platform, none of which are true anywhere else:
   already injected, which is what tells the fallback whether a passed deadline
   is owed to the guest or already paid.
 
+### Boot 23, overnight: dom0's second vCPU stops
+
+Left running, dom0 wedged one CPU after about eleven minutes:
+
+```
+rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
+rcu:     1-...0: (20 ticks this GP) idle=ead4/1/0x4000000000000000 softirq=10230/10231
+rcu:     (detected by 0, t=600017 jiffies, g=12621, q=1453 ncpus=2)
+Sending NMI from CPU 0 to CPUs 1:
+```
+
+Read carefully, that says four things. **CPU0 is entirely healthy** — it
+detects, it counts `fqs` up to 142,503, it keeps printing. **CPU1 has taken
+twenty timer ticks in six hundred seconds**, which is not a slow tick, it is no
+tick. **CPU1 does not answer the backtrace IPI**: the "Sending NMI" line is
+never followed by a trace. And **RCU believes CPU1 is not idle**
+(`dynticks_nesting` is 1), which is what a vCPU looks like if it stopped being
+run while in kernel code — the state was true when it was last updated and has
+not been updated since.
+
+Those four together are the signature of a vCPU that Xen is not running, not of
+a guest spinning. Which of the two reasons it could be is exactly what the log
+cannot say:
+
+- **pCPU1 is in an interrupt storm**, so vCPU1 is runnable and starved. Every
+  earlier storm looked precisely like this from dom0's side.
+- **vCPU1 is blocked and nothing ever wakes it** — the virtual timer PPI masked
+  with no unmask, and the software fallback declined.
+
+### Why the console did not say which
+
+Because of a change in the previous section. The stuck report was cut from
+"first four, then every 4096" down to "once", on the grounds that one spurious
+assertion per tick is the expected shape and the rate belongs in the counters.
+That is true, and it is also how a storm eleven minutes into an overnight run
+became invisible: the counters are only readable through `xl`, and `xl` does
+not exist on this machine.
+
+Trimming output is right; trimming it to a single line is not. A *count* is not
+news here, but a *rate* is — four thousand assertions in under a second is not
+a tick rate. So `vtimer_note()` now says the first one, then at most one line a
+second for as long as the rate stays pathological, and nothing in between, on
+both the stuck path and the no-guest path. The clock read it needs is taken
+once per 4096 interrupts, not per interrupt.
+
+That makes the next occurrence self-describing:
+
+| What the log shows | What it means |
+|---|---|
+| `virtual timer asserted ... (#N)` repeating once a second on CPU1 | A storm. vCPU1 is runnable and starved, and the masking has a hole in it. |
+| Nothing from Xen, dom0 stalling the same way | No storm. vCPU1 is blocked and nothing wakes it: the fault is in the wake path, not the mask. |
+
 ### What is left
 
 - **The Xen tools are not built.** `/dev/xen` has only `xenbus`; there is no

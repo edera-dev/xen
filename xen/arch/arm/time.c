@@ -345,27 +345,50 @@ static void vtimer_ppi_quiesce(void)
  * Repeat it rather than saying it once.  The first of these happens seconds
  * into a boot, at the top of a log that is the easiest part to lose.
  */
-/*
- * Say this once.  One spurious assertion per guest tick is the expected shape
- * of it here, so the rate belongs in the counters, not the console -- and a
- * console that costs a virtio descriptor per character is not a place to spend
- * a storm's worth of output, least of all while diagnosing one.
- */
-static void vtimer_report_stuck(register_t ctl)
-{
-    static unsigned long count;
-    unsigned long n = ++count;
+static DEFINE_PER_CPU(unsigned long, vtimer_noise);
+static DEFINE_PER_CPU(s_time_t, vtimer_noise_window);
+static DEFINE_PER_CPU(s_time_t, vtimer_noise_said);
 
-    if ( n > 1 )
+/*
+ * One spurious assertion per guest tick is the expected shape of this here, so
+ * a count is not news and a line per interrupt would be a storm of its own.  A
+ * *rate* is news: four thousand in under a second is not a tick rate.
+ *
+ * So say the first one, then at most one line a second for as long as the rate
+ * stays pathological, and nothing at all in between.  Boot 23 said it once and
+ * only once, which made the overnight hang that followed invisible from the
+ * console -- a silence that cost a night's evidence.
+ *
+ * The clock read costs about a microsecond on this platform, so it is taken
+ * once every 4096 interrupts rather than on each one.  At any rate worth
+ * reporting that is far more often than once a second; at a sane one it costs
+ * nothing that matters.
+ */
+static void vtimer_note(const char *what)
+{
+    unsigned long n = ++this_cpu(vtimer_noise);
+    s_time_t now;
+
+    if ( likely(n != 1 && (n & 0xfff)) )
         return;
 
-    printk(XENLOG_ERR
-           "CPU%u: %pv's virtual timer asserted again while masked (#%lu)\n",
-           smp_processor_id(), current, n);
-    printk(XENLOG_ERR
-           "  CNTV_CTL %"PRIregister", CNTVCT %016"PRIx64", CNTV_CVAL %016"PRIx64", CNTVOFF %016"PRIx64"\n",
-           ctl, READ_SYSREG64(CNTVCT_EL0),
-           READ_SYSREG64_EL0(CNTV_CVAL), READ_SYSREG64(CNTVOFF_EL2));
+    now = NOW();
+
+    if ( n == 1 ||
+         (now - this_cpu(vtimer_noise_window) < SECONDS(1) &&
+          now - this_cpu(vtimer_noise_said) >= SECONDS(1)) )
+    {
+        printk(XENLOG_ERR "CPU%u: virtual timer %s (#%lu)\n",
+               smp_processor_id(), what, n);
+        printk(XENLOG_ERR
+               "  CNTV_CTL %"PRIregister", CNTVCT %016"PRIx64", CNTV_CVAL %016"PRIx64", CNTVOFF %016"PRIx64"\n",
+               READ_SYSREG_EL0(CNTV_CTL), READ_SYSREG64(CNTVCT_EL0),
+               READ_SYSREG64_EL0(CNTV_CVAL), READ_SYSREG64(CNTVOFF_EL2));
+
+        this_cpu(vtimer_noise_said) = now;
+    }
+
+    this_cpu(vtimer_noise_window) = now;
 }
 
 static void vtimer_interrupt(int irq, void *dev_id)
@@ -401,6 +424,7 @@ static void vtimer_interrupt(int irq, void *dev_id)
     if ( unlikely(is_idle_vcpu(current)) )
     {
         perfc_incr(virt_timer_no_guest);
+        vtimer_note("asserted with no guest on the pCPU");
         vtimer_ppi_set_enabled(false);
 
         return;
@@ -447,7 +471,7 @@ static void vtimer_interrupt(int irq, void *dev_id)
          * happens to re-arm for some other reason, which from inside looks
          * exactly like timers that sometimes do not fire.
          */
-        vtimer_report_stuck(ctl);
+        vtimer_note("asserted again while masked");
         vtimer_ppi_quiesce();
 
         return;
