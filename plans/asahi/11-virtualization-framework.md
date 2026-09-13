@@ -341,7 +341,7 @@ off and is selected only by `APPLE_VZ`.
 | `plans/asahi/vz/gen-vz-dtb.py`, `vz.dts` | §3. |
 | `common/device-tree/kernel.c` | Report what a rejected boot module actually is, rather than only `rc = -22`. |
 | `arch/arm/time.c`, `arch/arm/setup.c` | A 10 ms self-test that proves the hypervisor timer's interrupt arrives, run while there is still a console to report it on. §7. |
-| `common/keyhandler.c` | `auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`, which runs debug keys off a timer rather than off console input. §7. |
+| `common/keyhandler.c` | `auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`, which runs debug keys off a timer rather than off console input, and bounds the two waits inside `d` and `0` so that one unresponsive CPU or vCPU cannot cost the whole dump. §7. |
 | `plans/asahi/vz/install-vz.sh` | §6. Installs Xen and the DTB, writes the GRUB entries, and fixes the four things that make a first boot fail silently. |
 
 Note what is *not* here. No AIC, no dockchannel, no s5l, no forced-VHE work,
@@ -466,7 +466,7 @@ For reference, and for typing at the GRUB prompt (`c`) when bisecting:
 insmod xen_boot
 search --no-floppy --fs-uuid --set=root <the /boot filesystem UUID>
 devicetree /xen/vz.dtb
-xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=0dq,10,3
+xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=dpq,10,5
 xen_module /vmlinuz-xen-dom0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=/root selinux=0 console=tty0 console=hvc0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
@@ -485,9 +485,10 @@ Notes on the command lines:
   only.
 - `console_to_ring conring_size=512` per §2. These are the difference between
   having a log and not.
-- `auto_debug_keys=0dq,10,3` runs the `0`, `d` and `q` keyhandlers ten,
-  twenty and thirty seconds after Xen's initcalls, without anything being
-  typed. Why it cannot be typed instead is the first part of §7.
+- `auto_debug_keys=dpq,10,5` runs the `d`, `p` and `q` keyhandlers every ten
+  seconds, five times over, without anything being typed. Why it cannot be
+  typed instead is the first part of §7; why these three keys in this order,
+  and why `p` needs `CONFIG_PERF_COUNTERS=y`, is "What boot 7 changes".
 - `noreboot` because the default is not what you want here. `panic()` calls
   `machine_restart(5000)` unless told otherwise, and on a machine whose only
   log is the console ring, rebooting on panic destroys the one copy of the
@@ -594,10 +595,15 @@ things are now measured rather than assumed:
 i.e. the end of `time_init()` (`init/main.c:978`). The next `printk` a normal
 arm64 boot produces is `Console: colour dummy device 80x25` from `con_init()`
 inside `console_init()` (`init/main.c:1002`). Between the two there is
-`perf_event_init()`, `profile_init()`, `call_function_init()`,
-`kmem_cache_init_late()` — and **`local_irq_enable()` at
-`init/main.c:993`**, which is the first moment dom0 takes an interrupt at EL1
-at all.
+`kfence_init()` at `init/main.c:984`, `perf_event_init()`, `profile_init()`,
+`call_function_init()`, `kmem_cache_init_late()` — and **`local_irq_enable()`
+at `init/main.c:993`**, which is the first moment dom0 takes an interrupt at
+EL1 at all.
+
+(Boot 6 found it in `kfence_init()`, four lines into that window and nine
+lines before the `local_irq_enable()`, so most of what follows in this section
+was aimed at the wrong thing. It is kept because the things it ruled out are
+still ruled out.)
 
 A virtual timer interrupt is already waiting for it. `arch_timer_register()`
 ends with `cpuhp_setup_state(CPUHP_AP_ARM_ARCH_TIMER_STARTING, ...)` —
@@ -700,12 +706,12 @@ Two changes make the next boot answer this on its own:
   that never delivers it boots to the very end looking healthy.
 - **`auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`**, which runs the same
   keyhandlers off a timer instead of off input. `install-vz.sh` now puts
-  `auto_debug_keys=0dq,10,3` on the hypervisor command line, so dom0's
-  registers, every pCPU's registers and the domain list are dumped three times
-  at ten-second intervals with nothing typed. It runs them from a tasklet, not
-  from the timer callback, because `0` pauses the vCPU it is dumping and doing
-  that from a timer that interrupted that same vCPU would deadlock — a
-  tasklet runs on the idle vCPU, which is where a real keypress ends up too.
+  `auto_debug_keys=dpq,10,5` on the hypervisor command line, so every pCPU's
+  registers, the performance counters and the domain list are dumped five
+  times at ten-second intervals with nothing typed. It runs them from a
+  tasklet, not from the timer callback, because the handlers that pause a vCPU
+  must not run from a timer that interrupted that same vCPU — a tasklet runs
+  on the idle vCPU, which is where a real keypress ends up too.
 
 Three dumps rather than one is the point of `repeats`: a dom0 spinning in its
 own handler and a dom0 that has stopped dead are indistinguishable in a single
@@ -839,11 +845,163 @@ with a different answer — it is the one that depends on macOS honouring the
 nested `HCR_EL2.IMO` — and boot 5 says nothing about it either way. Boot 6 is
 built to.
 
+### Boot 6: dom0 is alive, at EL1, in `kfence_init()`
+
+Boot 6 (`git:508803b5f6`) is the first boot that produced dumps, and they
+answer the question the last three sections were built around. Both of the
+candidates the table was pointed at are dead:
+
+- **`CPU0` answered the state dump request.** `*** Dumping CPU0 guest state
+  (d0v0): ***` is printed by CPU0 itself, from the IPI handler, while dom0
+  was running on it. No `CPU0 did not answer the state dump request` line
+  appears for any CPU. So a physical interrupt does reach virtual EL2 while
+  the CPU is executing a guest at EL1: macOS honours the nested
+  `HCR_EL2.IMO`. **Item 11 is ruled out**, and with it the whole of "Xen
+  never gets back onto CPU0".
+- **The console is draining.** No `vtcon: device stopped draining the
+  transmit ring`, and ~250 lines of dump came out after dom0 stopped
+  printing. **Item 12 is ruled out** for the window up to the first dump.
+- `q` says d0v0 is `[has=T]`, `pause_flags=0`, on CPU0, with `Inflight
+  irq=27` — the virtual timer, injected and waiting. d0v1 is `pause_flags=2`,
+  i.e. still `VPF_down`, which is right: dom0 has not reached `smp_init()`.
+  **Case 3 is ruled out.** CPU1–CPU4 are in `idle_loop`, so nothing else is
+  stuck either.
+
+So dom0 is running, at EL1, with `CPSR.I` set — before the
+`local_irq_enable()` that all of §"Where it stops" was about. `nokaslr` makes
+the rest exact. Resolved against the dom0 kernel's `System.map`, CPU0's guest
+stack is:
+
+```
+__primary_switched
+  start_kernel+0x304            init/main.c:984
+    kfence_init
+      kfence_init_pool
+        __get_random_u32_below
+          get_random_u32
+            _get_random_bytes
+              crng_make_state
+                extract_entropy
+                  arch_get_random_longs
+                    this_cpu_has_cap
+                      has_cpuid_feature
+                        read_scoped_sysreg
+                          __read_sysreg_by_encoding   <- PC
+```
+
+`ESR_EL2 = 0x6230026d` is `EC=0x18`, a trapped `MRS`: `Op0=3 Op1=0 CRn=0
+CRm=6 Op2=0`, which is `ID_AA64ISAR0_EL1`, into `Rt=19`. And `X19` in the
+dump is `0221100110212120` — byte for byte the `ISA Features` line Xen prints
+for itself at boot, i.e. the sanitised value Xen's `TID3` emulation returned.
+Disassembling the PC settles the rest:
+
+```
+ffff80008005a38c:  mrs  x19, id_aa64isar0_el1
+ffff80008005a390:  b    ...                      <- PC
+```
+
+**The PC is the instruction after the trapping `MRS`, and the value is
+already in the register.** Xen took the trap, emulated it, advanced the PC by
+four and returned. Nothing is wedged, nothing is looping on a trap Xen
+mishandles: dom0 is executing forwards. It is just doing it extremely slowly.
+
+### Why that stack is a trap amplifier
+
+`kfence_init_pool()` ends with a Fisher–Yates shuffle of its freelist —
+`for (i = CONFIG_KFENCE_NUM_OBJECTS; i > 0; i--) rand =
+get_random_u32_below(i);`, and this kernel has `CONFIG_KFENCE_NUM_OBJECTS=255`.
+At that point in boot the CRNG is not ready, so `get_random_u32()` takes its
+`if (!crng_ready())` path straight into `_get_random_bytes()`, and
+`crng_make_state()` with `crng_init == CRNG_EMPTY` calls `extract_entropy()`
+*every time* rather than once. `extract_entropy()` then runs a four-iteration
+loop that asks the architecture for entropy twice per iteration —
+`arch_get_random_seed_longs()` and `arch_get_random_longs()`.
+
+Both go through `__cpu_has_rng()`, and before `system_capabilities_finalized()`
+— which happens in `setup_system_features()` off `smp_cpus_done()`, far later
+— that is `this_cpu_has_cap(ARM64_HAS_RNG)`, which reads `ID_AA64ISAR0_EL1`
+for real rather than consulting the cap bitmap. Xen does not expose `RNDR`
+(the top nibble of the sanitised value above is `0`), so both calls fail and
+the loop falls back to `random_get_entropy()` — after paying for the reads.
+
+That is **eight trapped `MRS` per `get_random_u32_below()`, 255 times over:
+about two thousand exits to EL2 in one loop**, in a kernel that has produced
+no output since `sched_clock`. On real hardware it is imperceptible. Here it
+is the first stretch of dom0's boot long enough to be mistaken for a hang,
+and there is no reason to think it is the only one — dom0 has no timestamps
+yet (`[    0.000000]` on every line, `sched_clock_init()` is at
+`init/main.c:1030`), so nothing in the log says how long the *rest* of dom0's
+boot took either.
+
+None of this is a bug in Xen. `HCR_EL2.TID3` has to be set — feature
+sanitisation is what it is for, and KVM sets it too — and `HCR_EL2 =
+0x807c663f` in the dump is otherwise as sparse as it gets: `TVM`, `TTLB`,
+`TPU` and `TRVM` are all clear. The cost is the nested exit itself.
+
+### What boot 6 could not measure, and why
+
+There is exactly **one** dump. The log ends mid-way through the first run of
+the key sequence, on the line `*** Dumping Dom0 vcpu#0 state: ***` — the
+first `printk` in `vcpu_show_execution_state()`, whose next statement is
+`vcpu_pause(v)`.
+
+`vcpu_pause()` is `vcpu_pause_nosync()` plus a spin until the vCPU is off its
+pCPU, and the comment next to it in `arch/arm/traps.c` says `/* acceptably
+dangerous */`. It is not acceptable here, for a reason that has nothing to do
+with how long CPU0 takes to answer: the spin runs in a **tasklet**, and a
+tasklet that never returns takes out `do_softirq()` on the CPU running it.
+That CPU was CPU5 — deliberately, per the previous section — and on CPU5 sit
+the auto-keys repeat timer, the virtio-console's `rx` poll (so `CTRL-a`), and
+the timer that would have printed `device stopped draining the transmit
+ring`. One unbounded wait inside one keyhandler silenced every diagnostic the
+last two sections added, including the repeats.
+
+And the repeats were the measurement. One sample of a PC cannot distinguish
+"stuck" from "slow"; the disassembly above happens to, but only by luck.
+
+The premise that put `0` last was also wrong. `dump_hwdom_registers()` only
+defers to a tasklet under `alt_key_handling`, which is off unless `A` is
+pressed, so `0` never ran on "the hardware domain vCPU's own pCPU" at all —
+it ran on CPU5 like the others and blocked there.
+
+### What boot 7 changes
+
+- **`dump_hwdom_vcpu()`** — `0`'s per-vCPU wait is bounded at a second, like
+  `d`'s, using `vcpu_pause_nosync()` and an explicit deadline before handing
+  the already-stopped vCPU to `vcpu_show_execution_state()`. A vCPU that will
+  not stop now prints `*** d0v0 did not stop running on CPU0 ***` and the
+  sequence continues. The `v == current` case is dumped directly, as before.
+- **`auto_debug_keys` passes `need_context = true`**, as the keypress tasklet
+  always did. Without it `d` prints nothing at all for the CPU it runs on:
+  outside an interrupt `get_irq_regs()` is `NULL`, and the
+  `guest_cpu_user_regs()` fallback is by construction a guest frame — on an
+  idle vCPU, so `dump_execstate()` skips both of its two cases and returns.
+  That is why boot 6's dump has CPU0 through CPU4 in it and no CPU5.
+- **The keys become `dpq,10,5`**, and the build gets
+  `CONFIG_PERF_COUNTERS=y`. `d` first because CPU0's guest PC is the
+  measurement; `p` second because **the difference between two samples of
+  `trap: sysreg access` is the number** — it converts "is dom0 moving?" into
+  a trap rate, and a trap rate divided into the ~2000 traps that one kfence
+  shuffle costs says how long dom0 needs to get out of it. `0` is dropped:
+  d0v0 is on CPU0 and `d` already dumps it live and in more detail, d0v1 is
+  down, and `0` is what hung boot 6. Five runs rather than three, so the log
+  covers fifty seconds.
+
+`CONFIG_PERF_COUNTERS` is a `.config` setting and `.config` is not tracked;
+`./scripts/config --enable PERF_COUNTERS` before `update-xen`.
+
+| What the log shows | What it means |
+|---|---|
+| `trap: sysreg access` climbing by thousands between samples | dom0 is executing, and the nested exit cost is the whole problem. Measure it, then look at what dom0 can be made to stop doing — `kfence.sample_interval=0` on dom0's command line removes this particular loop outright. |
+| `trap: sysreg access` flat, guest PC identical | dom0 really has stopped, and it stopped somewhere `extract_entropy()` cannot: the loops on that stack are all bounded. |
+| Guest PC moves but the trap counters barely do | The cost is not the traps. Look at the counter reads (`random_get_entropy()` is `CNTVCT_EL0`) and at `flush_tlb_kernel_range()` from `kfence_protect()`. |
+| dom0 prints again, anywhere | It was only ever slow. The next question is how slow, and `p` answers that too. |
+
 ### The list
 
-In rough order of likelihood — though after boot 5 the two that matter are
-11 and 12, and everything above them is either settled or about a stage the
-boot now gets past:
+In rough order of likelihood — though after boot 6 the only one that matters
+is 13, and everything above it is either settled or about a stage the boot
+now gets past:
 
 1. **`Could not set up d0 guest OS (rc = -22)`**, right after `Loading
    ramdisk from boot module @ ...`. This is the first thing that actually
@@ -916,18 +1074,28 @@ boot now gets past:
    into the dom0 kernel it will race Xen's PV console for the `hvc0` name and
    fight Xen for the device. §2, and §6's kernel prerequisites.
 11. **No physical interrupt reaches virtual EL2 while a guest is running.**
+   *Ruled out by boot 6: CPU0 answered the state dump IPI from inside dom0.*
    Xen runs guests with `HCR_EL2.IMO` set, so every physical IRQ is supposed
    to be taken at EL2 rather than by the guest. Under nested virtualisation
    that is macOS's job to honour, on a path nothing else needs: KVM's guests
    are at EL1 under an EL2 that is *not* itself a guest. Everything boot 5
-   proved about interrupts — the `smp_call_function` in `setup_virt_paging()`,
-   the hypervisor timer's PPI — was proved on a CPU that was running Xen at
-   the time. This is the first suspect, and `CPU0 did not answer the state
-   dump request` is what it looks like.
+   proved about interrupts was proved on a CPU that was running Xen at the
+   time; boot 6 proved the other half.
 12. **The console's transmit ring stops draining.** One character per
    descriptor, 64 descriptors, and until boot 6 an unbounded spin in
    `__serial_putc()` when they are all in flight. Any CPU that printed while
    the host was not consuming would stop there for good, holding the port
    lock, with dom0's `earlycon` hypercall inside it. Item 5 is the same
    failure seen from further away. Boot 6 announces it instead: `vtcon: device
-   stopped draining the transmit ring`.
+   stopped draining the transmit ring`, and did not: the ring carried ~250
+   lines of dump after dom0 went quiet. *Ruled out for the window up to the
+   first dump*; the driver's `tx_ready()` bound stays regardless, because an
+   unbounded spin there is a bug whether or not it has fired yet.
+13. **Nested exits are slow enough to look like a hang.** dom0 is executing
+   at EL1 and making forward progress; it is in `kfence_init()`, in a loop
+   that costs about two thousand trapped `ID_AA64ISAR0_EL1` reads, and it has
+   no timestamps of its own to say how long anything took. This is the one
+   left, and the `p` key in boot 7 measures it directly. If it is confirmed,
+   the shape of the fix is on dom0's side and outside Xen — starting with
+   `kfence.sample_interval=0`, which removes this loop, and then whatever the
+   next such loop turns out to be.
