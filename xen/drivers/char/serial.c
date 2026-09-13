@@ -259,6 +259,14 @@ int __init serial_parse_handle(const char *conf)
         goto common;
     }
 
+#ifdef CONFIG_HAS_VIRTIO_CONSOLE
+    if ( !strncmp(conf, "vtcon", 5) && (!conf[5] || conf[5] == ',') )
+    {
+        handle = SERHND_VTCON;
+        goto common;
+    }
+#endif
+
     if ( strncmp(conf, "com", 3) )
         goto fail;
 

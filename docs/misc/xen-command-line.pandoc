@@ -440,7 +440,7 @@ The following are examples of correct specifications:
 Specify the size of the console ring buffer.
 
 ### console
-> `= List of [ vga | com1[H,L] | com2[H,L] | pv | dbgp | ehci | xhci | none ]`
+> `= List of [ vga | com1[H,L] | com2[H,L] | pv | dbgp | ehci | xhci | vtcon | none ]`
 
 > Default: `console=com1,vga`
 
@@ -463,6 +463,11 @@ compiled with `CONFIG_XEN_GUEST` enabled.
 `dbgp` or `ehci` indicates that Xen should use a USB2 debug port.
 
 `xhci` indicates that Xen should use a USB3 debug port.
+
+`vtcon` indicates that Xen should use a virtio-console device on a PCI bus.
+This is for platforms which have no UART of any kind; see `vtcon` below.  It
+is only available if the hypervisor was compiled with
+`CONFIG_HAS_VIRTIO_CONSOLE` enabled.
 
 `none` indicates that Xen should not use a console.  This option only
 makes sense on its own.
@@ -2986,6 +2991,21 @@ provide access to a wealth of low level processor information.
 *Warning:*
 As the virtualisation is not 100% safe, don't use the vpmu flag on
 production systems (see https://xenbits.xen.org/xsa/advisory-163.html)!
+
+### vtcon
+> `= <bus>:<device>.<function>`
+
+> Default: the first usable virtio-console on the first bus
+
+Specify which PCI function Xen should drive as its virtio-console, for use
+with `console=vtcon`.  Only available if the hypervisor was compiled with
+`CONFIG_HAS_VIRTIO_CONSOLE` enabled.
+
+Xen owns whichever device it selects and hides it from the hardware domain, so
+nothing else may drive it.  A device offering `VIRTIO_CONSOLE_F_MULTIPORT` is
+never selected: the ports of such a device have to be opened through its
+control queue, and until that handshake completes there is no way to tell
+whether anything on the host is draining the port.
 
 ### vwfi (arm)
 > `= trap | native`
