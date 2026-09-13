@@ -426,6 +426,8 @@ void asmlinkage __init noreturn start_xen(unsigned long fdt_paddr)
     local_irq_enable();
     local_abort_enable();
 
+    check_timer_interrupt_delivery();
+
     smp_prepare_cpus();
 
     initialize_keytable();

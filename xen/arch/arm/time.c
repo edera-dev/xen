@@ -333,6 +333,58 @@ void init_timer_interrupt(void)
     check_timer_irq_cfg(timer_irq[TIMER_PHYS_NONSECURE_PPI], "NS-physical");
 }
 
+static void __init cf_check timer_selftest_fired(void *data)
+{
+    write_atomic((bool *)data, true);
+}
+
+/*
+ * Everything Xen does after boot that is not driven by a guest rests on the
+ * hypervisor timer's PPI arriving: the scheduler tick, every polled console
+ * driver -- so console *input*, and with it the debug keys -- and every
+ * timeout in the tree.  Nothing during boot needs it, though, because the
+ * boot path reads the counter rather than waiting on the interrupt.  So a
+ * machine that does not deliver it boots to the very end looking healthy and
+ * then quietly stops, with no console left to ask about it.
+ *
+ * That is not hypothetical: an EL2 whose outer hypervisor has to emulate
+ * CNTHP_EL2 for a nested guest may well not, since the obvious thing to run
+ * nested -- Linux with KVM in nVHE mode -- never programs it.
+ *
+ * So spend 10ms here proving the interrupt arrives, while there is still a
+ * console to say so on.  The wait polls softirqs by hand because a timer
+ * fires from TIMER_SOFTIRQ, which nothing would otherwise run this early.
+ */
+void __init check_timer_interrupt_delivery(void)
+{
+    static bool __initdata fired;
+    struct timer t;
+    s_time_t give_up;
+
+    init_timer(&t, timer_selftest_fired, &fired, smp_processor_id());
+    set_timer(&t, NOW() + MILLISECS(10));
+
+    give_up = NOW() + SECONDS(1);
+    while ( !read_atomic(&fired) && NOW() < give_up )
+        process_pending_softirqs();
+
+    kill_timer(&t);
+
+    if ( read_atomic(&fired) )
+    {
+        printk("Hypervisor timer IRQ%u works\n", timer_irq[TIMER_HYP_PPI]);
+        return;
+    }
+
+    printk(XENLOG_ERR
+           "Hypervisor timer IRQ%u never fired.  Xen has no working timer:\n"
+           "  - the scheduler will never preempt a guest;\n"
+           "  - polled consoles will never poll, so no input reaches Xen and\n"
+           "    'CTRL-a' three times followed by a debug key will do nothing;\n"
+           "  - a guest waiting on its own first timer interrupt will hang.\n",
+           timer_irq[TIMER_HYP_PPI]);
+}
+
 /*
  * Revert actions done in init_timer_interrupt that are required to properly
  * disable this CPU.

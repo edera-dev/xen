@@ -98,6 +98,9 @@ unsigned int timer_get_irq(enum timer_ppi ppi);
 /* Set up the timer interrupt on this CPU */
 extern void init_timer_interrupt(void);
 
+/* Check that the hypervisor timer's interrupt actually arrives */
+void check_timer_interrupt_delivery(void);
+
 /* Counter value at boot time */
 extern uint64_t boot_count;
 
