@@ -219,6 +219,27 @@ to be performed without the overhead of a complete TLB flush.
 Forces all CPUs' full state to be logged upon certain fatal asynchronous
 exceptions (watchdog NMIs and unexpected MCEs).
 
+### auto_debug_keys
+> `= <keys>[,<seconds>[,<repeats>]]`
+
+> Default: `` (disabled)
+
+Run a sequence of debug keys automatically, on a timer, with nothing typed.
+`<keys>` is the keys to run, in order, as they would be typed after `CTRL-a`
+three times; `<seconds>` is how long to wait before each run, and `<repeats>`
+is how many runs to do in total.
+
+This exists for bring-up on a machine whose console input may not work.  Every
+polled console driver polls off a Xen timer, so if the machine is not
+delivering the hypervisor timer's interrupt then no keypress ever reaches Xen
+and the debug keys cannot be used at all -- which is exactly when they are
+wanted.  Repeating the dump is what separates a guest spinning in its own
+interrupt handler from one that has stopped.
+
+For example, `auto_debug_keys=0dq,10,3` dumps the hardware domain's
+registers, every pCPU's registers and the domain list ten, twenty and thirty
+seconds after Xen's initcalls run.
+
 ### ats (x86)
 > `= <boolean>`
 

@@ -14,6 +14,7 @@
 #include <xen/serial.h>
 #include <xen/sched.h>
 #include <xen/tasklet.h>
+#include <xen/timer.h>
 #include <xen/domain.h>
 #include <xen/rangeset.h>
 #include <xen/compat.h>
@@ -79,6 +80,95 @@ static void cf_check keypress_action(void *unused)
 }
 
 static DECLARE_TASKLET(keypress_tasklet, keypress_action, NULL);
+
+/*
+ * Debug keys are only reachable through console input, and console input is
+ * the first thing to go when a machine is not delivering interrupts: every
+ * polled console driver polls off a Xen timer, and a timer needs the very
+ * interrupt that is in question.  So on a bring-up where the suspect is
+ * interrupt delivery itself, the tool for looking at it is the one tool that
+ * cannot be relied on.  These keys run themselves instead, on a timer, so the
+ * dumps appear in the log with nothing typed at all.
+ *
+ * Repeating matters as much as dumping: a guest spinning in its own interrupt
+ * handler and a guest that has stopped dead look identical in one dump and
+ * completely different in three.
+ */
+static char __read_mostly auto_keys[16];
+static unsigned int __read_mostly auto_period = 10; /* seconds */
+static unsigned int __read_mostly auto_runs = 3;
+static struct timer auto_keys_timer;
+
+static int __init cf_check parse_auto_debug_keys(const char *s)
+{
+    const char *end = strchr(s, ',');
+    size_t len = end ? end - s : strlen(s);
+
+    if ( len >= sizeof(auto_keys) )
+        return -EINVAL;
+
+    memcpy(auto_keys, s, len);
+    auto_keys[len] = '\0';
+
+    if ( !end )
+        return 0;
+
+    s = end + 1;
+    auto_period = simple_strtoul(s, &end, 0);
+    if ( end == s || !auto_period )
+        return -EINVAL;
+
+    if ( *end != ',' )
+        return *end ? -EINVAL : 0;
+
+    s = end + 1;
+    auto_runs = simple_strtoul(s, &end, 0);
+
+    return (end == s || *end) ? -EINVAL : 0;
+}
+custom_param("auto_debug_keys", parse_auto_debug_keys);
+
+/*
+ * Run from a tasklet rather than straight from the timer: the '0' handler
+ * pauses the vCPU it is dumping, and doing that from a timer that interrupted
+ * the very vCPU in question deadlocks.  A tasklet runs on the idle vCPU,
+ * which is where a real keypress would have ended up too.
+ */
+static void cf_check auto_keys_action(void *unused)
+{
+    const char *k;
+
+    printk("*** auto_debug_keys: '%s', %u run%s left ***\n",
+           auto_keys, auto_runs, auto_runs == 1 ? "" : "s");
+
+    for ( k = auto_keys; *k; k++ )
+        handle_keypress(*k, false);
+
+    if ( --auto_runs )
+        set_timer(&auto_keys_timer, NOW() + SECONDS(auto_period));
+}
+
+static DECLARE_TASKLET(auto_keys_tasklet, auto_keys_action, NULL);
+
+static void cf_check auto_keys_expired(void *unused)
+{
+    tasklet_schedule(&auto_keys_tasklet);
+}
+
+static int __init cf_check auto_debug_keys_init(void)
+{
+    if ( !auto_keys[0] || !auto_runs )
+        return 0;
+
+    printk("Debug keys '%s' will run %u time%s, every %us from now\n",
+           auto_keys, auto_runs, auto_runs == 1 ? "" : "s", auto_period);
+
+    init_timer(&auto_keys_timer, auto_keys_expired, NULL, smp_processor_id());
+    set_timer(&auto_keys_timer, NOW() + SECONDS(auto_period));
+
+    return 0;
+}
+__initcall(auto_debug_keys_init);
 
 void handle_keypress(unsigned char key, bool need_context)
 {
