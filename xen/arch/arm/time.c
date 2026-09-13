@@ -175,8 +175,14 @@ static void __init init_dt_xen_time(void)
         /*
          * Do not panic if "hyp-virt" PPI is not found, since it's not
          * currently used.
+         *
+         * "sec-phys" is likewise not required: the arm,armv8-timer binding
+         * makes it optional, and a system with no Secure world simply has no
+         * secure physical timer to describe.  A platform with no EL3 lists
+         * only phys/virt/hyp-phys/hyp-virt in its timer node.  Consumers of
+         * this PPI substitute GUEST_TIMER_PHYS_S_PPI when it is absent.
          */
-        else if ( i != TIMER_HYP_VIRT_PPI )
+        else if ( i != TIMER_HYP_VIRT_PPI && i != TIMER_PHYS_SECURE_PPI )
             panic("Timer: Unable to retrieve IRQ %u from the device tree\n", i);
     }
 }
