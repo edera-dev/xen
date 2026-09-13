@@ -29,6 +29,7 @@
 #include <asm/platform.h>
 #include <asm/system.h>
 #include <asm/vgic.h>
+#include <asm/vtimer.h>
 
 uint64_t __read_mostly boot_count;
 
@@ -336,9 +337,9 @@ static void vtimer_report_stuck(register_t before, register_t after)
            before, after, READ_SYSREG64(CNTVCT_EL0),
            READ_SYSREG64_EL0(CNTV_CVAL), READ_SYSREG64(CNTVOFF_EL2));
     printk(XENLOG_ERR "  %s\n",
-           (after & CNTx_CTL_ENABLE)
-           ? "ENABLE did not clear either: this timer cannot be stopped from EL2"
-           : "timer disabled; PPI masked at the GIC for a millisecond instead");
+           (after & CNTx_CTL_PENDING)
+           ? "ISTATUS survived the deadline being pushed out: nothing in this timer drives the line"
+           : "ISTATUS cleared by pushing the deadline out; the guest re-arms it itself");
 }
 
 static void vtimer_interrupt(int irq, void *dev_id)
@@ -381,20 +382,38 @@ static void vtimer_interrupt(int irq, void *dev_id)
     {
         perfc_incr(virt_timer_stuck);
 
-        /*
-         * Boot 8 said this is not enough: ENABLE was cleared here on the
-         * previous interrupt and the line came back anyway.  Whether it came
-         * back because the write never reached the guest's copy of the
-         * register is what "while masked+off" counts -- it is the number of
-         * times ENABLE was found set again after being cleared.
-         */
         if ( ctl & CNTx_CTL_ENABLE )
             perfc_incr(virt_timer_stuck_on);
 
-        WRITE_SYSREG_EL0((ctl & ~CNTx_CTL_ENABLE) | CNTx_CTL_MASK, CNTV_CTL);
+        /*
+         * Boot 9 measured what the line actually follows.  Neither IMASK nor
+         * ENABLE: boot 8 cleared ENABLE on every one of nine million of these
+         * and the next one arrived anyway.  That leaves ISTATUS, the only
+         * other input to the timer's output, and the only way to clear it from
+         * here is to move the deadline the guest set.
+         *
+         * Do that rather than clearing ENABLE.  Clearing ENABLE was not merely
+         * useless, it was harmful: virt_timer_save() arms the software
+         * fallback timer only for a vCPU whose timer is enabled and unmasked,
+         * so a vCPU descheduled after one of these had no timer left at all.
+         * Pushing the deadline out leaves both bits as the guest set them, and
+         * the guest un-pushes the deadline itself when it re-arms -- it is
+         * about to, because the interrupt this is all about is already queued
+         * in its vGIC.
+         */
+        current->arch.virt_timer.cval = READ_SYSREG64_EL0(CNTV_CVAL);
+        WRITE_SYSREG64_EL0(VTIMER_CVAL_PUSHED, CNTV_CVAL);
+        WRITE_SYSREG_EL0(ctl | CNTx_CTL_MASK, CNTV_CTL);
         isb();
         vtimer_report_stuck(ctl, READ_SYSREG_EL0(CNTV_CTL));
 
+        /*
+         * Still mask the PPI as a backstop, for the case where the line is not
+         * this timer's output at all.  "IRQs taken while disabled at the GIC"
+         * says whether that mask is being honoured -- boot 9 left ten million
+         * interrupts unaccounted for, and the silent drop here is where they
+         * would have gone.
+         */
         vtimer_ppi_quiesce();
 
         return;

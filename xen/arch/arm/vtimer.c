@@ -151,11 +151,23 @@ void vcpu_timer_destroy(struct vcpu *v)
 
 void virt_timer_save(struct vcpu *v)
 {
+    uint64_t cval;
+
     ASSERT(!is_idle_vcpu(v));
 
     v->arch.virt_timer.ctl = READ_SYSREG_EL0(CNTV_CTL);
     WRITE_SYSREG_EL0(v->arch.virt_timer.ctl & ~CNTx_CTL_ENABLE, CNTV_CTL);
-    v->arch.virt_timer.cval = READ_SYSREG64_EL0(CNTV_CVAL);
+
+    /*
+     * Not the guest's deadline but the one vtimer_interrupt() pushed out to
+     * silence the interrupt line; the guest's is the one already saved here.
+     * Keeping it would arm the fallback timer below for the far future and
+     * cost the guest the tick this is meant to protect.
+     */
+    cval = READ_SYSREG64_EL0(CNTV_CVAL);
+    if ( likely(cval != VTIMER_CVAL_PUSHED) )
+        v->arch.virt_timer.cval = cval;
+
     if ( (v->arch.virt_timer.ctl & CNTx_CTL_ENABLE) &&
          !(v->arch.virt_timer.ctl & CNTx_CTL_MASK))
     {

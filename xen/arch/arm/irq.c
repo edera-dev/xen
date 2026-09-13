@@ -312,7 +312,16 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
     }
 
     if ( test_bit(_IRQ_DISABLED, &desc->status) )
+    {
+        /*
+         * Disabled at the interrupt controller and delivered anyway.  On real
+         * hardware this is a narrow race on the way into disable_irq(); a
+         * large count means the controller is not honouring the mask, which
+         * is otherwise invisible because this path is silent.
+         */
+        perfc_incr(irqs_while_disabled);
         goto out;
+    }
 
     set_bit(_IRQ_INPROGRESS, &desc->status);
 

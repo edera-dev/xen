@@ -20,6 +20,15 @@
 #ifndef __ARCH_ARM_VTIMER_H__
 #define __ARCH_ARM_VTIMER_H__
 
+/*
+ * A deadline no guest programs -- twenty-four thousand years out at 24MHz.
+ * vtimer_interrupt() writes it to CNTV_CVAL_EL0 to clear ISTATUS on a platform
+ * whose virtual timer interrupt line follows neither IMASK nor ENABLE, and
+ * virt_timer_save() recognises it and saves what the guest asked for instead.
+ * The guest un-pushes it itself the moment it re-arms.
+ */
+#define VTIMER_CVAL_PUSHED  (~0ULL >> 1)
+
 extern int domain_vtimer_init(struct domain *d,
                               struct xen_arch_domainconfig *config);
 extern int vcpu_vtimer_init(struct vcpu *v);

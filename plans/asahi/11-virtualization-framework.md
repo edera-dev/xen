@@ -1187,9 +1187,136 @@ tick the first time it is deliverable, because the handler only injects when
 | `Virtual timer PPI disabled at the GIC` near zero, storm gone | The line does follow `ENABLE` after all and boot 8's reading was wrong. |
 | Storm unchanged at 309,000/s | The PPI is not being disabled — the redistributor write is going the same way as the timer write, and the only lever left is not to route the guest's timer through the hardware at all. |
 
+### Boot 9: dom0 boots, and the report line arrives
+
+Boot 9 (`git:bd978701d3-dirty`) is the first boot where dom0 gets a CPU. It
+goes from `sched_clock` — where boots 3 through 8 all stopped — through
+`kfence: initialized`, `Console: colour dummy device`, `printk: legacy
+console [tty0] enabled`, `[hvc0] enabled`, `Calibrating delay loop`, the LSM
+stack, `xen:grant_table: Grant tables using version 1 layout`, `xen:events:
+Using FIFO-based ABI`, `smp: Brought up 1 node, 2 CPUs`, `devtmpfs:
+initialized`, `clocksource: Switched to clocksource arch_sys_counter`, and on
+to `pnp: PnP ACPI: disabled`. It has timestamps of its own for the first
+time, so from here dom0's own clock can be compared against Xen's.
+
+And the report line, at last:
+
+```
+(XEN) CPU0: d0v0's virtual timer fired again with IMASK already set (#1)
+(XEN)   CNTV_CTL 0000000000000007 -> 0000000000000006, CNTVCT 0000000001dba72a,
+        CNTV_CVAL 0000000001db95bc, CNTVOFF 0000000009745572
+```
+
+`CNTV_CVAL` is `0x01db95bc` against a `CNTVCT` of `0x01dba72a`: a deadline
+4,462 ticks — 186 microseconds — behind the counter, exactly where a tick
+that has just expired should be. Reports #2 through #4 show the same shape at
+three later counter values. **Xen is reading the guest's copy of the timer.**
+Reading 2 is dead, and with it the worry that Xen has spent four boots
+masking a timer nobody was using.
+
+`0x7 -> 0x6` says the rest: both bits are writable, both read back, `ENABLE`
+clears when told to. Xen's view of this timer is entirely normal.
+
+What the line follows is neither of them. The counters:
+
+```
+(XEN) Virtual timer interrupts                 TOTAL[224]  CPU00[180]  CPU01[44]
+(XEN) Virtual timer interrupts while masked    TOTAL[112]  CPU00[ 90]  CPU01[22]
+(XEN) Virtual timer interrupts while masked+off TOTAL[112]  CPU00[ 90]  CPU01[22]
+(XEN) Virtual timer PPI disabled at the GIC    TOTAL[112]  CPU00[ 90]  CPU01[22]
+```
+
+224 interrupts, of which 112 were re-entries: **exactly one spurious
+assertion per real expiry**. That is not a storm, it is a latch. PPI 27 is
+made pending at the moment the timer expires, and masking the source
+afterwards does not retract it — which is the behaviour the comment already
+at the top of `vtimer_interrupt()` warns about for an edge-triggered timer
+interrupt, on a line `check_timer_irq_cfg()` reports as level-triggered.
+
+Boots 7 and 8 were the same fact seen through a guest that could not run: the
+deadline stayed in the past, so the assertion was continuous rather than
+one-per-tick, and no amount of masking cleared it.
+
+### But `#PPIs` is ten million
+
+```
+(XEN) #PPIs   TOTAL[10798559]  CPU00[5379793]  CPU01[5417166]  CPU05[1633]
+```
+
+Against 224 virtual timer interrupts and 223 hypervisor timer interrupts on
+CPU0 and CPU1 together. **Ten point eight million interrupts reached
+`do_IRQ()` and no handler ran for any of them.** In a `debug=y` build there
+is exactly one path in `do_IRQ()` that discards an interrupt silently:
+
+```c
+if ( test_bit(_IRQ_DISABLED, &desc->status) )
+    goto out;
+```
+
+— and `_IRQ_DISABLED` on PPI 27 is precisely what `gicv3_irq_disable()` sets
+when boot 9's workaround quiesces it. CPU5 is the control: it runs no guest,
+so it never disables PPI 27, and its `#PPIs` equals its hypervisor timer
+count to the interrupt.
+
+So the redistributor's enable bit looks no more effective than `IMASK` or
+`ENABLE` were. The workaround did not stop the interrupts; it made them
+cheap. That bought a factor of a hundred and the whole of dom0's boot so far,
+but CPU0 and CPU1 are still taking a quarter of a million interrupts a second
+each, dom0 advanced 0.13 seconds of its own clock in twenty of Xen's, and
+`Virtual timer PPI disabled at the GIC` reaching only 112 says the
+millisecond re-enable timer is itself being starved — CPU0 took 180
+hypervisor timer interrupts in twenty seconds.
+
+### A bug boot 9 introduced
+
+`virt_timer_save()` arms the software fallback timer — the one that injects a
+guest's virtual timer interrupt while its vCPU is descheduled — only for a
+vCPU whose timer is enabled and unmasked:
+
+```c
+if ( (v->arch.virt_timer.ctl & CNTx_CTL_ENABLE) &&
+     !(v->arch.virt_timer.ctl & CNTx_CTL_MASK) )
+    set_timer(&v->arch.virt_timer.timer, ...);
+```
+
+Clearing `ENABLE` in the handler leaves exactly the state that condition
+rejects, so a vCPU descheduled between a stuck interrupt and the guest
+re-arming had no timer at all. Both vCPUs in boot 9's last dump are not
+running, with `Inflight irq=27 lr=255` — queued and never placed in a list
+register. Clearing `ENABLE` was not merely useless, which boot 8 established;
+it was harmful.
+
+### What boot 10 changes
+
+- **Stop clearing `ENABLE`.** It does not quiet the line and it breaks the
+  fallback timer above.
+- **Push the deadline out instead.** The timer's output is `ISTATUS && ENABLE
+  && !IMASK`. Two of those three are measured not to matter, which leaves
+  `ISTATUS`, and the only way to clear `ISTATUS` from EL2 is to move the
+  deadline the guest set. `vtimer_interrupt()` now writes `CNTV_CVAL_EL0 =
+  0x7fffffffffffffff` — twenty-four thousand years out at 24 MHz — and reads
+  `CNTV_CTL` back to say whether `ISTATUS` went with it.
+
+  Nothing is lost by moving it: the interrupt the deadline earned is already
+  queued in the guest's vGIC, and the guest re-arms `CNTV_CVAL` itself in its
+  handler, which un-pushes it. The one place that would be misled is
+  `virt_timer_save()`, which saves the deadline to arm the fallback timer
+  from — so it now recognises the pushed value and keeps what the guest asked
+  for. The sentinel is the state; there is nothing else to track.
+- **Attribute the ten million.** `IRQs taken while disabled at the GIC`
+  counts the silent path in `do_IRQ()`. On real hardware it is a narrow race
+  on the way into `disable_irq()` and should read single digits.
+
+| What the log shows | What it means |
+|---|---|
+| `ISTATUS cleared ...`, `#PPIs` collapses to a few thousand | Fixed, properly. The line is the timer's output after all, and `ISTATUS` is the only input this platform honours. |
+| `ISTATUS cleared ...` but `#PPIs` still in the millions, `IRQs taken while disabled` with them | The line is not this timer's output. Nothing in the timer will ever quiet it, and the redistributor is not honouring the mask either, so the next lever is the CPU interface: leave the interrupt active after the priority drop, which is the one thing a GIC cannot re-signal. |
+| `ISTATUS survived ...` | The register is a write-only shadow as far as the comparison is concerned. Same conclusion, one step sooner. |
+| `IRQs taken while disabled` in single digits, `#PPIs` still millions | The ten million are not the disabled PPI 27 and this section's arithmetic is wrong. Find which PPI by adding per-INTID counting. |
+
 ### The list
 
-In rough order of likelihood — though after boot 8 the only one that matters
+In rough order of likelihood — though after boot 9 the only one that matters
 is 14, and everything above it is either settled or about a stage the boot
 now gets past:
 
@@ -1295,6 +1422,7 @@ now gets past:
    `Maintenance interrupts` at zero and every other pCPU idle. Xen masks the
    guest's virtual timer in `vtimer_interrupt()`, the write sticks, and the
    line does not follow; clearing `ENABLE` as well changed nothing. This is
-   the one left. Boot 9 stops listening to the line rather than trying to
-   quiet it, and its counters say which of the three readings above is the
-   right one.
+   the one left. Boot 9 made the interrupts cheap rather than absent, which
+   was worth a factor of a hundred and the whole of dom0's boot so far, and
+   its report line proved Xen is looking at the guest's own timer registers.
+   `ISTATUS` is the last input to the line that has not been tried.
