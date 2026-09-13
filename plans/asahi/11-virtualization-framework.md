@@ -1,6 +1,7 @@
 # 11 — Xen nested inside Virtualization.framework
 
-Status: **Xen boots; dom0 boots to its first interrupt and stops there.** Everything below
+Status: **Xen boots; dom0 boots to its first interrupt and stops there,
+reproducibly.** Everything below
 marked "(measured)" was read out of the running VM described in §1;
 everything marked "(untested)" is a change made on the strength of those
 measurements and not yet observed to work. What the two boots so far did
@@ -339,6 +340,8 @@ off and is selected only by `APPLE_VZ`.
 | `arch/arm/configs/apple_vz_defconfig` | GICv3 + GICv2m + the virtio console, `CONFIG_DOM0_MEM`, initcall trace on. `EARLY_PRINTK` stays **off**: it writes to a fixed MMIO address from assembly, which a PCI device found at runtime can never be — and with it off, `conring_flush()` replays everything to the virtio console instead. |
 | `plans/asahi/vz/gen-vz-dtb.py`, `vz.dts` | §3. |
 | `common/device-tree/kernel.c` | Report what a rejected boot module actually is, rather than only `rc = -22`. |
+| `arch/arm/time.c`, `arch/arm/setup.c` | A 10 ms self-test that proves the hypervisor timer's interrupt arrives, run while there is still a console to report it on. §7. |
+| `common/keyhandler.c` | `auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`, which runs debug keys off a timer rather than off console input. §7. |
 | `plans/asahi/vz/install-vz.sh` | §6. Installs Xen and the DTB, writes the GRUB entries, and fixes the four things that make a first boot fail silently. |
 
 Note what is *not* here. No AIC, no dockchannel, no s5l, no forced-VHE work,
@@ -463,7 +466,7 @@ For reference, and for typing at the GRUB prompt (`c`) when bisecting:
 insmod xen_boot
 search --no-floppy --fs-uuid --set=root <the /boot filesystem UUID>
 devicetree /xen/vz.dtb
-xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot
+xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=0dq,10,3
 xen_module /vmlinuz-xen-dom0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=/root selinux=0 console=tty0 console=hvc0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
@@ -482,6 +485,9 @@ Notes on the command lines:
   only.
 - `console_to_ring conring_size=512` per §2. These are the difference between
   having a log and not.
+- `auto_debug_keys=0dq,10,3` runs the `0`, `d` and `q` keyhandlers ten,
+  twenty and thirty seconds after Xen's initcalls, without anything being
+  typed. Why it cannot be typed instead is the first part of §7.
 - `noreboot` because the default is not what you want here. `panic()` calls
   `machine_restart(5000)` unless told otherwise, and on a machine whose only
   log is the console ring, rebooting on panic destroys the one copy of the
@@ -646,6 +652,73 @@ anyway, which Xen's generated dom0 tree does not provide.
   machine has is below that: 988 SPIs per the MADT (§1) and the v2m block at
   128–255 (§4).
 
+**Boot 4** (`git:3a34bca481`) is boot 3 again on the committed tree, and stops
+at the same line. So the stop is deterministic, not a race. Its log is the
+first complete capture, and three things in the parts boot 3's excerpt had
+elided are worth having:
+
+- **Physical interrupts do reach Xen at virtual EL2, on every pCPU.**
+  `setup_virt_paging()` ends in `smp_call_function(setup_virt_paging_one,
+  NULL, 1)` — an SGI to the other five CPUs, and `wait = 1`, so it does not
+  return until all five have run the function and cleared themselves from the
+  mask. The log continues straight into `do_initcalls()`, so it returned.
+  That kills the broadest version of "the nested GIC delivers nothing": the
+  CPU interface, the redistributors and the EL2 exception path all work. What
+  is *not* proven by it is the PPIs, which is a different source with the same
+  destination, and the case where the interrupt arrives while dom0 rather than
+  Xen is running, which is where the nested `HCR_EL2.IMO` has to be honoured
+  by macOS.
+- **Both timer PPIs are level-triggered, as intended.** `check_timer_irq_cfg()`
+  warns when a timer IRQ ends up edge-triggered, and no such warning appears
+  for any of the three.
+- **`CPU0: Guest atomics will try 1 times before pausing the domain`.** That
+  loop counts iterations of an `ldxr`/`stxr` pair plus a `NOW()` in one
+  microsecond, so one iteration means a `NOW()` costs about that much on its
+  own — which is what a `CNTPCT_EL0` read trapped to the outer hypervisor
+  would cost, and not what a native read costs. It is a performance fact, not
+  a bug, but it is the first direct sign of how much of the counter is
+  emulated.
+
+### The debug plan above needs the thing it is debugging
+
+`CTRL-a` three times only works if Xen is reading console input, and the
+virtio-console has no interrupt: `vtcon_rx_poll()` runs off a Xen timer, and
+every Xen timer runs off the hypervisor timer's PPI 26. So if PPI 26 is one of
+the things that does not arrive — item 8, the least-corroborated assumption in
+the plan — then nothing typed ever reaches Xen and *every* keyhandler is out
+of reach, silently, in exactly the situation that wants them. The same is true
+of `xl dmesg`, which needs a dom0 that is running.
+
+Two changes make the next boot answer this on its own:
+
+- **`check_timer_interrupt_delivery()`**, from `start_xen()` right after
+  `local_irq_enable()`. It arms a 10 ms Xen timer and polls softirqs by hand
+  until it fires or a second of counter time goes by, then prints either
+  `Hypervisor timer IRQ26 works` or a loud failure naming the consequences.
+  Nothing else in Xen's boot waits on that interrupt — the boot path reads the
+  counter rather than waiting on the timer — which is precisely why a machine
+  that never delivers it boots to the very end looking healthy.
+- **`auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`**, which runs the same
+  keyhandlers off a timer instead of off input. `install-vz.sh` now puts
+  `auto_debug_keys=0dq,10,3` on the hypervisor command line, so dom0's
+  registers, every pCPU's registers and the domain list are dumped three times
+  at ten-second intervals with nothing typed. It runs them from a tasklet, not
+  from the timer callback, because `0` pauses the vCPU it is dumping and doing
+  that from a timer that interrupted that same vCPU would deadlock — a
+  tasklet runs on the idle vCPU, which is where a real keypress ends up too.
+
+Three dumps rather than one is the point of `repeats`: a dom0 spinning in its
+own handler and a dom0 that has stopped dead are indistinguishable in a single
+dump and obvious in three. Read the next boot like this:
+
+| What the log shows | What it means |
+|---|---|
+| `Hypervisor timer IRQ26 never fired` | Item 8. PPI 26 is not delivered, Xen has no timers, and PPI 27 is almost certainly no better — which alone explains dom0 stopping at its first tick. The dumps below will not appear either. |
+| Timer works, dom0's PC moves between dumps and sits in `gic_handle_irq`/`el1_interrupt`/`arch_timer_handler_virt` | Case 1: dom0 is in an interrupt storm Xen cannot see, because with SRE the whole IAR/EOIR cycle is system registers. |
+| Timer works, `d` shows a pCPU in `maintenance_interrupt` or `do_IRQ` | Case 2: the storm is on Xen's side of the LR. |
+| Timer works, dom0's PC is identical in all three dumps and `q` shows d0v0 blocked | Case 3: dom0 is not running and nothing is left to wake it — look at what it is blocked on. |
+| Timer works, dom0's PC is identical in all three dumps and `q` shows d0v0 runnable | dom0 is spinning at EL1 with interrupts enabled and no interrupt ever arriving: delivery *into* the guest, i.e. the LRs, rather than delivery to Xen. |
+
 One assumption is still unproven rather than ruled out: item 8, the EL2
 physical timer. Nothing in these logs needs PPI 26 — Xen's boot reads the
 counter rather than waiting on the interrupt, and dom0's tick comes from the
@@ -717,8 +790,11 @@ In rough order of likelihood:
 8. **The EL2 physical timer.** Xen needs `CNTHP_EL2` and PPI 26 delivered.
    The GTDT declares it (§1) but nothing in the guest exercises it, since
    Linux at EL1 uses PPI 30 and nVHE KVM does not use the hyp timer for the
-   host. This is the least-corroborated hardware assumption in the whole
-   plan.
+   host — so the one workload Apple's nested virtualisation obviously has to
+   support never programs the register Xen depends on. This is the
+   least-corroborated hardware assumption in the whole plan, and boot 5 either
+   confirms or kills it in one line: see `check_timer_interrupt_delivery()`
+   above.
 9. **dom0 has no disk.** MSIs (§4). Check with `xl dmesg` for the
    `GICv2m: dom0: frame 0x1fff0000, SPIs 128-255` line, then in dom0 for
    `GICv2m: range[mem 0x1fff0000-0x1fff0fff], SPI[128:255]` and for

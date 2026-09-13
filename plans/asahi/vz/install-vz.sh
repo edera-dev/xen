@@ -158,9 +158,16 @@ menuentry '$title' --class xen {
 	# console_to_ring puts dom0's output in Xen's ring too, and noreboot
 	# stops a panic from rebooting into this same entry and destroying the
 	# only copy of the panic message.
+	#
+	# auto_debug_keys runs the '0', 'd' and 'q' keyhandlers by itself, ten
+	# seconds apart, three times over.  Typing them would need console
+	# input, and console input is polled off a Xen timer -- so on a machine
+	# that is not delivering the hypervisor timer's interrupt, which is one
+	# of the things being looked for here, nothing typed ever arrives.
 	xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 \\
 		$console console_to_ring conring_size=512 \\
-		loglvl=all guest_loglvl=all noreboot
+		loglvl=all guest_loglvl=all noreboot \\
+		auto_debug_keys=0dq,10,3
 
 	# hvc0 last, so it is dom0's /dev/console: that is Xen's console, which
 	# comes out of the same serial terminal as Xen's own output.
