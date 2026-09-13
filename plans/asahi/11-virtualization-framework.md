@@ -1906,6 +1906,66 @@ and the right one is to unmask the moment the guest retires the interrupt —
 `gic_update_one_lr()` sees exactly that — rather than guessing at how long it
 will take.
 
+### Boot 21: the deadline is real, the loop is Xen's
+
+Boot 21 runs a shell, and then floods:
+
+```
+CPU1: d0v1's virtual timer asserted again while masked (#7708672)
+  CNTV_CTL 0000000000000007, CNTVCT 000000006033ae8b,
+  CNTV_CVAL 0000000031561166, CNTVOFF 0000000008034a62
+```
+
+`CNTV_CVAL` is no longer the sentinel — the last fix worked, and this is a real
+deadline the guest programmed. It is also **the same value in every report**,
+and `CNTVCT` has passed it by 0x2e32441d ticks: **the deadline is thirty-two
+seconds in the past and the guest is not re-arming it.**
+
+The rate is in the log too. Reports are one in 4096, and between two of them
+`CNTVCT` advances 425,401 ticks — 17.7 ms, so **4.3 microseconds per
+interrupt**. The fifty-microsecond mask is not holding for fifty microseconds;
+something is unmasking it almost immediately.
+
+That something is `virt_timer_save()`, and it is the change from boot 18:
+
+```c
+if ( v->arch.virt_timer.ctl & CNTx_CTL_ENABLE )
+    set_timer(&v->arch.virt_timer.timer, base + ticks_to_ns(cval));
+```
+
+A deadline already in the past makes `set_timer()` fire the instant it is
+armed. So: the vCPU blocks, `virt_timer_save()` arms a timer for a moment
+thirty-two seconds gone, it expires immediately, `virt_timer_expired()` injects
+and kicks, the vCPU switches back in, `virt_timer_restore()` unmasks the PPI,
+the line — still asserted — fires, and round again. The guest never gets long
+enough to reach its own interrupt handler and re-arm, which is why the deadline
+never moves.
+
+Boot 18's change was right about `IMASK` and wrong about *when* the fallback is
+needed. The fallback exists to wake a vCPU for a deadline that has not yet been
+delivered. A deadline in the past has been delivered: the interrupt is already
+queued in the guest's vGIC.
+
+### What boot 22 changes
+
+- **`virt_timer_save()` arms only for a deadline still to come.** One already
+  passed is already queued and needs no timer. That kills the loop.
+- **`gic_update_one_lr()` unmasks the PPI when the guest retires the timer
+  interrupt.** This is the signal the fifty-microsecond poll was guessing at:
+  the guest has finished with the interrupt, so it has re-armed, so the line is
+  wanted again. The poll stays as a backstop, but the prompt path is now the
+  real one, and there is no longer a floor under short guest timers.
+- **The report is said once.** One spurious assertion per guest tick is the
+  expected shape here, so the rate belongs in the counters. Two lines every
+  4096 interrupts through a console that costs a virtio descriptor per
+  character is a storm's worth of output spent describing a storm.
+
+| What the log shows | What it means |
+|---|---|
+| dom0 usable, `software fallback deadline already passed` climbing quietly | Fixed. The counter is the loop that used to be, now declined. |
+| `asserted again while masked` once, counters quiet | Fixed properly: one spurious assertion per tick and no thrash. |
+| dom0 still stalling, `PPI re-enabled for a guest` far below `PPI disabled at the GIC` | The guest is not retiring the interrupt, so the unmask hook never runs and the backstop poll is carrying it. Look at why the vIRQ is not reaching the guest. |
+
 ### The list
 
 In rough order of likelihood — though after boot 12 the timer is settled and

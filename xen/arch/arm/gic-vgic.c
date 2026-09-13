@@ -15,6 +15,7 @@
 #include <asm/domain.h>
 #include <asm/gic.h>
 #include <asm/vgic.h>
+#include <asm/vtimer.h>
 
 #define lr_all_full()                                           \
     (this_cpu(lr_mask) == (-1ULL >> (64 - gic_get_nr_lrs())))
@@ -233,6 +234,17 @@ static void gic_update_one_lr(struct vcpu *v, int i)
         clear_bit(GIC_IRQ_GUEST_VISIBLE, &p->status);
         clear_bit(GIC_IRQ_GUEST_ACTIVE, &p->status);
         p->lr = GIC_INVALID_LR;
+
+        /*
+         * The guest has finished with its virtual timer interrupt, which means
+         * it has re-armed the timer and the line is wanted again.
+         * vtimer_interrupt() masks the PPI when the line asserts for an
+         * interrupt the guest already has, on a platform where nothing written
+         * to the timer will quiet it; this is the moment that stops being
+         * true, and waiting for it beats guessing how long it takes.
+         */
+        if ( unlikely(irq == v->arch.virt_timer.irq) )
+            vtimer_ppi_unmask();
         if ( test_bit(GIC_IRQ_GUEST_ENABLED, &p->status) &&
              test_bit(GIC_IRQ_GUEST_QUEUED, &p->status) &&
              !test_bit(GIC_IRQ_GUEST_MIGRATING, &p->status) )

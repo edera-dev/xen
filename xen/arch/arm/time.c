@@ -346,16 +346,17 @@ static void vtimer_ppi_quiesce(void)
  * into a boot, at the top of a log that is the easiest part to lose.
  */
 /*
- * One spurious assertion per guest tick is the expected shape of this on a
- * platform whose timer output does not follow IMASK, so say it rarely: the
- * first few, then one every 4096.  The counters are where the rate lives.
+ * Say this once.  One spurious assertion per guest tick is the expected shape
+ * of it here, so the rate belongs in the counters, not the console -- and a
+ * console that costs a virtio descriptor per character is not a place to spend
+ * a storm's worth of output, least of all while diagnosing one.
  */
 static void vtimer_report_stuck(register_t ctl)
 {
     static unsigned long count;
     unsigned long n = ++count;
 
-    if ( n > 4 && (n & 0xfff) )
+    if ( n > 1 )
         return;
 
     printk(XENLOG_ERR

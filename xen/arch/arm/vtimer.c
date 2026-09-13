@@ -180,10 +180,25 @@ void virt_timer_save(struct vcpu *v)
      */
     if ( v->arch.virt_timer.ctl & CNTx_CTL_ENABLE )
     {
-        perfc_incr(virt_timer_sw_armed);
-        set_timer(&v->arch.virt_timer.timer,
-                  v->domain->arch.virt_timer_base.nanoseconds +
-                  ticks_to_ns(v->arch.virt_timer.cval));
+        s_time_t deadline = v->domain->arch.virt_timer_base.nanoseconds +
+                            ticks_to_ns(v->arch.virt_timer.cval);
+
+        /*
+         * Only for a deadline still to come.  One already passed has already
+         * been delivered -- the guest has that interrupt queued in its vGIC
+         * and has simply not re-armed yet -- and set_timer() on it fires the
+         * instant it is armed, which wakes the vCPU, which switches in, which
+         * saves and arms it again.  Boot 21 ran that loop at 231,000 a second
+         * on CPU1 with the guest's deadline thirty-two seconds in the past and
+         * unchanging, because the guest never got long enough to re-arm it.
+         */
+        if ( deadline > NOW() )
+        {
+            perfc_incr(virt_timer_sw_armed);
+            set_timer(&v->arch.virt_timer.timer, deadline);
+        }
+        else
+            perfc_incr(virt_timer_sw_past);
     }
     else
         perfc_incr(virt_timer_sw_idle);
