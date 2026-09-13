@@ -1036,8 +1036,12 @@ and architecture-specific domain limits.
 > `= <size>`
 
 Set the amount of memory for the initial domain (dom0). It must be
-greater than zero. This parameter is required (and only used) when the initial
-domain is not described in the Device-Tree.
+greater than zero. This parameter is only used when the initial domain is not
+described in the Device-Tree.
+
+If it is not given, dom0 is sized from the host's memory: a quarter of it,
+with a floor of 1G and a ceiling of 4G, and never more than three quarters of
+the machine.
 
 ### dom0_mem (x86)
 > `= List of ( min:<sz> | max:<sz> | <sz> )`
