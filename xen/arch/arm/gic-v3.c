@@ -28,6 +28,7 @@
 #include <asm/cpufeature.h>
 #include <asm/device.h>
 #include <asm/gic.h>
+#include <asm/setup.h>
 #include <asm/gic_v3_defs.h>
 #include <asm/gic_v3_its.h>
 #include <asm/io.h>
@@ -1482,7 +1483,16 @@ static int gicv3_make_hwdom_dt_node(const struct domain *d,
     if ( has_vpci_bridge(d) )
         return gicv3_its_make_emulated_dt_node(d, fdt);
 
-    return gicv3_its_make_hwdom_dt_nodes(d, gic, fdt);
+    res = gicv3_its_make_hwdom_dt_nodes(d, gic, fdt);
+    if ( res )
+        return res;
+
+    /*
+     * A GICv2m frame is a child of this node too, and the domain needs it
+     * where the platform has no ITS -- otherwise its MSI capable devices have
+     * no way to raise an interrupt.  See gic-v2m.c.
+     */
+    return gicv2m_hwdom_dt_nodes(d, gic, fdt);
 }
 
 static const hw_irq_controller gicv3_host_irq_type = {
@@ -1724,6 +1734,12 @@ static int gicv3_make_hwdom_madt(const struct domain *d, u32 offset)
 
     table_len += gicv3_its_make_hwdom_madt(d, base_ptr + table_len);
 
+    /*
+     * Any GICv2m MSI frame the host has, verbatim.  Without it a domain on a
+     * machine with no ITS has no MSI controller described at all.
+     */
+    table_len += gicv2m_make_hwdom_madt(d, base_ptr + table_len);
+
     return table_len;
 }
 
@@ -1735,6 +1751,8 @@ static unsigned long gicv3_get_hwdom_extra_madt_size(const struct domain *d)
 
     size += sizeof(struct acpi_madt_generic_translator)
             * vgic_v3_its_count(d);
+
+    size += gicv2m_get_hwdom_madt_size();
 
     return size;
 }
