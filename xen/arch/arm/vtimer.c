@@ -183,22 +183,39 @@ void virt_timer_save(struct vcpu *v)
         s_time_t deadline = v->domain->arch.virt_timer_base.nanoseconds +
                             ticks_to_ns(v->arch.virt_timer.cval);
 
-        /*
-         * Only for a deadline still to come.  One already passed has already
-         * been delivered -- the guest has that interrupt queued in its vGIC
-         * and has simply not re-armed yet -- and set_timer() on it fires the
-         * instant it is armed, which wakes the vCPU, which switches in, which
-         * saves and arms it again.  Boot 21 ran that loop at 231,000 a second
-         * on CPU1 with the guest's deadline thirty-two seconds in the past and
-         * unchanging, because the guest never got long enough to re-arm it.
-         */
         if ( deadline > NOW() )
         {
             perfc_incr(virt_timer_sw_armed);
             set_timer(&v->arch.virt_timer.timer, deadline);
         }
+        else if ( !(v->arch.virt_timer.ctl & CNTx_CTL_MASK) )
+        {
+            /*
+             * Due already, and the guest has not been told: IMASK is Xen's
+             * marker for "injected", set by vtimer_interrupt() and cleared
+             * only by the guest re-arming.  So fire at once.
+             *
+             * This is not a corner.  vtimer_interrupt() masks the PPI after
+             * every tick on this platform, and a guest that arms a short
+             * deadline inside that window and then blocks gets no hardware
+             * interrupt and, without this, no fallback either -- it sleeps
+             * with nothing left to wake it.  Measured from inside dom0: a
+             * 2ms sleep returning after six seconds, while a fifteen-second
+             * busy loop showed no scheduling gap at all.
+             */
+            perfc_incr(virt_timer_sw_due);
+            set_timer(&v->arch.virt_timer.timer, NOW());
+        }
         else
+        {
+            /*
+             * Due, and already injected.  Re-arming here is the loop boot 21
+             * ran at 231,000 a second: the timer fires the instant it is
+             * armed, wakes the vCPU, which switches in, saves, and arms it
+             * again, leaving the guest no time to re-arm its own deadline.
+             */
             perfc_incr(virt_timer_sw_past);
+        }
     }
     else
         perfc_incr(virt_timer_sw_idle);

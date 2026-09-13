@@ -80,6 +80,7 @@ PERFCOUNTER(virt_timer_sw_idle,  "Virtual timer software fallback not armed")
 PERFCOUNTER(virt_timer_no_guest, "Virtual timer interrupts with no guest on the pCPU")
 PERFCOUNTER(virt_timer_unmask,   "Virtual timer PPI re-enabled for a guest")
 PERFCOUNTER(virt_timer_sw_past,  "Virtual timer software fallback deadline already passed")
+PERFCOUNTER(virt_timer_sw_due,   "Virtual timer software fallback fired for a deadline already due")
 PERFCOUNTER(irqs_while_disabled, "IRQs taken while disabled at the GIC")
 PERFCOUNTER(maintenance_irqs, "Maintenance interrupts")
 

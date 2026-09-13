@@ -1966,6 +1966,53 @@ queued in the guest's vGIC.
 | `asserted again while masked` once, counters quiet | Fixed properly: one spurious assertion per tick and no thrash. |
 | dom0 still stalling, `PPI re-enabled for a guest` far below `PPI disabled at the GIC` | The guest is not retiring the interrupt, so the unmask hook never runs and the backstop poll is carrying it. Look at why the vIRQ is not reaching the guest. |
 
+### Boot 22: dom0 is the development machine, and sleeps still stall
+
+Boot 22 is the first that can be worked on from inside. dom0 runs Fedora to a
+shell, the root filesystem is live on virtio-blk, and `/proc/interrupts` shows
+`virtio1-req.0` at 49,604 through `GICv2m-PCI-MSIX` — **item 9 is closed by
+demonstration**: MSIs reach dom0, the v2m frame works, the disk works. The
+`PHYSDEVOP ... not implemented` and `of_irq_parse_pci: failed with rc=-22`
+lines are still there and still cosmetic; nothing else in `dmesg -l err,warn`
+belongs to Xen.
+
+Measured from inside, timers are mostly right and occasionally very wrong:
+
+```
+200 x 5ms sleeps:  p50 5.6ms  p90 6.4ms  p99 435ms  max 660ms
+2000 x 2ms sleeps: 23 stalls over 20ms, worst 6.5 seconds
+```
+
+And the decisive control: **a fifteen-second busy loop has no gap over 20 ms at
+all.** The vCPU is scheduled continuously. Nothing is stealing its time. The
+stalls happen only when it sleeps, so what is late is the interrupt that should
+wake it.
+
+### The hole the masking leaves
+
+`vtimer_interrupt()` masks PPI 27 after every tick, because nothing written to
+this timer quiets the line. The mask is lifted by the retire hook or the
+fifty-microsecond backstop. In that window the hardware timer cannot deliver
+anything — which is fine, unless the guest uses the window:
+
+1. Guest arms a deadline a few microseconds out and blocks.
+2. The deadline passes while the PPI is masked, so no interrupt fires and
+   nothing is injected.
+3. `virt_timer_save()` looks at the deadline, sees it in the past, and declines
+   to arm the fallback — on the reasoning from boot 21 that a passed deadline
+   has already been delivered.
+4. It has not. The vCPU sleeps with nothing left to wake it, until some
+   unrelated interrupt happens along.
+
+Boot 21's reasoning was right for the case it was written for and wrong as a
+blanket rule. "Already delivered" is not the same as "already passed", and Xen
+has an exact marker for the difference: `IMASK`, which `vtimer_interrupt()`
+sets on injection and only the guest clears, by re-arming.
+
+So `virt_timer_save()` now distinguishes three cases rather than two — still to
+come, arm for it; passed and unmasked, fire at once; passed and masked, decline
+— each with a counter. The declining case is boot 21's loop and stays declined.
+
 ### The list
 
 In rough order of likelihood — though after boot 12 the timer is settled and
@@ -2034,7 +2081,9 @@ the one that matters is 9:
    obviously has to support never programs the register Xen depends on. It
    works anyway. What that line covers is delivery to a CPU that is running
    Xen; delivery to a CPU that is running a guest is item 11.
-9. **dom0 has no disk.** MSIs (§4). Check with `xl dmesg` for the
+9. **dom0 has no disk.** *Closed by boot 22: the root filesystem is on
+   virtio-blk and `/proc/interrupts` shows `virtio1-req.0` taking MSI-X
+   through the v2m frame.* MSIs (§4). Check with `xl dmesg` for the
    `GICv2m: dom0: frame 0x1fff0000, SPIs 128-255` line, then in dom0 for
    `GICv2m: range[mem 0x1fff0000-0x1fff0fff], SPI[128:255]` and for
    `virtio1-req.0` appearing in `/proc/interrupts`.
