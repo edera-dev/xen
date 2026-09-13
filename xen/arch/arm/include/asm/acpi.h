@@ -34,6 +34,7 @@ typedef enum {
     TBL_MADT,
     TBL_STAO,
     TBL_IORT,
+    TBL_SSDT,
     TBL_XSDT,
     TBL_RSDP,
     TBL_EFIT,
