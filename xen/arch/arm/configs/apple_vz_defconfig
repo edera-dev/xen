@@ -1,0 +1,31 @@
+# Xen as a nested hypervisor inside a macOS Virtualization.framework VM on
+# Apple Silicon (nested virtualisation enabled, so Xen is entered at EL2).
+#
+# The synthesised platform is a stock arm64 GICv3 machine -- a GIC, PSCI, a
+# generic timer, a non-VHE EL2 and no IOMMU -- described only by ACPI.  Nothing
+# here is a quirk: these are the two optional drivers the machine needs, and
+# one thing turned off.
+#
+# Boot it with console=vtcon.
+
+# The platform's only MSI controller is a GICv2m frame, and its PCI _PRT routes
+# no pin that any device asserts, so without this dom0's virtio devices cannot
+# raise an interrupt and it has neither disk nor network.
+CONFIG_GICV2M=y
+
+# The only serial device the platform can be given is a virtio-console on the
+# PCI bus, so that is the console.  Selected at boot with console=vtcon; the
+# driver will not touch the device otherwise.
+CONFIG_HAS_VIRTIO_CONSOLE=y
+
+# Early printk writes to a fixed MMIO address from assembly, before there is
+# any way to discover a PCI device, so it cannot reach the virtio console and
+# there is no UART for it to reach instead.  Leaving it off is also what makes
+# the virtio console useful: console_init_preirq()'s conring_flush() only
+# includes CONSOLE_SERIAL when early printk did not already carry those
+# messages, so with it off the whole boot log is replayed to the console the
+# moment it comes up.
+# CONFIG_EARLY_PRINTK is not set
+
+# The MADT declares no ITS, so the ITS driver is dead code here.
+# CONFIG_HAS_ITS is not set
