@@ -2085,6 +2085,52 @@ static int __init construct_dom0(struct domain *d)
     return construct_hwdom(&kinfo, NULL);
 }
 
+/*
+ * Take the console's PCI function away from the hardware domain: unmap the one
+ * page of configuration space that describes it, refuse to map it again, and
+ * answer what is left with an empty slot.  The device is then never
+ * enumerated, never claimed and never reset.
+ *
+ * Hiding only the BARs would not do, and neither does stopping the domain
+ * moving them: it is not a console driver that takes the device away.
+ * virtio_pci_probe() resets it before any console driver is consulted.
+ */
+static int __init hide_vtcon_from_hwdom(struct domain *d)
+{
+    paddr_t cfg = vtcon_config_space() & PAGE_MASK;
+    unsigned long pfn;
+    int rc;
+
+    if ( !cfg )
+        return 0;
+
+    pfn = PFN_DOWN(cfg);
+
+    rc = unmap_mmio_regions(d, _gfn(pfn), 1, _mfn(pfn));
+    if ( rc )
+        return rc;
+
+    /* And do not let it be mapped again. */
+    rc = iomem_deny_access(d, pfn, pfn);
+    if ( rc )
+        return rc;
+
+    /*
+     * Answer what is left with an empty slot rather than leaving the page
+     * unmapped.  The fallback in try_handle_mmio() reads as all ones only for
+     * a domain *without* XEN_DOMCTL_CDF_trap_unmapped_accesses, and the
+     * hardware domain is created with it -- so an unmapped page means a data
+     * abort on the first configuration read of the domain's PCI scan, taken
+     * in pci_generic_config_read() with interrupts off.
+     */
+    register_unmapped_mmio_handler(d, cfg, PAGE_SIZE);
+
+    printk("vtcon: configuration space at %#"PRIpaddr" hidden from %pd\n",
+           cfg, d);
+
+    return 0;
+}
+
 int __init construct_hwdom(struct kernel_info *kinfo,
                            const struct dt_device_node *node)
 {
@@ -2129,6 +2175,10 @@ int __init construct_hwdom(struct kernel_info *kinfo,
     else
         rc = prepare_acpi(d, kinfo);
 
+    if ( rc < 0 )
+        return rc;
+
+    rc = hide_vtcon_from_hwdom(d);
     if ( rc < 0 )
         return rc;
 
