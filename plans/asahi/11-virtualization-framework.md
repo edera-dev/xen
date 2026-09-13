@@ -466,7 +466,7 @@ For reference, and for typing at the GRUB prompt (`c`) when bisecting:
 insmod xen_boot
 search --no-floppy --fs-uuid --set=root <the /boot filesystem UUID>
 devicetree /xen/vz.dtb
-xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=0pq,2,3
+xen_hypervisor /xen/xen.efi dom0_mem=2G dom0_max_vcpus=2 dom0_vcpus_pin console=vtcon console_to_ring conring_size=512 loglvl=all guest_loglvl=all noreboot auto_debug_keys=0pq,10,3
 xen_module /vmlinuz-xen-dom0 root=UUID=e85e08dd-7a99-4c3c-a467-4eda069b5859 ro rootflags=subvol=/root selinux=0 console=tty0 console=hvc0
 xen_module --nounzip /initramfs-xen-dom0.img
 boot
@@ -485,7 +485,7 @@ Notes on the command lines:
   only.
 - `console_to_ring conring_size=512` per §2. These are the difference between
   having a log and not.
-- `auto_debug_keys=0pq,2,3` runs the `0`, `p` and `q` keyhandlers every two
+- `auto_debug_keys=0pq,10,3` runs the `0`, `p` and `q` keyhandlers every ten
   seconds, three times over, without anything being typed. Why it cannot be
   typed instead is the first part of §7; why these three keys in this order,
   and why `p` needs `CONFIG_PERF_COUNTERS=y`, is "What boot 7 changes".
@@ -706,7 +706,7 @@ Two changes make the next boot answer this on its own:
   that never delivers it boots to the very end looking healthy.
 - **`auto_debug_keys=<keys>[,<seconds>[,<repeats>]]`**, which runs the same
   keyhandlers off a timer instead of off input. `install-vz.sh` now puts
-  `auto_debug_keys=0pq,2,3` on the hypervisor command line, so the hardware
+  `auto_debug_keys=0pq,10,3` on the hypervisor command line, so the hardware
   domain's registers, the performance counters and the domain list are dumped
   three times at two-second intervals with nothing typed. It runs them from a
   tasklet, not from the timer callback, because the handlers that pause a vCPU
@@ -1544,7 +1544,7 @@ them is `auto_debug_keys`, which fires ten seconds in. dom0's clock reads
 certainly much less than ten seconds. The dumps may simply not have happened
 yet.
 
-So stop guessing and move them: `auto_debug_keys=0pq,2,3` dumps at two, four,
+So stop guessing and move them: `auto_debug_keys=0pq,10,3` dumps at two, four,
 six, eight and ten seconds. A dump that appears says Xen is alive and names
 what dom0's CPUs are doing; no dump at all, with the log ending mid-boot,
 says the console is gone.
@@ -1624,6 +1624,63 @@ With dom0's PC and stack against the same `System.map`, "blocked inside
 | d0v0 in `wait_for_completion` under `really_probe` | Deferred or asynchronous probe waiting on another thread; find that thread in d0v1's dump. |
 | d0v0 in `msix_capability_init` or below | MSI-X setup itself, and the v2m frame is next. |
 | d0v0 somewhere unrelated to PCI | The `of_irq_parse_pci` line was a coincidence and the boot stops for its own reasons. |
+
+### Boot 16: dom0 is not stuck, it is idle
+
+`0` gave what `d` could not, and it is the same on both vCPUs and identical in
+all three dumps ten seconds apart:
+
+```
+PC: ffff8000816282b4    cpu_do_idle+0x14 -- the instruction after `wfi`
+LR: ffff8000816282f8    arch_cpu_idle+0x10
+ELR_EL1: ffff800080184668  cpuidle_idle_call, immediately after cpuidle_enter
+```
+
+Xen traps the `wfi`, blocks the vCPU and advances the PC past it, so a saved
+PC of `cpu_do_idle+0x14` is precisely a vCPU parked in the idle loop. **Both
+of dom0's CPUs are running the idle task.** Not spinning, not stuck in a
+probe: idle.
+
+The counters agree and are frozen solid. `trap: wfi` is 298 at two seconds,
+298 at four, 298 at six. `trap: sysreg access` is 192,898 at all three.
+`sched: context switches` is 596 at all three. dom0 has not executed an
+instruction in four seconds. Meanwhile CPU5's hypervisor timer count climbs
+179 → 347 → 514, which is the console poll at its usual rate: Xen is fine and
+the clock is running.
+
+So the thing that stopped the boot is a *task* blocked inside an initcall
+while every other task idles, and the reason there is no timer armed is that
+an idle `NO_HZ` kernel whose next timer is a long way off does exactly this.
+
+That also disposes of the guesses in the last three sections. dom0 is not
+spinning in `vp_reset()`'s `msleep()` loop — that would arm a timer every
+millisecond and the virtual timer count would not be stuck at four. It is
+blocked with no timeout at all.
+
+One limitation worth recording: `0`'s stack traces say `Failed to convert
+stack to physical address`. `show_guest_stack()` translates the guest's stack
+pointer through the translation regime installed on the CPU doing the dump,
+and that CPU is CPU5 running its idle vCPU, not dom0. The stack of an idle
+task would have said `cpu_do_idle <- arch_cpu_idle <- do_idle` and nothing
+more anyway, so nothing was lost here — but a non-current vCPU's stack needs
+`guest_walk_tables()` rather than the current regime, and that is worth
+fixing before it matters.
+
+### What boot 17 changes: ask dom0, because Xen cannot see a task
+
+Xen can say which vCPUs are idle. It cannot say which of dom0's hundred kernel
+threads is blocked, or on what. Linux can, and already has the machinery:
+`khungtaskd` prints the stack of any task that has been in `TASK_UNINTERRUPTIBLE`
+for longer than its timeout. The default is 120 seconds, which is longer than
+anyone watches a console, so boot 17 puts
+`sysctl.kernel.hung_task_timeout_secs=20` on dom0's command line, and moves the
+dumps back out to ten seconds so the third lands after it has spoken.
+
+| What the log shows | What it means |
+|---|---|
+| `INFO: task ...:N blocked for more than 20 seconds` with a stack | The answer, by name. Resolve it and fix what it waits on. |
+| Nothing from khungtaskd, dom0 still idle | The blocked task is interruptible, which `khungtaskd` does not report. `sysctl.kernel.softlockup_panic` will not help either; the next lever is `initcall_debug` plus sysrq over `hvc0`. |
+| dom0 wakes up and carries on after twenty seconds | It was waiting on a timeout all along, and the timeout is long. Read what it says next. |
 
 ### The list
 

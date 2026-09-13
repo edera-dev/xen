@@ -159,8 +159,9 @@ menuentry '$title' --class xen {
 	# stops a panic from rebooting into this same entry and destroying the
 	# only copy of the panic message.
 	#
-	# auto_debug_keys runs the '0', 'p' and 'q' keyhandlers by itself, two
-	# seconds apart, three times over.  '0' rather than 'd' because dom0's
+	# auto_debug_keys runs the '0', 'p' and 'q' keyhandlers by itself, ten
+	# seconds apart, three times over -- back out to ten so that the third
+	# lands after khungtaskd has had its say.  '0' rather than 'd' because dom0's
 	# vCPUs are now blocked rather than running, and a blocked vCPU is
 	# invisible to 'd': it dumps whatever is on each pCPU, which is the idle
 	# vCPU.  '0' pauses the hardware domain's vCPUs and dumps them wherever
@@ -184,7 +185,7 @@ menuentry '$title' --class xen {
 		dom0_vcpus_pin \\
 		$console console_to_ring conring_size=512 \\
 		loglvl=all guest_loglvl=all noreboot \\
-		auto_debug_keys=0pq,2,3
+		auto_debug_keys=0pq,10,3
 
 	# hvc0 last, so it is dom0's /dev/console: that is Xen's console, which
 	# comes out of the same serial terminal as Xen's own output.
@@ -199,10 +200,18 @@ menuentry '$title' --class xen {
 	# log can never be lost; the price is that everything from that point
 	# appears twice.  nokaslr makes the PCs in Xen's guest-state dumps
 	# resolvable straight against the dom0 kernel's System.map.
+	#
+	# hung_task_timeout_secs is the one thing Xen cannot supply.  Boot 16
+	# showed both dom0 vCPUs parked in cpu_do_idle(), so whatever stopped
+	# the boot is a *task* blocked inside an initcall, and only dom0 can
+	# name it.  khungtaskd prints that task's stack after the timeout; the
+	# default of 120 seconds is longer than anyone waits at a console, so
+	# ask for twenty.
 	xen_module $DOM0_KERNEL \\
 		root=UUID=$ROOT_SPEC ro$ROOT_FLAGS selinux=0 \\
 		console=tty0 console=hvc0 \\
-		earlycon=xenboot keep_bootcon nokaslr
+		earlycon=xenboot keep_bootcon nokaslr \\
+		sysctl.kernel.hung_task_timeout_secs=20
 
 	xen_module --nounzip $DOM0_INITRD
 }
