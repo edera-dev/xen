@@ -125,6 +125,14 @@ void __init uart_init(void)
         dt_uart_init();
     else
         acpi_uart_init();
+
+    /*
+     * A virtio console is a PCI function, so neither the device-tree scan
+     * above nor the SPCR describes it and there is nothing to probe from.  It
+     * is asked for by name instead, and registers itself when it is.
+     */
+    if ( IS_ENABLED(CONFIG_HAS_VIRTIO_CONSOLE) && console_has("vtcon") )
+        virtio_console_init();
 }
 
 /*
