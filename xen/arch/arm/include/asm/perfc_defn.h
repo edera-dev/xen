@@ -81,6 +81,7 @@ PERFCOUNTER(virt_timer_sw_armed, "Virtual timer software fallback armed")
 PERFCOUNTER(virt_timer_sw_idle,  "Virtual timer software fallback not armed")
 PERFCOUNTER(virt_timer_sw_due,   "Virtual timer software fallback fired for a deadline already due")
 PERFCOUNTER(virt_timer_sw_past,  "Virtual timer software fallback deadline already passed")
+PERFCOUNTER(virt_timer_backstop, "Virtual timer backstop armed for a vCPU with nothing else to wake it")
 PERFCOUNTER(maintenance_irqs, "Maintenance interrupts")
 
 PERFCOUNTER(atomics_guest,    "atomics: guest access")
