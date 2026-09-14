@@ -112,6 +112,20 @@ static int __init acpi_make_hypervisor_node(const struct kernel_info *kinfo,
     if ( res )
         return res;
 
+    /*
+     * The grant table region and the extended regions, exactly as the device
+     * tree path describes them.  Without the extended regions the domain has
+     * no guest-physical address space it can map foreign pages into, and its
+     * only remaining option is to balloon its own memory out -- which on
+     * arm64 goes through memory hotplug and takes the domain down.
+     *
+     * A domain booted with ACPI does not unflatten this tree, but it is the
+     * tree it is handed, and its early flat scan already reads this node.
+     */
+    res = make_hypervisor_reg(kinfo->bd.d, kinfo, 2, 2);
+    if ( res )
+        return res;
+
     res = acpi_make_efi_nodes(fdt, tbl_add);
     if ( res )
         return res;
@@ -157,7 +171,11 @@ static int __init create_acpi_dtb(struct kernel_info *kinfo,
     if ( ret )
         return ret;
 
-    ret = fdt_property_cell(kinfo->fdt, "#size-cells", 1);
+    /*
+     * Two size cells: an extended region can be larger than 4GB, and the
+     * hypervisor node's "reg" is read with the root's cells.
+     */
+    ret = fdt_property_cell(kinfo->fdt, "#size-cells", 2);
     if ( ret )
         return ret;
 
