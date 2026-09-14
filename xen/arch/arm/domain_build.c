@@ -1022,31 +1022,28 @@ static int __init find_host_extended_regions(const struct kernel_info *kinfo,
     return res;
 }
 
-int __init make_hypervisor_node(struct domain *d,
-                                const struct kernel_info *kinfo,
-                                int addrcells, int sizecells)
+/*
+ * Emit the hypervisor node's "reg": the grant table region followed by the
+ * extended regions, which are the guest-physical address space the domain may
+ * use for mappings that have no memory of their own behind them -- foreign
+ * pages and grants.
+ *
+ * Shared with the ACPI hardware domain, which needs exactly the same property:
+ * a domain with no extended regions has to fall back to ballooning its own
+ * memory out to make room for foreign mappings, and on arm64 that reaches
+ * memory hotplug.
+ */
+int __init make_hypervisor_reg(struct domain *d,
+                               const struct kernel_info *kinfo,
+                               int addrcells, int sizecells)
 {
-    const char compat[] =
-        "xen,xen-" XEN_VERSION_STRING "\0"
-        "xen,xen";
     __be32 *reg, *cells;
-    gic_interrupt_t intr;
-    int res;
-    void *fdt = kinfo->fdt;
     struct membanks *ext_regions = NULL;
     unsigned int i, nr_ext_regions;
     unsigned int gnttab_frames =
         gnttab_resource_max_frames(d, XENMEM_resource_grant_table_id_shared);
-
-    dt_dprintk("Create hypervisor node\n");
-
-    /*
-     * Sanity-check address sizes, since addresses and sizes which do
-     * not take up exactly 4 or 8 bytes are not supported.
-     */
-    if ((addrcells != 1 && addrcells != 2) ||
-        (sizecells != 1 && sizecells != 2))
-        panic("Cannot cope with this size\n");
+    void *fdt = kinfo->fdt;
+    int res;
 
     if ( gnttab_frames > PFN_DOWN(kinfo->gnttab_size) )
     {
@@ -1055,16 +1052,6 @@ int __init make_hypervisor_node(struct domain *d,
                d, gnttab_frames, (unsigned long)PFN_DOWN(kinfo->gnttab_size));
         return -EINVAL;
     }
-
-    /* See linux Documentation/devicetree/bindings/arm/xen.txt */
-    res = fdt_begin_node(fdt, "hypervisor");
-    if ( res )
-        return res;
-
-    /* Cannot use fdt_property_string due to embedded nulls */
-    res = fdt_property(fdt, "compatible", compat, sizeof(compat));
-    if ( res )
-        return res;
 
     if ( !opt_ext_regions )
     {
@@ -1130,6 +1117,41 @@ int __init make_hypervisor_node(struct domain *d,
     xfree(ext_regions);
     xfree(reg);
 
+    return res;
+}
+
+int __init make_hypervisor_node(struct domain *d,
+                                const struct kernel_info *kinfo,
+                                int addrcells, int sizecells)
+{
+    const char compat[] =
+        "xen,xen-" XEN_VERSION_STRING "\0"
+        "xen,xen";
+    gic_interrupt_t intr;
+    int res;
+    void *fdt = kinfo->fdt;
+
+    dt_dprintk("Create hypervisor node\n");
+
+    /*
+     * Sanity-check address sizes, since addresses and sizes which do
+     * not take up exactly 4 or 8 bytes are not supported.
+     */
+    if ((addrcells != 1 && addrcells != 2) ||
+        (sizecells != 1 && sizecells != 2))
+        panic("Cannot cope with this size\n");
+
+    /* See linux Documentation/devicetree/bindings/arm/xen.txt */
+    res = fdt_begin_node(fdt, "hypervisor");
+    if ( res )
+        return res;
+
+    /* Cannot use fdt_property_string due to embedded nulls */
+    res = fdt_property(fdt, "compatible", compat, sizeof(compat));
+    if ( res )
+        return res;
+
+    res = make_hypervisor_reg(d, kinfo, addrcells, sizecells);
     if ( res )
         return res;
 
