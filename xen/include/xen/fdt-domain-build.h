@@ -30,6 +30,8 @@ int make_chosen_pci_probe_only(void *fdt);
 int make_cpus_node(const struct domain *d, struct kernel_info *kinfo);
 int make_hypervisor_node(struct domain *d, const struct kernel_info *kinfo,
                          int addrcells, int sizecells);
+int make_hypervisor_reg(struct domain *d, const struct kernel_info *kinfo,
+                        int addrcells, int sizecells);
 int make_memory_node(const struct kernel_info *kinfo, int addrcells,
                      int sizecells, const struct membanks *mem);
 int make_timer_node(const struct kernel_info *kinfo);
