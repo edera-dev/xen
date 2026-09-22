@@ -64,8 +64,10 @@ static struct ns16550 {
     bool intr_works;
     bool force_polling;
     bool dw_usr_bsy;
+    bool io_base_set;       /* if =1, io_base came from the command line */
 #ifdef NS16550_PCI
     /* PCI card parameters. */
+    bool pci_scanned;       /* if =1, pci_uart_config() already ran */
     bool pb_bdf_enable;     /* if =1, pb-bdf effective, port behind bridge */
     bool ps_bdf_enable;     /* if =1, ps_bdf effective, port on pci card */
     pci_sbdf_t pci_bridge;
@@ -1239,6 +1241,8 @@ pci_uart_config(struct ns16550 *uart, bool skip_amt, unsigned int idx)
     u64 orig_base = uart->io_base;
     unsigned int b, d, f, nextf, i;
 
+    uart->pci_scanned = true;
+
     /* NB. Start at bus 1 to avoid AMT: a plug-in card cannot be on bus 0. */
     for ( b = skip_amt ? 1 : 0; b < 0x100; b++ )
     {
@@ -1594,6 +1598,7 @@ static bool __init parse_positional(struct ns16550 *uart, char **str)
 #endif
         {
             uart->io_base = simple_strtoull(conf, &conf, 0);
+            uart->io_base_set = true;
         }
     }
 
@@ -1669,6 +1674,7 @@ static bool __init parse_namevalue_pairs(char *str, struct ns16550 *uart)
                 break;
             }
             uart->io_base = simple_strtoull(param_value, NULL, 0);
+            uart->io_base_set = true;
             break;
 
         case irq:
@@ -1781,7 +1787,32 @@ static void __init ns16550_parse_port_config(
     if ( uart->io_base == 0 )
         PARSE_ERR("I/O base address must be specified.");
     if ( !check_existence(uart) )
-        PARSE_ERR("16550-compatible serial UART not present");
+    {
+        bool present = false;
+
+#ifdef NS16550_PCI
+        /*
+         * Some systems, EC2 bare metal among them, have no legacy UART and
+         * carry their only serial port on PCI. Look for one before giving up,
+         * unless the command line named a base or already asked for a scan.
+         * com1 only: for com2 the scan skips the first port it finds, so it
+         * can never match a single-port device.
+         */
+        if ( uart == ns16550_com && !uart->io_base_set && !uart->pci_scanned )
+        {
+            pci_uart_config(uart, 1 /* skip AMT */, uart - ns16550_com);
+            /*
+             * A scan that matched nothing puts back the base we just rejected,
+             * and check_existence() passes MMIO addresses through untested, so
+             * ps_bdf_enable is what says a device was found.
+             */
+            present = uart->ps_bdf_enable && check_existence(uart);
+        }
+#endif
+
+        if ( !present )
+            PARSE_ERR("16550-compatible serial UART not present");
+    }
 
     /* Register with generic serial driver. */
     serial_register_uart(uart - ns16550_com, &ns16550_driver, uart);
