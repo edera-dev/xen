@@ -1,6 +1,6 @@
 ---
 name: test-coverage-review
-description: Review a pull request against a Xen hypervisor branch for the check that is missing. Nothing in this repository runs on a GitHub pull request, so the useful answer is usually which build configuration or smoke script under automation/ would have exercised the change. Advisory only.
+description: Review a pull request against a Xen hypervisor branch for the check that is missing. Nothing in this repository compiles or boots the tree on a GitHub pull request, so the useful answer is usually which build configuration or smoke script under automation/ would have exercised the change. Advisory only.
 user-invocable: true
 ---
 
@@ -80,7 +80,7 @@ A well-covered change with one more branch you could name is clean. When the PR 
 
 Two shapes come up constantly and are worth naming so you weigh them properly:
 
-- **Nothing runs on the pull request.** The upstream pipeline is GitLab-based and the Coverity workflow here is scheduled and dispatch-only by design. No build and no smoke test runs on a GitHub pull request in this repository. Say that once, then name what would have caught the change.
+- **Nothing compiles the change on the pull request.** The upstream pipeline is GitLab-based and the Coverity workflow here is scheduled and dispatch-only by design. No build and no smoke test runs on a GitHub pull request in this repository; the advisory review checks that do run compile nothing. Say that once, then name what would have caught the change.
 - **The code is not compiled by the configuration that gets built.** A change under an architecture or config symbol outside the usual build set is not exercised even where CI does run. Check which configurations reach the code before treating a build as coverage.
 
 Pick the smallest thing that would catch the failure. A build of the configuration that compiles the code, for anything that can fail to compile or link. The matching qemu smoke script under `automation/scripts/`, for behaviour that appears at boot or on a running domain. An XTF case, for guest-visible hypercall behaviour. Do not propose a test framework the tree does not have.

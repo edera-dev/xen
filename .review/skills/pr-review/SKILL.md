@@ -117,7 +117,7 @@ When a test is present:
 - **Is it actually enabled and actually asserting** — not skipped, not filtered out, not a tautology?
 - **Is it at the right level?** Logic that can be exercised by building a configuration should not need a boot to demonstrate. Behaviour that only appears on a running hypervisor does.
 
-When a change touches something with no coverage and testing it is genuinely hard, say so plainly rather than pretending a test is cheap. That is often the situation here. Nothing in this repository runs on a GitHub pull request, and much hypervisor behaviour can only be observed by booting. Naming the build configuration or the smoke script under `automation/scripts/` that would exercise the change is more useful than asking for a unit test.
+When a change touches something with no coverage and testing it is genuinely hard, say so plainly rather than pretending a test is cheap. That is often the situation here. Nothing in this repository compiles or boots the tree on a GitHub pull request, and much hypervisor behaviour can only be observed by booting. Naming the build configuration or the smoke script under `automation/scripts/` that would exercise the change is more useful than asking for a unit test.
 
 ## Out of scope
 

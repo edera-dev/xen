@@ -1,11 +1,13 @@
 # What checks this repo has, and what runs on a PR
 
-Start with the fact that shapes every coverage answer: **nothing runs on a
-GitHub pull request here.** `.github/workflows/coverity.yml` is the only
-workflow, and it is `workflow_dispatch` and `schedule` only, with a comment
-saying so explicitly — it scans release code, not pull requests. The upstream
-project's own CI is GitLab-based, under `automation/gitlab-ci/`, and does not
-trigger from this repository's pull requests.
+Start with the fact that shapes every coverage answer: **nothing compiles or
+boots this tree on a GitHub pull request.** `.github/workflows/coverity.yml` is
+`workflow_dispatch` and `schedule` only, with a comment saying so explicitly —
+it scans release code, not pull requests. The upstream project's own CI is
+GitLab-based, under `automation/gitlab-ci/`, and does not trigger from this
+repository's pull requests. The only workflows that do run on a pull request
+are the advisory review checks described at the end of this file, and they
+build nothing.
 
 So a coverage review here is not "which test file covers this". It is "what
 would have to run, and where does it live".
@@ -46,6 +48,15 @@ deviations. A new deviation is a suppression and should say why.
 
 The Coverity workflow runs on a schedule against the branch, not against pull
 requests.
+
+## The review checks themselves
+
+Three workflows belong to the advisory review checks rather than to this
+repository's own validation: `pr-review-suggestions.yml` and
+`pr-test-coverage.yml`, which produce this review, and
+`pr-review-selftest.yml`, which runs the publisher's tests when that machinery
+changes. They build, lint and test nothing this repository ships. Never count
+them as coverage for a change.
 
 ## What nothing checks
 
