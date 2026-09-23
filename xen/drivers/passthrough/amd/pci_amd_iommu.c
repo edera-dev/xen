@@ -263,8 +263,8 @@ static int __must_check amd_iommu_setup_domain_device(
     {
         const uint64_t *raw = (const void *)dte;
 
-        printk(XENLOG_INFO "AMD-Vi: dte[%#x] %016lx %016lx %016lx %016lx\n",
-               req_id, raw[0], raw[1], raw[2], raw[3]);
+        AMD_IOMMU_DEBUG("dte[%#x] %016lx %016lx %016lx %016lx\n",
+                        req_id, raw[0], raw[1], raw[2], raw[3]);
     }
 
     AMD_IOMMU_DEBUG("Setup I/O page table: device id = %#x, type = %#x, "
@@ -359,15 +359,21 @@ static int cf_check iov_enable_xt(void)
 }
 
 unsigned int __read_mostly amd_iommu_max_paging_mode = IOMMU_MAX_PT_LEVELS;
+int __read_mostly amd_iommu_min_paging_mode = 1;
+
 /*
  * Cap on the depth of a guest's IOMMU page tables, 0 to derive it from the
  * address width as before. Linux picks the depth from what a domain actually
  * maps and so programs three levels where Xen's 52-bit derivation gives five;
  * an IOMMU that has only ever seen Linux may not handle the deeper table.
  *
- * The hardware domain is left alone: its identity mappings cover host RAM, and
- * a mapping that falls outside the tables reaches domain_crash().
+ * The hardware domain's default context is left alone: its identity mappings
+ * cover host RAM, and a mapping that falls outside the tables reaches
+ * domain_crash().
  */
+unsigned int __read_mostly amd_iommu_guest_pt_levels;
+integer_param("amd-iommu-guest-pt-levels", amd_iommu_guest_pt_levels);
+
 /*
  * Invalidate after installing a new entry, not just after changing one.
  * Negative unless set on the command line or asked for by the hardware (see
@@ -376,13 +382,12 @@ unsigned int __read_mostly amd_iommu_max_paging_mode = IOMMU_MAX_PT_LEVELS;
 int8_t __read_mostly amd_iommu_flush_on_map = -1;
 boolean_param("amd-iommu-flush-on-map", amd_iommu_flush_on_map);
 
-/* Device to trace page table updates for, 0 to trace none. */
+/*
+ * Device, as (segment << 16) | device ID, to trace page table updates for, 0
+ * to trace none.
+ */
 unsigned int __read_mostly amd_iommu_dump_bdf;
 integer_param("amd-iommu-dump-bdf", amd_iommu_dump_bdf);
-
-unsigned int __read_mostly amd_iommu_guest_pt_levels;
-integer_param("amd-iommu-guest-pt-levels", amd_iommu_guest_pt_levels);
-int __read_mostly amd_iommu_min_paging_mode = 1;
 
 /*
  * The default context carries the hardware domain's identity mappings and

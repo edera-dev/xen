@@ -460,20 +460,27 @@ int cf_check amd_iommu_map_page(
          * to show what it would actually find for this address.
          */
         static unsigned int reported;
-        const struct amd_iommu *iommu =
-            find_iommu_for_device(PCI_SBDF(0, amd_iommu_dump_bdf));
+        pci_sbdf_t sbdf = { .sbdf = amd_iommu_dump_bdf };
+        const struct amd_iommu *iommu = find_iommu_for_device(sbdf);
+        const struct amd_iommu_dte *dte =
+            iommu ? (const struct amd_iommu_dte *)iommu->dev_table.buffer +
+                    sbdf.bdf
+                  : NULL;
 
         /*
-         * Only trace contexts created for a device: the hardware domain's
-         * identity mappings would otherwise use up the budget during boot,
-         * long before anything interesting is mapped.
+         * Only trace the context the device actually translates through, and
+         * not the hardware domain's default one: its identity mappings would
+         * otherwise use up the budget during boot, long before anything
+         * interesting is mapped.
          */
-        if ( iommu && ctx->id && reported < 8 )
+        if ( dte && dte->tv && reported < 8 &&
+             dte->pt_root == mfn_x(page_to_mfn(ctx->arch.amd.root_table)) &&
+             (ctx->id || !is_hardware_domain(d)) )
         {
             reported++;
             printk("%pd: mapped dfn %"PRI_dfn" -> mfn %"PRI_mfn"\n",
                    d, dfn_x(dfn), mfn_x(mfn));
-            amd_iommu_print_entries(iommu, amd_iommu_dump_bdf, dfn);
+            amd_iommu_print_entries(iommu, sbdf.bdf, dfn);
         }
     }
 
