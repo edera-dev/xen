@@ -626,10 +626,7 @@ int cf_check amd_iommu_flush_iotlb_pages(
 
     /* If so requested or if the range wraps then just flush everything. */
     if ( (flush_flags & IOMMU_FLUSHF_all) || dfn_l + page_count < dfn_l )
-    {
-        amd_iommu_flush_all_pages(d, ctx);
-        return 0;
-    }
+        return amd_iommu_flush_all_pages(d, ctx);
 
     /*
      * Flushes are expensive so find the minimal single flush that will
@@ -640,15 +637,13 @@ int cf_check amd_iommu_flush_iotlb_pages(
      *       flush code.
      */
     if ( page_count == 1 ) /* order 0 flush count */
-        amd_iommu_flush_pages(d, ctx, dfn_l, 0);
+        return amd_iommu_flush_pages(d, ctx, dfn_l, 0);
     else if ( flush_count(dfn_l, page_count, 9) == 1 )
-        amd_iommu_flush_pages(d, ctx, dfn_l, 9);
+        return amd_iommu_flush_pages(d, ctx, dfn_l, 9);
     else if ( flush_count(dfn_l, page_count, 18) == 1 )
-        amd_iommu_flush_pages(d, ctx, dfn_l, 18);
+        return amd_iommu_flush_pages(d, ctx, dfn_l, 18);
     else
-        amd_iommu_flush_all_pages(d, ctx);
-
-    return 0;
+        return amd_iommu_flush_all_pages(d, ctx);
 }
 
 static int lookup_pagewalk(struct page_info *table, dfn_t dfn, unsigned long level,

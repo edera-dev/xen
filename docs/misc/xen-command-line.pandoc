@@ -152,6 +152,24 @@ to boot on systems with the following errata:
 
 Permit multiple copies of host p2m.
 
+### amd-iommu-cmd-recovery (AMD)
+> `= <boolean>`
+
+> Default: `true` when running under a hypervisor, `false` otherwise
+
+Recover from an AMD IOMMU command buffer that stops making progress, rather
+than wait on it indefinitely.  Emulated IOMMUs have been seen to reject
+commands real hardware accepts, halting their command processor.  With this
+enabled, a command processor whose head pointer has not moved for a whole
+completion wait timeout and which reports itself halted is restarted past the
+command it rejected, which is logged and lost; everything queued behind it
+still runs.  Should completion waits keep failing, every further IOMMU flush
+fails, which crashes the affected guests rather than leave them with stale
+translations.
+
+On real hardware a stuck command buffer is a fault, and invalidations that
+never complete must not be passed off as done, so this is off by default there.
+
 ### apic (x86)
 > `= bigsmp | default`
 

@@ -110,12 +110,12 @@ struct amd_iommu {
     int enabled;
 
     /*
-     * Set when the command buffer is found never to advance its head pointer.
-     * Invalidation then cannot be issued at all, so it is skipped rather than
-     * waited on; only correct for an IOMMU that does not cache translations.
+     * Set, only where recovering from a stuck command buffer is enabled, once
+     * completion waits have repeatedly failed.  Every flush then fails with
+     * -EIO, so callers never mistake a skipped invalidation for a done one.
      */
     bool cmd_buffer_dead;
-    /* Consecutive command buffer timeouts, reset by one that completes. */
+    /* Consecutive failed completion waits, reset by one that completes. */
     unsigned int cmd_failures;
 
     unsigned int index;
@@ -263,11 +263,11 @@ void iommu_dte_add_device_entry(struct amd_iommu_dte *dte,
                                 const struct ivrs_mappings *ivrs_dev);
 
 /* send cmd to iommu */
-void amd_iommu_flush_all_pages(struct domain *d, struct iommu_context *ctx);
-void amd_iommu_flush_pages(struct domain *d, struct iommu_context *ctx,
-                           unsigned long dfn, unsigned int order);
-void amd_iommu_flush_iotlb(u8 devfn, const struct pci_dev *pdev,
-                           daddr_t daddr, unsigned int order);
+int amd_iommu_flush_all_pages(struct domain *d, struct iommu_context *ctx);
+int amd_iommu_flush_pages(struct domain *d, struct iommu_context *ctx,
+                          unsigned long dfn, unsigned int order);
+int amd_iommu_flush_iotlb(u8 devfn, const struct pci_dev *pdev,
+                          daddr_t daddr, unsigned int order);
 void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
                             domid_t domid);
 void amd_iommu_flush_intremap(struct amd_iommu *iommu, uint16_t bdf);
