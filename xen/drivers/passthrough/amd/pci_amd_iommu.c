@@ -542,6 +542,7 @@ static int cf_check amd_iommu_attach(
     struct ivrs_mappings *ivrs_mappings;
     struct ivrs_unity_map *map;
     uint16_t bdf = pdev->sbdf.bdf;
+    bool flush_dte = false;
     int req_id;
 
     if ( !iommu )
@@ -555,6 +556,8 @@ static int cf_check amd_iommu_attach(
          ivrs_mappings[bdf].dte_requestor_id == bdf &&
          !ivrs_mappings[bdf].intremap_table )
     {
+        const struct amd_iommu_dte *dte =
+            (const struct amd_iommu_dte *)iommu->dev_table.buffer + bdf;
         unsigned long flags;
 
         if ( pdev->msix || pdev->msi_maxvec )
@@ -576,15 +579,32 @@ static int cf_check amd_iommu_attach(
 
         spin_unlock_irqrestore(&iommu->lock, flags);
 
-        /* DTE didn't have DMA translations enabled, do not flush the TLB. */
-        amd_iommu_flush_device(iommu, bdf, DOMID_INVALID);
+        /*
+         * The entry has to be invalidated for the new table to take effect.
+         * An entry that does not translate yet is about to be made to by
+         * amd_iommu_setup_domain_device(), which invalidates it then, so defer
+         * to that rather than naming an entry with only V set: Linux never
+         * does, and an emulated IOMMU has been seen to reject the command and
+         * halt its command processor.
+         *
+         * Only interrupt remapping changed, so there is no TLB to flush.
+         */
+        if ( dte->tv )
+            amd_iommu_flush_device(iommu, bdf, DOMID_INVALID);
+        else
+            flush_dte = true;
     }
 
     ret = amd_iommu_reserve_domain_unity_map(d, ctx, map, 0);
-    if ( ret )
-        return ret;
+    if ( !ret )
+        ret = amd_iommu_setup_domain_device(d, ctx, iommu, pdev->devfn, pdev,
+                                            NULL);
 
-    return amd_iommu_setup_domain_device(d, ctx, iommu, pdev->devfn, pdev, NULL);
+    /* Nothing else got to invalidate the entry, so do it now after all. */
+    if ( ret && flush_dte )
+        amd_iommu_flush_device(iommu, bdf, DOMID_INVALID);
+
+    return ret;
 }
 
 static int cf_check amd_iommu_detach(struct domain *d, struct pci_dev *pdev,

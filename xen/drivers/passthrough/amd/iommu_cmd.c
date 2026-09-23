@@ -467,17 +467,7 @@ void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
     const struct amd_iommu_dte *dte = iommu->dev_table.buffer;
 
     /*
-     * An entry with TV clear translates nothing, so there is nothing cached
-     * to invalidate. Skipping it also avoids naming such an entry at all:
-     * Linux prefills V and TV together and never invalidates a V-only entry,
-     * and an emulated IOMMU has been seen to reject the command outright and
-     * halt its command processor, starving every later invalidation.
-     */
-    if ( dte && !dte[bdf].tv )
-        return;
-
-    /*
-     * Likewise skip an entry deeper than the shape guests are capped to. Xen
+     * Skip an entry deeper than the shape guests are capped to. Xen
      * derives the hardware domain's depth from the address width and lands on
      * five levels where Linux programs three, and an IOMMU that has only seen
      * Linux may reject the command naming such an entry.
