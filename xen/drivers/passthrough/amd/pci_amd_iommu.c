@@ -384,6 +384,24 @@ unsigned int __read_mostly amd_iommu_guest_pt_levels;
 integer_param("amd-iommu-guest-pt-levels", amd_iommu_guest_pt_levels);
 int __read_mostly amd_iommu_min_paging_mode = 1;
 
+/*
+ * The default context carries the hardware domain's identity mappings and
+ * must keep the depth derived from the address width. A context created
+ * for a device can use a shallower table, which is what Linux programs and
+ * therefore all an IOMMU that has only run Linux need ever have walked.
+ */
+static unsigned int ctx_paging_mode(const struct domain *d, bool default_ctx)
+{
+    unsigned int mode = dom_iommu(d)->arch.amd.paging_mode;
+
+    if ( !default_ctx && amd_iommu_guest_pt_levels &&
+         mode > amd_iommu_guest_pt_levels )
+        mode = max(amd_iommu_guest_pt_levels,
+                   (unsigned int)amd_iommu_min_paging_mode);
+
+    return mode;
+}
+
 static int cf_check amd_iommu_domain_init(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -508,18 +526,7 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
             iommu_alloc_domid(iommu->domid_map);
     }
 
-    /*
-     * The default context carries the hardware domain's identity mappings and
-     * must keep the depth derived from the address width. A context created
-     * for a device can use a shallower table, which is what Linux programs and
-     * therefore all an IOMMU that has only run Linux need ever have walked.
-     */
-    ctx->arch.amd.paging_mode = hd->arch.amd.paging_mode;
-
-    if ( ctx->id && amd_iommu_guest_pt_levels &&
-         ctx->arch.amd.paging_mode > amd_iommu_guest_pt_levels )
-        ctx->arch.amd.paging_mode = max(amd_iommu_guest_pt_levels,
-                                        (unsigned int)amd_iommu_min_paging_mode);
+    ctx->arch.amd.paging_mode = ctx_paging_mode(d, !ctx->id);
 
     if ( !ctx->opaque )
     {
@@ -792,7 +799,7 @@ static void cf_check amd_dump_page_tables(struct domain *d)
                    mfn_x(page_to_mfn(ctx->arch.amd.root_table)));
 
             amd_dump_page_table_level(ctx->arch.amd.root_table,
-                                      hd->arch.amd.paging_mode, 0, 0);
+                                      ctx->arch.amd.paging_mode, 0, 0);
             iommu_put_context(ctx);
         }
     }
@@ -800,8 +807,11 @@ static void cf_check amd_dump_page_tables(struct domain *d)
 
 static uint64_t cf_check amd_iommu_get_max_iova(struct domain *d)
 {
-    struct domain_iommu *hd = dom_iommu(d);
-    unsigned int bits = 12 + hd->arch.amd.paging_mode * 9;
+    /*
+     * This bounds the contexts a domain creates for itself, which may be
+     * shallower than its default one, see ctx_paging_mode().
+     */
+    unsigned int bits = 12 + ctx_paging_mode(d, false) * 9;
 
     /* If paging_mode == 6, which indicates 6-level page tables,
        we have bits == 66 while the GPA space is still 64-bits
