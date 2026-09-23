@@ -1428,8 +1428,8 @@ static int __init amd_iommu_prepare_one(struct amd_iommu *iommu)
 
     /*
      * Check whether the IOMMU is already enabled and unconditionally disable
-     * it (zero the control register) ahead of Xen setup.  Needs to be
-     * revisited to support Preboot DMA Protection.
+     * it ahead of Xen setup.  Needs to be revisited to support Preboot DMA
+     * Protection.
      */
     iommu->ctrl.raw = readq(iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
     if ( iommu->ctrl.iommu_en )
@@ -1443,6 +1443,12 @@ static int __init amd_iommu_prepare_one(struct amd_iommu *iommu)
      * bits outside the fields a driver manages -- vendor specific ones, or
      * anything an emulation sets for itself -- have never had to survive being
      * cleared.
+     *
+     * That does not extend to features which change the layout or meaning of
+     * structures Xen sets up, and which Xen therefore relies on being off:
+     * whatever firmware or a previous kernel left enabled there would have the
+     * IOMMU read Xen's device table, logs or interrupt remapping tables as
+     * something else.
      */
     iommu->ctrl.iommu_en = false;
     iommu->ctrl.cmd_buf_en = false;
@@ -1456,6 +1462,18 @@ static int __init amd_iommu_prepare_one(struct amd_iommu *iommu)
     iommu->ctrl.ga_en = false;
     iommu->ctrl.ga_log_en = false;
     iommu->ctrl.ga_int_en = false;
+
+    iommu->ctrl.gam_en = 0;
+    iommu->ctrl.gappi_en = false;
+    iommu->ctrl.dual_ppr_log_en = 0;
+    iommu->ctrl.dual_event_log_en = 0;
+    iommu->ctrl.dev_tbl_seg_en = 0;
+    iommu->ctrl.priv_abrt_en = 0;
+    iommu->ctrl.ppr_auto_rsp_en = false;
+    iommu->ctrl.ppr_auto_rsp_aon = false;
+    iommu->ctrl.eph_en = false;
+    iommu->ctrl.vcmd_en = false;
+    iommu->ctrl.viommu_en = false;
 
     writeq(iommu->ctrl.raw, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
 
