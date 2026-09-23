@@ -555,8 +555,12 @@ static void cf_check parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
     else if ( code == IOMMU_EVENT_ILLEGAL_COMMAND_ERROR ||
               code == IOMMU_EVENT_COMMAND_HW_ERROR )
     {
-        /* The command address is stored as addr[63:4]. */
-        uint64_t addr = *(uint64_t *)(entry + 2) << 4;
+        /*
+         * The command's address occupies bits 127:68 of the entry, in place:
+         * Address[63:4], with the bits below it reserved.  It needs masking,
+         * not shifting, which is also how Linux's dump_command() treats it.
+         */
+        uint64_t addr = *(uint64_t *)(entry + 2) & ~(uint64_t)0xf;
         paddr_t base = virt_to_maddr(iommu->cmd_buffer.buffer);
         const uint32_t *cmd = NULL;
 
