@@ -10,6 +10,7 @@
 #ifndef __X86_PV_MM_H__
 #define __X86_PV_MM_H__
 
+#include <xen/percpu.h>
 #include <xen/stdbool.h>
 
 struct cpu_user_regs;
@@ -28,6 +29,10 @@ bool pv_map_ldt_shadow_page(unsigned int offset);
 bool pv_destroy_ldt(struct vcpu *v);
 
 int validate_segdesc_page(struct page_info *page);
+
+/* Time spent inside do_mmu_update(), dumped by the AMD IOMMU's 'y' key. */
+DECLARE_PER_CPU(uint64_t, pv_mmu_update_ns);
+DECLARE_PER_CPU(uint64_t, pv_mmu_update_calls);
 
 #else
 

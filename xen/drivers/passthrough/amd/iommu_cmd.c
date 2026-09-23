@@ -19,6 +19,8 @@
 
 #include <xen/param.h>
 
+#include <asm/pv/mm.h>
+
 #include "iommu.h"
 #include "../ats.h"
 
@@ -661,6 +663,7 @@ void cf_check amd_iommu_dump_flush_stats(unsigned char key)
     printk("AMD-Vi: %"PRIu64" completion waits, %"PRIu64" ms, %"PRIu64" ns each\n",
            done, ns / 1000000, done ? ns / done : 0);
 
+#ifdef CONFIG_PV
     done = ns = 0;
     for_each_online_cpu ( cpu )
     {
@@ -672,4 +675,5 @@ void cf_check amd_iommu_dump_flush_stats(unsigned char key)
 
     printk("PV: %"PRIu64" mmu_update calls, %"PRIu64" ms inside, %"PRIu64" ns each\n",
            done, ns / 1000000, done ? ns / done : 0);
+#endif
 }
