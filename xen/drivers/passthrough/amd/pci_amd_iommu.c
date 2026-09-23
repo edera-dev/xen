@@ -151,6 +151,9 @@ static int __must_check amd_iommu_setup_domain_device(
 
     if ( !dte->v || !dte->tv )
     {
+        /* Whatever the IOMMU holds for a V-only entry aborts DMA. */
+        bool was_blocked = dte->v;
+
         /* bind DTE to domain page-tables */
         rc = amd_iommu_set_root_page_table(
                  dte, page_to_maddr(root_pg), domid,
@@ -177,8 +180,21 @@ static int __must_check amd_iommu_setup_domain_device(
 
         spin_unlock_irqrestore(&iommu->lock, flags);
 
-        /* DTE didn't have DMA translations enabled, do not flush the TLB. */
-        amd_iommu_flush_device(iommu, req_id, DOMID_INVALID);
+        /*
+         * With guest page tables capped, don't name an entry deeper than the
+         * cap: Xen derives the hardware domain's depth from the address width
+         * and lands on five levels where Linux programs three, and an IOMMU
+         * that has only seen Linux may reject the command. That is only safe
+         * where the entry used to block DMA, as then all a stale copy of it
+         * can do is keep blocking (and keep remapping interrupts through the
+         * table it was prefilled with); an entry that used to translate, or
+         * to let DMA through untranslated, is always invalidated.
+         *
+         * DTE didn't have DMA translations enabled, do not flush the TLB.
+         */
+        if ( !was_blocked || !amd_iommu_guest_pt_levels ||
+             ctx->arch.amd.paging_mode <= amd_iommu_guest_pt_levels )
+            amd_iommu_flush_device(iommu, req_id, DOMID_INVALID);
     }
     else if ( dte->pt_root != mfn_x(page_to_mfn(root_pg)) )
     {
