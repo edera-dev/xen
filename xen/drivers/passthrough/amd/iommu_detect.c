@@ -64,7 +64,7 @@ void __init get_iommu_features(struct amd_iommu *iommu)
     {
         if ( !iommu_has_cap(iommu, PCI_CAP_EFRSUP_SHIFT) )
         {
-            /* No register to read, so nothing says whether it caches. */
+            /* See below. */
             if ( amd_iommu_flush_on_map < 0 )
                 amd_iommu_flush_on_map = true;
             return;
@@ -78,13 +78,19 @@ void __init get_iommu_features(struct amd_iommu *iommu)
     }
 
     /*
-     * An IOMMU that caches entries it did not find present needs invalidating
-     * after one is installed. The extended feature register says whether it
-     * does; with no register to read, nothing says either way and the safe
-     * answer is to invalidate.
+     * An IOMMU that caches not-present entries needs invalidating after one
+     * is installed, and says so with NpCache in its capability header.  One
+     * with no extended features to report, or no register to report them in,
+     * is flushed as well: that is what the emulated IOMMUs seen so far look
+     * like, and at least one of those shadows the page tables rather than
+     * walking them, so never learns of a new entry otherwise.  Flushing
+     * needlessly only costs time.  Any one IOMMU asking for it turns it on for
+     * all of them.
      */
-    if ( amd_iommu_flush_on_map < 0 )
-        amd_iommu_flush_on_map = !iommu->features.raw;
+    if ( amd_iommu_flush_on_map < 0 &&
+         (iommu_has_cap(iommu, PCI_CAP_NP_CACHE_SHIFT) ||
+          !iommu->features.raw) )
+        amd_iommu_flush_on_map = true;
 
     /* Don't log the same set of features over and over. */
     first = list_first_entry(&amd_iommu_head, struct amd_iommu, list);

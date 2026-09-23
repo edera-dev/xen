@@ -370,7 +370,8 @@ unsigned int __read_mostly amd_iommu_max_paging_mode = IOMMU_MAX_PT_LEVELS;
  */
 /*
  * Invalidate after installing a new entry, not just after changing one.
- * Negative until decided from the hardware, see get_iommu_features().
+ * Negative unless set on the command line or asked for by the hardware (see
+ * get_iommu_features()), and then treated as false.
  */
 int8_t __read_mostly amd_iommu_flush_on_map = -1;
 boolean_param("amd-iommu-flush-on-map", amd_iommu_flush_on_map);
