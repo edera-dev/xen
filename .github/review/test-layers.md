@@ -6,7 +6,7 @@ boots this tree on a GitHub pull request.** `.github/workflows/coverity.yml` is
 it scans release code, not pull requests. The upstream project's own CI is
 GitLab-based, under `automation/gitlab-ci/`, and does not trigger from this
 repository's pull requests. The only workflows that do run on a pull request
-are the advisory review checks described at the end of this file, and they
+are the advisory review checks described under The review checks themselves, and they
 build nothing.
 
 So a coverage review here is not "which test file covers this". It is "what
@@ -51,12 +51,10 @@ requests.
 
 ## The review checks themselves
 
-Three workflows belong to the advisory review checks rather than to this
-repository's own validation: `pr-review-suggestions.yml` and
-`pr-test-coverage.yml`, which produce this review, and
-`pr-review-selftest.yml`, which runs the publisher's tests when that machinery
-changes. They build, lint and test nothing this repository ships. Never count
-them as coverage for a change.
+`.github/workflows/pr-review.yml` runs the two advisory review checks,
+including this one, through the shared workflow in `edera-dev/actions`. They
+build, lint and test nothing this repository ships. Never count them as
+coverage for a change.
 
 ## What nothing checks
 
