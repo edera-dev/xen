@@ -1,0 +1,119 @@
+name: Land upstream rebase
+
+# Lands a nightly rebase that needed review (see upstream-rebase.yml) once a
+# maintainer approves its pull request.
+#
+# A rebase replaces edera/4.22 rather than merging into it, so the merge
+# button is the wrong tool: it would graft a second copy of the whole series
+# onto the old one. Approving instead force-pushes edera/4.22 to the exact
+# commit that was approved, and GitHub then marks the pull request merged.
+#
+# What has to hold before anything is pushed:
+#   - the pull request is a rebase/edera-4.22/... branch from this repository,
+#     targeting edera/4.22;
+#   - the review approved the current head, not an earlier one;
+#   - the approver has write access;
+#   - edera/4.22 is still the tip the rebase started from. The branch name
+#     records that tip, and branch names cannot be edited on an open pull
+#     request, so this is not something the pull request body can change. If
+#     edera/4.22 moved, nothing is pushed; the next nightly run rebases the new
+#     tip.
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edera-4.22-push
+  cancel-in-progress: false
+
+env:
+  DOWNSTREAM: edera/4.22
+  CANDIDATE_PREFIX: rebase/edera-4.22/
+
+jobs:
+  land:
+    if: >-
+      github.event.review.state == 'approved'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.base.ref == 'edera/4.22'
+      && startsWith(github.event.pull_request.head.ref, 'rebase/edera-4.22/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.REBASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REBASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Land
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          JOB_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEWED_SHA: ${{ github.event.review.commit_id }}
+          APPROVER: ${{ github.event.review.user.login }}
+        run: |
+          set -euo pipefail
+          say() {
+            GH_TOKEN=$JOB_TOKEN gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$1"
+          }
+
+          if [ "$REVIEWED_SHA" != "$HEAD_SHA" ]; then
+            say "Not landed: the approval was for \`${REVIEWED_SHA:0:12}\`, but the head is now \`${HEAD_SHA:0:12}\`. Approve the current head to land it."
+            exit 1
+          fi
+
+          perm=$(GH_TOKEN=$JOB_TOKEN gh api "repos/$GITHUB_REPOSITORY/collaborators/$APPROVER/permission" -q .permission)
+          case $perm in
+            admin|maintain|write) ;;
+            *)
+              say "Not landed: @$APPROVER does not have write access, so their approval cannot land a rebase."
+              exit 1 ;;
+          esac
+
+          # Name: <prefix><date>-<old 12>-<upstream 12>.
+          rest=${HEAD_REF#"$CANDIDATE_PREFIX"}
+          IFS=- read -r _date old12 up12 <<<"$rest"
+          if ! [[ $old12 =~ ^[0-9a-f]{12}$ && $up12 =~ ^[0-9a-f]{12}$ ]]; then
+            say "Not landed: \`$HEAD_REF\` is not a branch the nightly rebase made."
+            exit 1
+          fi
+
+          origin="https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          cur=$(git ls-remote "$origin" "refs/heads/$DOWNSTREAM" | cut -f1)
+          if [ "${cur:0:12}" != "$old12" ]; then
+            say "Not landed: \`$DOWNSTREAM\` has moved to \`${cur:0:12}\` since this rebase of \`$old12\` was made. Tonight's run will rebase the new tip; this pull request will be closed as superseded."
+            exit 1
+          fi
+
+          git init -q work && cd work
+          git fetch -q --no-tags "$origin" "$HEAD_SHA" "$cur"
+          backup="backup/edera-4.22-pre-rebase-$(date -u +%Y%m%d)-$old12"
+          git push "$origin" "$cur:refs/heads/$backup"
+          git push --force-with-lease="refs/heads/$DOWNSTREAM:$cur" "$origin" "$HEAD_SHA:refs/heads/$DOWNSTREAM"
+          now=$(git ls-remote "$origin" "refs/heads/$DOWNSTREAM" | cut -f1)
+          if [ "$now" != "$HEAD_SHA" ]; then
+            say "Push reported success but \`$DOWNSTREAM\` is \`${now:0:12}\`, not \`${HEAD_SHA:0:12}\`. Check the run log."
+            exit 1
+          fi
+          say "Landed by @$APPROVER's approval: \`$DOWNSTREAM\` is now \`${HEAD_SHA:0:12}\` (was \`${cur:0:12}\`, kept as \`$backup\`)."
+          git push "$origin" --delete "$HEAD_REF" || true
