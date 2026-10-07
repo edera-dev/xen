@@ -176,9 +176,9 @@ jobs:
         id: ids
         env:
           RULE: ${{ vars.REBASE_FEDERATION_RULE_ID || vars.PR_REVIEW_FEDERATION_RULE_ID }}
-          ORG: ${{ vars.REBASE_ORGANIZATION_ID || vars.PR_REVIEW_ORGANIZATION_ID }}
-          SVC: ${{ vars.REBASE_SERVICE_ACCOUNT_ID || vars.PR_REVIEW_SERVICE_ACCOUNT_ID }}
-          WS: ${{ vars.REBASE_WORKSPACE_ID || vars.PR_REVIEW_WORKSPACE_ID }}
+          ORG: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          SVC: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          WS: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
         run: |
           set -euo pipefail
           strip() { printf '%s' "$1" | tr -d '[:space:]'; }
