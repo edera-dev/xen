@@ -1,10 +1,13 @@
 name: Upstream rebase self-test
 
-# Tests the checker the nightly upstream rebase relies on. edera/4.22 is
-# force-pushed whenever verify-upstream-rebase.sh says a rebase is clean, so a
-# change that weakens it must not merge quietly. The suite builds a throwaway
-# repository and confirms that honest replays pass and that edited, dropped,
-# added and merged commits and a stale base are all refused.
+# Tests the two scripts the nightly upstream rebase relies on to decide
+# whether to force-push edera/4.22, so a change that weakens either must not
+# merge quietly:
+#
+#   - verify-upstream-rebase.sh: honest replays pass; edited, dropped, added
+#     and merged commits and a stale base are all refused;
+#   - report-needs-decision.sh: any question in Claude's report, or anything
+#     marked UNSURE, stops the automatic push.
 #
 # It runs only when the rebase machinery itself changes.
 
@@ -14,7 +17,9 @@ on:
     branches: ['edera/**']
     paths:
       - '.github/scripts/verify-upstream-rebase.sh'
+      - '.github/scripts/report-needs-decision.sh'
       - '.github/scripts/tests/verify-upstream-rebase.test.sh'
+      - '.github/scripts/tests/report-needs-decision.test.sh'
       - '.github/workflows/upstream-rebase*.yml'
       - '.automation/**'
 
@@ -43,7 +48,12 @@ jobs:
       - name: Checker tests
         run: bash .github/scripts/tests/verify-upstream-rebase.test.sh
 
+      - name: Decision detector tests
+        run: bash .github/scripts/tests/report-needs-decision.test.sh
+
       - name: Shellcheck
         run: |
           shellcheck .github/scripts/verify-upstream-rebase.sh \
-                     .github/scripts/tests/verify-upstream-rebase.test.sh
+                     .github/scripts/report-needs-decision.sh \
+                     .github/scripts/tests/verify-upstream-rebase.test.sh \
+                     .github/scripts/tests/report-needs-decision.test.sh
