@@ -59,10 +59,10 @@ jobs:
       - name: Normalize identifiers
         id: ids
         env:
-          RULE: ${{ vars.PR_REVIEW_FEDERATION_RULE_ID }}
-          ORG: ${{ vars.PR_REVIEW_ORGANIZATION_ID }}
-          SVC: ${{ vars.PR_REVIEW_SERVICE_ACCOUNT_ID }}
-          WS: ${{ vars.PR_REVIEW_WORKSPACE_ID }}
+          RULE: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ORG: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          SVC: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          WS: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
         run: |
           set -euo pipefail
           strip() { printf '%s' "$1" | tr -d '[:space:]'; }
@@ -75,7 +75,7 @@ jobs:
           for n in RULE ORG SVC WS; do
             eval "v=\$$n"
             if [ -z "$(strip "$v")" ]; then
-              echo "::warning::PR_REVIEW_*_$n is empty; the review step will be skipped."
+              echo "::warning::ANTHROPIC_* identifier $n is empty; the review step will be skipped."
             fi
           done
 
@@ -173,7 +173,8 @@ jobs:
             if [ "$OUTCOME" = "failure" ]; then
               echo "**The review started but did not finish**, so it posted nothing about the diff. Hitting \`--max-turns\` looks like this, and so does an API failure. The \`Suggest\` step log has the cause."
             elif [ -z "$CONCLUSION" ]; then
-              echo "**The review did not run.** Expected when `PR_REVIEW_FEDERATION_RULE_ID`, `PR_REVIEW_ORGANIZATION_ID`, `PR_REVIEW_SERVICE_ACCOUNT_ID` and `PR_REVIEW_WORKSPACE_ID` are not set as variables on this repository, and on a PR that changes this workflow file — the action requires the workflow to match the copy on the default branch. Any other cause is in the \`Suggest\` step log."
+              # shellcheck disable=SC2016 # backticks are Markdown, not substitution
+              echo '**The review did not run.** Expected when `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_WORKSPACE_ID` are not visible to this repository as variables, and on a PR that changes this workflow file — the action requires the workflow to match the copy on the default branch. Any other cause is in the \`Suggest\` step log.'
             elif [ "$CONCLUSION" = "success" ]; then
               echo "Review ran."
             else
