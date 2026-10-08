@@ -82,7 +82,7 @@ jobs:
       - name: Suggest
         id: suggest
         continue-on-error: true
-        uses: anthropics/claude-code-action@e8c2d7c16c018cf1e694711c1c07a5f5db2b5eb1 # v1
+        uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
         env:
           GH_TOKEN: ${{ github.token }}
         with:
