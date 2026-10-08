@@ -33,11 +33,11 @@ name: Nightly upstream rebase
 #       GITHUB_TOKEN cannot do this job: it cannot push commits that touch
 #       .github/workflows/ (every rebase rewrites the ones that add them), and
 #       pull requests it opens do not trigger the review checks.
-#   vars.REBASE_FEDERATION_RULE_ID and friends
-#       Workload identity federation for the Claude API. Each falls back to the
-#       matching PR_REVIEW_* variable. The rule must accept this workflow's
-#       OIDC subject (a scheduled run on edera/4.22), which a rule written for
-#       pull_request events will not.
+#   vars.ANTHROPIC_FEDERATION_RULE_ID, ANTHROPIC_ORGANIZATION_ID,
+#   ANTHROPIC_SERVICE_ACCOUNT_ID, ANTHROPIC_WORKSPACE_ID
+#       Organization-wide workload identity federation for the Claude API. The
+#       rule must accept this workflow's OIDC subject (a scheduled run on
+#       edera/4.22), which a rule written for pull_request events will not.
 
 on:
   schedule:
@@ -175,7 +175,7 @@ jobs:
       - name: Normalize identifiers
         id: ids
         env:
-          RULE: ${{ vars.REBASE_FEDERATION_RULE_ID || vars.PR_REVIEW_FEDERATION_RULE_ID }}
+          RULE: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ORG: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           SVC: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           WS: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
@@ -188,6 +188,17 @@ jobs:
             echo "svc=$(strip "$SVC")"
             echo "ws=$(strip "$WS")"
           } >> "$GITHUB_OUTPUT"
+          # An unset variable otherwise surfaces as an opaque API failure a
+          # second into the model step, with nothing in the log to say why.
+          missing=0
+          for n in FEDERATION_RULE_ID:RULE ORGANIZATION_ID:ORG SERVICE_ACCOUNT_ID:SVC WORKSPACE_ID:WS; do
+            eval "v=\$${n#*:}"
+            if [ -z "$(strip "$v")" ]; then
+              echo "::error::vars.ANTHROPIC_${n%%:*} is empty or not visible to this repository."
+              missing=1
+            fi
+          done
+          exit "$missing"
 
       - name: Rebase
         id: claude
