@@ -16,11 +16,12 @@ name: Nightly upstream rebase
 #   - x86, arm64 defconfig and arm64 with PCI passthrough (the downstream vPCI
 #     stack) are built from scratch.
 #
-# If all of them pass, edera/4.22 is force-pushed to the result, pinned by
-# lease to the tip the rebase started from, with the old tip kept as a backup
-# branch. If any fails, the result goes up as a rebase/edera-4.22/... branch
-# with a pull request carrying Claude's report; approving that pull request
-# lands it (upstream-rebase-land.yml). A night where Claude could not produce a
+# If all of them pass and Claude's report asks for no decision
+# (report-needs-decision.sh), edera/4.22 is force-pushed to the result, pinned
+# by lease to the tip the rebase started from, with the old tip kept as a
+# backup branch. Otherwise, or if that push is refused, the result goes up as
+# a rebase/edera-4.22/... branch with a pull request carrying Claude's report;
+# approving that pull request lands it (upstream-rebase-land.yml). A night where Claude could not produce a
 # branch at all opens an issue instead.
 #
 # Nights with nothing new upstream stop in the first job and never start the
@@ -561,31 +562,54 @@ jobs:
             done
           }
 
-          if [ "$VERIFY" = "clean" ] && [ "$BUILD" = "success" ]; then
+          # Reasons a human has to look before edera/4.22 moves. The checker
+          # and the builds judge the branch; the report can still raise a
+          # question they cannot see, such as an upstream change that meets a
+          # downstream feature without touching the same lines.
+          why=()
+          [ "$VERIFY" = "clean" ] || why+=("the checker found ${VERIFY:-no result (it did not run)}")
+          [ "$BUILD" = "success" ] || why+=("a build ${BUILD}")
+          drc=0
+          bash .github/scripts/report-needs-decision.sh "$report" >/dev/null || drc=$?
+          case $drc in
+            0) why+=("Claude's report asks for a decision") ;;
+            1) ;;
+            *) why+=("Claude's report could not be read") ;;
+          esac
+
+          if [ "${#why[@]}" -eq 0 ]; then
             backup="backup/edera-4.22-pre-rebase-$(date -u +%Y%m%d)-${OLD:0:12}"
             git push "$origin" "$OLD:refs/heads/$backup"
             # The lease pins the tip this rebase started from: if anything
             # landed on edera/4.22 since, the push fails and nothing is lost.
-            git push --force-with-lease="refs/heads/$DOWNSTREAM:$OLD" "$origin" "$RESULT:refs/heads/$DOWNSTREAM"
-            now=$(git ls-remote "$origin" "refs/heads/$DOWNSTREAM" | cut -f1)
-            [ "$now" = "$RESULT" ] || { echo "::error::$DOWNSTREAM is $now after the push, expected $RESULT"; exit 1; }
-            close_superseded "the clean rebase pushed to \`$DOWNSTREAM\` as \`${RESULT:0:12}\`"
-            {
-              echo "### Pushed \`$DOWNSTREAM\` → \`${RESULT:0:12}\`"
-              echo "Was \`${OLD:0:12}\`, kept as \`$backup\`."
-              echo
-              cat "$verify"
-              echo
-              cat "$report"
-            } | summary
-            exit 0
+            if git push --force-with-lease="refs/heads/$DOWNSTREAM:$OLD" "$origin" \
+                 "$RESULT:refs/heads/$DOWNSTREAM" 2>"$RUNNER_TEMP/push.err"; then
+              cat "$RUNNER_TEMP/push.err" >&2
+              now=$(git ls-remote "$origin" "refs/heads/$DOWNSTREAM" | cut -f1)
+              [ "$now" = "$RESULT" ] || { echo "::error::$DOWNSTREAM is $now after the push, expected $RESULT"; exit 1; }
+              close_superseded "the clean rebase pushed to \`$DOWNSTREAM\` as \`${RESULT:0:12}\`"
+              {
+                echo "### Pushed \`$DOWNSTREAM\` → \`${RESULT:0:12}\`"
+                echo "Was \`${OLD:0:12}\`, kept as \`$backup\`."
+                echo
+                cat "$verify"
+                echo
+                cat "$report"
+              } | summary
+              exit 0
+            fi
+            # Refused: a branch rule, or edera/4.22 moved under the lease. A
+            # clean result is still worth a reviewer's approval, so propose
+            # it rather than drop it; the land workflow re-checks the tip.
+            cat "$RUNNER_TEMP/push.err" >&2
+            reason=$(grep -m1 -E 'GH0[0-9]+|\[(remote )?rejected\]|error:' "$RUNNER_TEMP/push.err" |
+              sed -E 's/^remote: *//; s/^[[:space:]]+//; s/[[:space:]]+$//' || true)
+            why+=("the push to \`$DOWNSTREAM\` was refused${reason:+ (\`$reason\`)}")
+            git push "$origin" --delete "$backup" || true
           fi
 
-          # Not clean: propose it.
+          # Not pushed: propose it.
           git push "$origin" "$RESULT:refs/heads/$CANDIDATE"
-          why=()
-          [ "$VERIFY" = "clean" ] || why+=("the checker found ${VERIFY:-no result (it did not run)}")
-          [ "$BUILD" = "success" ] || why+=("a build ${BUILD}")
           because=$(IFS=';'; echo "${why[*]}")
           because=${because//;/ and }
           body=$RUNNER_TEMP/pr.md

@@ -17,8 +17,8 @@ a question. Everything a reviewer needs has to end up in the report.
 
 ## What happens to your result
 
-You cannot push, and nothing you write decides whether the branch is pushed.
-When you finish, the workflow independently:
+You cannot push, and nothing you write can cause the branch to be pushed.
+Your report can only stop it. When you finish, the workflow independently:
 
 1. runs `.github/scripts/verify-upstream-rebase.sh` against your branch, which
    checks from git alone that the series sits on the upstream tip, is linear,
@@ -26,9 +26,17 @@ When you finish, the workflow independently:
    delta;
 2. builds x86, arm64 `defconfig`, and arm64 with the vPCI passthrough stack.
 
-If all of that passes, `edera/4.22` is force-pushed to your branch. If any of
-it fails, your branch goes up as a pull request with your report as the body,
-and a maintainer reads it.
+If all of that passes **and your report's "Needs a decision" section is
+`None.` with nothing marked UNSURE anywhere** (checked by
+`.github/scripts/report-needs-decision.sh`), `edera/4.22` is force-pushed to
+your branch. Otherwise your branch goes up as a pull request with your report
+as the body, and a maintainer reads it.
+
+So a question you raise is never lost to an automatic push. Raise one whenever
+a maintainer should see something before the branch moves, even when the
+rebase itself is clean, for example an upstream change that reaches a
+downstream feature without touching the same lines. Do not use the word UNSURE
+for anything else.
 
 So: a conflict you resolve **will** show up as drift and **will** go to a
 human. That is the intended outcome, not a failure. Do not try to make a
@@ -196,7 +204,9 @@ replayed, conflicts resolved, commits dropped, and whether you expect the
 checker to pass.
 
 ## Needs a decision
-Only if anything is marked UNSURE. One bullet each, with both readings.
+One bullet per question, each starting **UNSURE:**, with both readings and
+what you committed. "None." if there is nothing; anything else here stops the
+automatic push.
 
 ## Conflicts resolved
 Per conflict: downstream commit, files, colliding upstream commit, what you
