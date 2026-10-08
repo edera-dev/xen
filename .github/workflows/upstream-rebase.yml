@@ -239,6 +239,7 @@ jobs:
           REPORT: ${{ runner.temp }}/rebase-report.md
           UP: ${{ needs.prepare.outputs.up }}
           OUTCOME: ${{ steps.claude.outcome }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
           set -euo pipefail
           out=$RUNNER_TEMP/out
@@ -246,7 +247,31 @@ jobs:
           if [ -s "$REPORT" ]; then
             cp "$REPORT" "$out/report.md"
           else
-            printf 'Claude left no report (rebase step: %s). The run log has the cause.\n' "$OUTCOME" >"$out/report.md"
+            # The action hides the session to keep tool output out of a
+            # public log, which also hides why a run ended early. Take only
+            # the API error messages and the final result text from it:
+            # neither carries tool output.
+            why=
+            f=${EXECUTION_FILE:-$RUNNER_TEMP/claude-execution-output.json}
+            if [ -s "$f" ]; then
+              why=$(jq -r '
+                (if type == "array" then .[] else . end)
+                | if .type == "assistant" and (.error != null) then
+                    "API error (\(.error)): " + ([.message.content[]? | .text? // empty] | join(" "))
+                  elif .type == "result" then
+                    ([.result // empty] + (.errors // [] | map(tostring))) | join("\n")
+                  else empty end' "$f" 2>/dev/null | head -c 2000 || true)
+            fi
+            {
+              printf 'Claude left no report (rebase step: %s).\n' "$OUTCOME"
+              if [ -n "$why" ]; then
+                # shellcheck disable=SC2016 # a literal Markdown fence
+                printf '\n```\n%s\n```\n' "$why"
+              else
+                printf 'The run log has the cause.\n'
+              fi
+            } >"$out/report.md"
+            [ -z "$why" ] || echo "::error::Claude ended without a result: ${why//$'\n'/ }"
           fi
           if git rev-parse --verify -q refs/heads/rebase-result >/dev/null \
              && git merge-base --is-ancestor "$UP" rebase-result \
