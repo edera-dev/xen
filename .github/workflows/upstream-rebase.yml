@@ -327,12 +327,16 @@ jobs:
           UP: ${{ needs.prepare.outputs.up }}
           RESULT: ${{ needs.rebase.outputs.result }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           git fetch --no-tags "$UPSTREAM_URL" "$UP"
           git fetch "$RUNNER_TEMP/in/rebase.bundle" rebase-result:rebase-result
           [ "$(git rev-parse rebase-result)" = "$RESULT" ] || { echo "bundle does not hold $RESULT"; exit 1; }
-          bash .github/scripts/verify-upstream-rebase.sh "$OLD" "$RESULT" "$UP" >"$RUNNER_TEMP/verify.md"
-          rc=$?
+          # Actions runs this step under bash -e, so a bare call would end the
+          # step on the checker's first non-zero exit, before its verdict is
+          # recorded: drift would then reach the pull request as "the checker
+          # did not run". Capture the status instead.
+          rc=0
+          bash .github/scripts/verify-upstream-rebase.sh "$OLD" "$RESULT" "$UP" >"$RUNNER_TEMP/verify.md" || rc=$?
           case $rc in
             0) status=clean ;;
             1) status=drift ;;
