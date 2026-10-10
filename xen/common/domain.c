@@ -1164,6 +1164,26 @@ struct domain *domain_create(domid_t domid,
     return ERR_PTR(err);
 }
 
+#ifdef CONFIG_HAS_PIRQ
+/* Bound-check values passed via "extra_guest_irqs=", once nr_irqs is known. */
+void __init bound_extra_guest_irqs(void)
+{
+    unsigned int n = max(arch_hwdom_irqs(dom_xen), nr_static_irqs);
+
+    if ( extra_hwdom_irqs > n - nr_static_irqs )
+    {
+        extra_hwdom_irqs = n - nr_static_irqs;
+        printk(XENLOG_WARNING "hwdom IRQs bounded to %u\n", n);
+    }
+    if ( extra_domU_irqs >
+         max(DEFAULT_EXTRA_DOMU_IRQS, n - nr_static_irqs) )
+    {
+        extra_domU_irqs = n - nr_static_irqs;
+        printk(XENLOG_WARNING "domU IRQs bounded to %u\n", n);
+    }
+}
+#endif
+
 void __init setup_system_domains(void)
 {
     /*
@@ -1176,25 +1196,6 @@ void __init setup_system_domains(void)
     dom_xen = domain_create(DOMID_XEN, NULL, 0);
     if ( IS_ERR(dom_xen) )
         panic("Failed to create d[XEN]: %ld\n", PTR_ERR(dom_xen));
-
-#ifdef CONFIG_HAS_PIRQ
-    /* Bound-check values passed via "extra_guest_irqs=". */
-    {
-        unsigned int n = max(arch_hwdom_irqs(dom_xen), nr_static_irqs);
-
-        if ( extra_hwdom_irqs > n - nr_static_irqs )
-        {
-            extra_hwdom_irqs = n - nr_static_irqs;
-            printk(XENLOG_WARNING "hwdom IRQs bounded to %u\n", n);
-        }
-        if ( extra_domU_irqs >
-             max(DEFAULT_EXTRA_DOMU_IRQS, n - nr_static_irqs) )
-        {
-            extra_domU_irqs = n - nr_static_irqs;
-            printk(XENLOG_WARNING "domU IRQs bounded to %u\n", n);
-        }
-    }
-#endif
 
     /*
      * Initialise our DOMID_IO domain.
