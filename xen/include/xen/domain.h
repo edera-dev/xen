@@ -43,6 +43,9 @@ int vcpu_reset(struct vcpu *v);
 int vcpu_up(struct vcpu *v);
 
 void setup_system_domains(void);
+#ifdef CONFIG_HAS_PIRQ
+void bound_extra_guest_irqs(void);
+#endif
 
 struct xen_domctl_getdomaininfo;
 void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info);

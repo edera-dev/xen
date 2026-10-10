@@ -2044,6 +2044,8 @@ void asmlinkage __init noreturn __start_xen(void)
     if ( ret < 0 )
         panic("Error %d setting up IRQ data\n", ret);
 
+    bound_extra_guest_irqs();
+
     console_init_irq();
 
     init_IRQ();
