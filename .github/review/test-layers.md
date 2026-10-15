@@ -5,9 +5,9 @@ boots this tree on a GitHub pull request.** `.github/workflows/coverity.yml` is
 `workflow_dispatch` and `schedule` only, with a comment saying so explicitly —
 it scans release code, not pull requests. The upstream project's own CI is
 GitLab-based, under `automation/gitlab-ci/`, and does not trigger from this
-repository's pull requests. The only workflows that do run on a pull request
-are the advisory review checks described at the end of this file, and they
-build nothing.
+repository's pull requests. The workflows that do run on a pull request build
+nothing: the advisory review checks, and the upstream rebase self-test, which
+runs only when the rebase scripts change.
 
 So a coverage review here is not "which test file covers this". It is "what
 would have to run, and where does it live".
@@ -49,14 +49,26 @@ deviations. A new deviation is a suppression and should say why.
 The Coverity workflow runs on a schedule against the branch, not against pull
 requests.
 
+## Nightly upstream rebase
+
+`.github/workflows/upstream-rebase.yml` replays the downstream series onto
+upstream `staging-4.22` and builds the hypervisor for x86, arm64 defconfig and
+arm64 with PCI passthrough before it moves `edera/4.22`. It runs only on nights
+when upstream has new commits. That is the first build a merged change gets,
+and it happens after merge: a change that breaks one of those builds stops the
+next rebase rather than failing its own pull request. It does not build the
+tools.
+
+`.github/workflows/upstream-rebase-selftest.yml` runs the tests for
+`verify-upstream-rebase.sh` and `report-needs-decision.sh` on pull requests
+that change the rebase machinery.
+
 ## The review checks themselves
 
-Three workflows belong to the advisory review checks rather than to this
-repository's own validation: `pr-review-suggestions.yml` and
-`pr-test-coverage.yml`, which produce this review, and
-`pr-review-selftest.yml`, which runs the publisher's tests when that machinery
-changes. They build, lint and test nothing this repository ships. Never count
-them as coverage for a change.
+`.github/workflows/pr-review.yml` runs the two advisory review checks,
+including this one, through the shared workflow in `edera-dev/actions`. They
+build, lint and test nothing this repository ships. Never count them as
+coverage for a change.
 
 ## What nothing checks
 
