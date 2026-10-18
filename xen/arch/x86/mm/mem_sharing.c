@@ -2036,8 +2036,12 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
  * order is the child's and then the parent's, which is the order get_gfn()
  * already nested them in. Both are dropped before every preemption, because a
  * continuation returns to the caller.
+ *
+ * A lazy completion skips the walk and keeps the parent link and its pause: the
+ * child is made runnable and keeps faulting pages in from the parent, which
+ * has to stay paused and alive for as long as the child does.
  */
-int mem_sharing_fork_complete(struct domain *d)
+int mem_sharing_fork_complete(struct domain *d, bool lazy)
 {
     struct domain *pd = d->parent;
     struct p2m_domain *pp2m, *cp2m;
@@ -2055,7 +2059,8 @@ int mem_sharing_fork_complete(struct domain *d)
     p2m_lock(cp2m);
     p2m_lock(pp2m);
 
-    for ( gfn = msd->next_gfn_to_materialize; gfn <= max_pfn; gfn++ )
+    for ( gfn = lazy ? max_pfn + 1 : msd->next_gfn_to_materialize; gfn <= max_pfn;
+          gfn++ )
     {
         p2m_type_t t;
         p2m_access_t a;
@@ -2161,6 +2166,12 @@ int mem_sharing_fork_complete(struct domain *d)
         set_xen_guest_handle(runstate_guest(v), NULL);
         unmap_guest_area(v, &v->vcpu_info_area);
         unmap_guest_area(v, &v->runstate_guest_area);
+    }
+
+    if ( lazy )
+    {
+        msd->block_interrupts = false;
+        return 0;
     }
 
     /*
@@ -2513,14 +2524,14 @@ int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
 
     case XENMEM_sharing_op_fork_complete:
         rc = -EINVAL;
-        if ( mso.u.fork.pad || mso.u.fork.flags )
+        if ( mso.u.fork.pad || (mso.u.fork.flags & ~XENMEM_FORK_COMPLETE_LAZY) )
             goto out;
 
         rc = -ENOSYS;
         if ( !mem_sharing_is_fork(d) )
             goto out;
 
-        rc = mem_sharing_fork_complete(d);
+        rc = mem_sharing_fork_complete(d, mso.u.fork.flags & XENMEM_FORK_COMPLETE_LAZY);
         if ( rc == -ERESTART )
             rc = hypercall_create_continuation(__HYPERVISOR_memory_op,
                                                "lh", XENMEM_sharing_op, arg);
