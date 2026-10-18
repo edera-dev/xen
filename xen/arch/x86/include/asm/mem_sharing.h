@@ -84,7 +84,7 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
  * link so the parent can run again.  Preemptible. See the definition for the
  * full rationale.
  */
-int mem_sharing_fork_complete(struct domain *d);
+int mem_sharing_fork_complete(struct domain *d, bool lazy);
 
 /*
  * If called by a foreign domain, possible errors are
@@ -154,7 +154,7 @@ static inline int mem_sharing_fork_reset(struct domain *d, bool reset_state,
     return -EOPNOTSUPP;
 }
 
-static inline int mem_sharing_fork_complete(struct domain *d)
+static inline int mem_sharing_fork_complete(struct domain *d, bool lazy)
 {
     return -EOPNOTSUPP;
 }
