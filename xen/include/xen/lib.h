@@ -136,6 +136,10 @@ unsigned long long simple_strtoull(
 
 unsigned long long parse_size_and_unit(const char *s, const char **ps);
 
+/* log-q16.c: logarithms in 16-bit fixed point, for boot-time code. */
+unsigned long log2_q16(unsigned long x);
+unsigned long ln_ratio_q16(unsigned long n, unsigned long d);
+
 /*
  * A slightly more typesafe variant of cmpxchg() when the entities dealt with
  * are pointers.
