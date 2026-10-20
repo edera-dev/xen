@@ -263,30 +263,74 @@ cleanup:
     if ( hd->other_contexts.map )
     {
         xfree(hd->other_contexts.map);
-        hd->other_contexts.bitmap = NULL;
+        hd->other_contexts.map = NULL;
     }
 
     return rc;
+}
+
+/*
+ * Tear down a dying domain's PV-IOMMU contexts while its pages can still be
+ * relinquished: every mapped frame holds a page reference that only the
+ * context teardown's cleanup walk returns, and a reference that is never
+ * returned leaves the domain as an unreapable zombie. Runs from
+ * domain_relinquish_resources(), so it must be restartable: freed contexts
+ * have their allocation bit cleared and are skipped on re-entry.
+ */
+int iommu_relinquish_contexts(struct domain *d)
+{
+    struct domain_iommu *hd = dom_iommu(d);
+    unsigned int i;
+    int ret;
+
+    if ( !is_iommu_enabled(d) )
+        return 0;
+
+    for ( i = 1; i <= hd->other_contexts.count; i++ )
+    {
+        if ( !test_bit(i - 1, hd->other_contexts.bitmap) )
+            continue;
+
+        ret = iommu_context_free(d, i, IOMMU_TEARDOWN_REATTACH_DEFAULT |
+                                       IOMMU_TEARDOWN_PREEMPT);
+        if ( ret == -ERESTART )
+            return ret;
+
+        if ( ret )
+            /* Press on: a context this fails for leaks its references, but
+               that must not keep every other context from being freed. */
+            printk(XENLOG_G_WARNING
+                   "%pd: IOMMU context %u not freed at relinquish (%d)\n",
+                   d, i, ret);
+    }
+
+    return 0;
 }
 
 int iommu_domain_pviommu_teardown(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
     int i;
-    /* FIXME: Potential race condition with remote_op ? */
 
+    /* The contexts themselves went away in iommu_relinquish_contexts(). */
     for (i = 0; i < hd->other_contexts.count; i++)
-        WARN_ON(iommu_context_free(d, i, IOMMU_TEARDOWN_REATTACH_DEFAULT) != ENOENT);
+        WARN_ON(test_bit(i, hd->other_contexts.bitmap));
 
     hd->other_contexts.count = 0;
 
     if ( hd->other_contexts.bitmap )
+    {
         xfree(hd->other_contexts.bitmap);
+        hd->other_contexts.bitmap = NULL;
+    }
 
     if ( hd->other_contexts.map )
+    {
         xfree(hd->other_contexts.map);
+        hd->other_contexts.map = NULL;
+    }
 
-    return 0;
+    return arch_iommu_pviommu_teardown(d);
 }
 
 int iommu_domain_init(struct domain *d, unsigned int opts)
@@ -430,6 +474,9 @@ void cf_check iommu_domain_destroy(struct domain *d)
 #endif
 
     iommu_vcall(hd->platform_ops, teardown, d);
+
+    /* Free the PV-IOMMU context table and page-table arena, if any. */
+    iommu_domain_pviommu_teardown(d);
 
     arch_iommu_domain_destroy(d);
 }
