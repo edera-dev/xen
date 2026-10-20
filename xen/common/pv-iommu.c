@@ -247,6 +247,19 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
     if ( !map->ctx_no || !(ctx = iommu_get_context(d, map->ctx_no)) )
         return -EINVAL;
 
+    /*
+     * Each mapped frame carries a page reference that only an unmap or the
+     * context teardown's cleanup walk returns. Refuse new mappings once the
+     * domain or the context is on its way out: the context lock is held by
+     * teardown, so a map that got in before it will be seen by the cleanup
+     * walk, and one that comes after fails here.
+     */
+    if ( d->is_dying || ctx->dying )
+    {
+        iommu_put_context(ctx);
+        return -ESRCH;
+    }
+
     if ( map->map_flags & IOMMU_MAP_readable )
         flags |= IOMMUF_readable;
 
