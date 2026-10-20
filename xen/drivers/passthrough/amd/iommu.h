@@ -233,6 +233,7 @@ int __must_check cf_check amd_iommu_unmap_page(
     unsigned int *flush_flags, struct iommu_context *ctx);
 int cf_check amd_iommu_lookup_page(struct domain *d, dfn_t dfn, mfn_t *mfn,
                                    unsigned int *flags, struct iommu_context *ctx);
+int amd_iommu_cleanup_mappings(struct iommu_context *ctx, bool preempt);
 int amd_iommu_reserve_domain_unity_map(struct domain *d, struct iommu_context *ctx,
                                        const struct ivrs_unity_map *map,
                                        unsigned int flag);
