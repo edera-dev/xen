@@ -2391,7 +2391,7 @@ static int intel_iommu_cleanup_superpage(struct iommu_context *ctx,
     if ( preempt )
         i = ctx->arch.vtd.superpage_progress;
 
-    for (; i < page_count; page++)
+    for (page += i; i < page_count; i++, page++)
     {
         put_page(page);
 
@@ -2463,7 +2463,7 @@ static int cf_check intel_iommu_context_teardown(struct domain *d,
     // Cleanup mappings
     if ( intel_iommu_cleanup_mappings(ctx, agaw_to_level(d->iommu.arch.vtd.agaw),
                                       ctx->arch.vtd.pgd_maddr,
-                                      flags & IOMMUF_preempt) < 0 )
+                                      flags & IOMMU_TEARDOWN_PREEMPT) < 0 )
     {
         pcidevs_unlock();
         return -ERESTART;
