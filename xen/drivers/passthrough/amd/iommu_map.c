@@ -19,6 +19,9 @@
 
 #include <xen/acpi.h>
 #include <xen/iommu.h>
+#include <xen/sched.h>
+
+#include <asm/event.h>
 
 #include "iommu.h"
 
@@ -396,6 +399,100 @@ static void queue_free_pt(struct domain *d, struct iommu_context *ctx, mfn_t mfn
     }
 
     iommu_queue_free_pgtable(d, ctx, mfn_to_page(mfn));
+}
+
+/*
+ * Drop the per-frame page references PV-IOMMU map operations took on the
+ * frames a superpage leaf still maps.  Restartable: progress is kept in
+ * ctx->arch.amd.superpage_progress, and the caller only clears the leaf
+ * entry once this returns 0.
+ */
+static int amd_iommu_cleanup_superpage(struct iommu_context *ctx,
+                                       unsigned int level, mfn_t mfn,
+                                       bool preempt)
+{
+    unsigned long i = 0, frames = 1UL << (PTE_PER_TABLE_SHIFT * (level - 1));
+
+    if ( preempt )
+        i = ctx->arch.amd.superpage_progress;
+
+    for ( ; i < frames; i++ )
+    {
+        mfn_t cur = mfn_add(mfn, i);
+
+        if ( mfn_valid(cur) )
+            put_page(mfn_to_page(cur));
+
+        if ( preempt && (i & 0xff) && general_preempt_check() )
+        {
+            ctx->arch.amd.superpage_progress = i + 1;
+            return -ERESTART;
+        }
+    }
+
+    if ( preempt )
+        ctx->arch.amd.superpage_progress = 0;
+
+    return 0;
+}
+
+/*
+ * Walk a context's page tables and drop the page reference each present
+ * leaf frame carries from the PV-IOMMU map operation that installed it.
+ * When preempting, processed entries are cleared so a restarted walk skips
+ * them.  The page-table pages themselves stay on ctx->arch.pgtables and are
+ * freed by arch_iommu_context_teardown() afterwards.
+ */
+static int amd_iommu_cleanup_pt(struct iommu_context *ctx, mfn_t pt_mfn,
+                                unsigned int level, bool preempt)
+{
+    unsigned int i;
+    union amd_iommu_pte *pt = map_domain_page(pt_mfn);
+
+    for ( i = 0; i < PTE_PER_TABLE_SIZE; i++ )
+    {
+        union amd_iommu_pte *pte = &pt[i];
+        int rc = 0;
+
+        if ( !pte->pr )
+            continue;
+
+        if ( pte->next_level )
+        {
+            ASSERT(pte->next_level < level);
+            rc = amd_iommu_cleanup_pt(ctx, _mfn(pte->mfn), pte->next_level,
+                                      preempt);
+        }
+        else if ( level == 1 )
+        {
+            if ( mfn_valid(_mfn(pte->mfn)) )
+                put_page(mfn_to_page(_mfn(pte->mfn)));
+        }
+        else
+            rc = amd_iommu_cleanup_superpage(ctx, level, _mfn(pte->mfn),
+                                             preempt);
+
+        if ( preempt && !rc )
+            write_atomic(&pte->raw, 0);
+        else if ( preempt && (rc == -ERESTART || general_preempt_check()) )
+        {
+            unmap_domain_page(pt);
+            return -ERESTART;
+        }
+    }
+
+    unmap_domain_page(pt);
+
+    return 0;
+}
+
+int amd_iommu_cleanup_mappings(struct iommu_context *ctx, bool preempt)
+{
+    if ( ctx->opaque || !ctx->arch.amd.root_table )
+        return 0;
+
+    return amd_iommu_cleanup_pt(ctx, page_to_mfn(ctx->arch.amd.root_table),
+                                ctx->arch.amd.paging_mode, preempt);
 }
 
 int cf_check amd_iommu_map_page(
