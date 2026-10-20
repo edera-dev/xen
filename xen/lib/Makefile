@@ -8,6 +8,7 @@ lib-y += generic-flsl.o
 lib-y += generic-hweightl.o
 lib-y += guest-strcpy.o
 lib-y += list-sort.o
+lib-y += log-q16.init.o
 lib-y += memchr.o
 lib-y += memchr_inv.o
 lib-y += memcmp.o
