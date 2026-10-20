@@ -1111,6 +1111,14 @@ int vpci_make_msix_hole(const struct pci_dev *pdev)
         unsigned long end = PFN_DOWN(vmsix_table_addr(pdev->vpci, i) +
                                      vmsix_table_size(pdev->vpci, i) - 1);
 
+        /*
+         * Skip BARs that aren't mapped yet: a domU's BARs start unplaced at
+         * guest address 0, and modify_bars() makes the hole once the guest
+         * places the BAR and enables memory decoding.
+         */
+        if ( !vmsix_table_bar_valid(pdev->vpci, i) )
+            continue;
+
         for ( ; start <= end; start++ )
         {
             p2m_type_t t;
