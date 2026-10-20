@@ -3,6 +3,7 @@ include $(XEN_ROOT)/tools/Rules.mk
 
 SUBDIRS-y :=
 SUBDIRS-y += domid
+SUBDIRS-y += log-q16
 SUBDIRS-y += mem-claim
 SUBDIRS-y += numa
 SUBDIRS-y += paging-mempool
