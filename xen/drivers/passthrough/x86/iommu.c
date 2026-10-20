@@ -236,6 +236,10 @@ int arch_iommu_pviommu_teardown(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
 
+    /* No arena when the domain never initialized PV-IOMMU. */
+    if ( mfn_x(hd->arch.pt_arena.region_start) == 0 )
+        return 0;
+
     if ( iommu_arena_teardown(&hd->arch.pt_arena, true) )
     {
         printk(XENLOG_WARNING "IOMMU Arena used while being destroyed\n");
