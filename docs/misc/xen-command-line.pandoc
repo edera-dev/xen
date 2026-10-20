@@ -1055,9 +1055,11 @@ is subtracted from the total available memory.
 * `min:<sz>` specifies the minimum amount of memory.
 * `max:<sz>` specifies the maximum amount of memory.
 
-If `<sz>` is not specified, the default is all the available memory
-minus some reserve.  The reserve is 1/16 of the available memory or
-128 MB (whichever is smaller).
+If neither `<sz>` nor `ln` is specified, dom0 is sized by `ln` with its
+default values.  This includes a `dom0_mem` that sets only `min:` or
+`max:`, and no `dom0_mem` at all.  If `<sz>` comes out as zero, the
+default is all the available memory minus some reserve.  The reserve is
+1/16 of the available memory or 128 MB (whichever is smaller).
 
 The amount of memory will be at least the minimum but never more than
 the maximum (i.e., `max` overrides the `min` option).  If there isn't
