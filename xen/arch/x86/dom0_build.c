@@ -83,7 +83,9 @@ static unsigned long __init get_memsize(const struct memsize *sz,
  *     memory and <max_amt>
  *  2. <min_amt> is clamped from above by available memory and <max_amt>
  *  3. <min_amt> is ignored if it is greater than <max_amt>
- *  4. If <amt> is not specified, it is calculated as follows:
+ *  4. If neither <amt> nor ln is specified, dom0 is sized by ln with its
+ *     default values.
+ *  5. If <amt> comes out as zero, it is calculated as follows:
  *     "All of memory is allocated to domain 0, minus 1/16th which is reserved
  *      for uses such as DMA buffers (the reservation is clamped to 128MB)."
  *
@@ -440,6 +442,12 @@ unsigned long __init dom0_compute_nr_pages(
     /* The ordering of operands is to work around a clang5 issue. */
     if ( CONFIG_DOM0_MEM[0] && !dom0_mem_set )
         parse_dom0_mem(CONFIG_DOM0_MEM);
+
+    /* With no size from dom0_mem, size dom0 by the default ln curve. */
+    if ( !pv_shim && !dom0_size.ln && !dom0_size.minus &&
+         !dom0_size.nr_pages && !dom0_size.percent )
+        dom0_size = (struct memsize){
+            .ln = true, .ln_a = DOM0_LN_A, .ln_b = DOM0_LN_B };
 
     for_each_node_mask ( node, dom0_nodes )
         avail += avail_domheap_pages_region(node, 0, 0) +
