@@ -7,6 +7,7 @@
 #include <xen/init.h>
 #include <xen/iocap.h>
 #include <xen/libelf.h>
+#include <xen/muldiv64.h>
 #include <xen/param.h>
 #include <xen/pfn.h>
 #include <xen/sched.h>
@@ -28,7 +29,16 @@ struct memsize {
     long nr_pages;
     unsigned int percent;
     bool minus;
+    /* ln_a * ln(1 + avail / ln_b) pages, in place of the fields above. */
+    bool ln;
+    unsigned long ln_a, ln_b;
 };
+
+/* <a> and <b> of dom0_mem=ln when it gives no values. */
+#define DOM0_LN_A (GB(13) >> PAGE_SHIFT)
+#define DOM0_LN_B (GB(24) >> PAGE_SHIFT)
+/* No <a> or <b> can be larger than the physical address space. */
+#define DOM0_LN_MAX (1UL << (PADDR_BITS - PAGE_SHIFT))
 
 static struct memsize __initdata dom0_size;
 static struct memsize __initdata dom0_min_size;
@@ -37,7 +47,7 @@ static bool __initdata dom0_mem_set;
 
 static bool __init memsize_gt_zero(const struct memsize *sz)
 {
-    return !sz->minus && sz->nr_pages;
+    return sz->ln || (!sz->minus && sz->nr_pages);
 }
 
 static unsigned long __init get_memsize(const struct memsize *sz,
@@ -45,16 +55,23 @@ static unsigned long __init get_memsize(const struct memsize *sz,
 {
     unsigned long pages;
 
+    if ( sz->ln )
+        return muldiv64(sz->ln_a, ln_ratio_q16(sz->ln_b + avail, sz->ln_b),
+                        1U << 16);
+
     pages = sz->nr_pages + sz->percent * avail / 100;
     return sz->minus ? avail - pages : pages;
 }
 
 /*
- * dom0_mem=[min:<min_amt>,][max:<max_amt>,][<amt>]
+ * dom0_mem=[min:<min_amt>,][max:<max_amt>,][<amt>|ln[:<a>/<b>]]
  *
  * <min_amt>: The minimum amount of memory which should be allocated for dom0.
  * <max_amt>: The maximum amount of memory which should be allocated for dom0.
  * <amt>:     The precise amount of memory to allocate for dom0.
+ * ln:        Allocate <a> * ln(1 + host memory / <b>) for dom0, which adds
+ *            about <a> * ln(2) each time host memory doubles. <a> and <b> are
+ *            sizes, DOM0_LN_A and DOM0_LN_B when not given.
  *
  * The format of <min_amt>, <max_amt> and <amt> is as follows:
  * <size> | <frac>% | <size>+<frac>%
@@ -118,6 +135,34 @@ static int __init parse_amt(const char *s, const char **ps, struct memsize *sz)
     return 0;
 }
 
+static int __init parse_ln(const char *s, const char **ps, struct memsize *sz)
+{
+    struct memsize tmp = { .ln = true, .ln_a = DOM0_LN_A, .ln_b = DOM0_LN_B };
+
+    if ( *s == ':' )
+    {
+        tmp.ln_a = parse_size_and_unit(s + 1, &s) >> PAGE_SHIFT;
+        if ( *s != '/' )
+            return -EINVAL;
+        tmp.ln_b = parse_size_and_unit(s + 1, &s) >> PAGE_SHIFT;
+        /*
+         * A value that does not start with a digit parses as zero, and one
+         * past the physical address space is a typo or an overflowed number.
+         */
+        if ( !tmp.ln_a || !tmp.ln_b ||
+             tmp.ln_a > DOM0_LN_MAX || tmp.ln_b > DOM0_LN_MAX )
+            return -EINVAL;
+    }
+
+    *ps = s;
+    if ( *s && *s != ',' )
+        return -EINVAL;
+
+    *sz = tmp;
+
+    return 0;
+}
+
 static int __init cf_check parse_dom0_mem(const char *s)
 {
     int ret;
@@ -136,6 +181,8 @@ static int __init cf_check parse_dom0_mem(const char *s)
             ret = parse_amt(s + 4, &s, &dom0_min_size);
         else if ( !strncmp(s, "max:", 4) )
             ret = parse_amt(s + 4, &s, &dom0_max_size);
+        else if ( !strncmp(s, "ln", 2) )
+            ret = parse_ln(s + 2, &s, &dom0_size);
         else
             ret = parse_amt(s, &s, &dom0_size);
     } while ( *s++ == ',' && !ret );
@@ -480,6 +527,13 @@ unsigned long __init dom0_compute_nr_pages(
             printk("Dom0 memory clipped to %lu pages\n", nr_pages);
         }
     }
+
+    if ( dom0_size.ln )
+        printk("Dom0 memory: %luMiB, from %luMiB * ln(1 + %luMiB / %luMiB)\n",
+               nr_pages >> (20 - PAGE_SHIFT),
+               dom0_size.ln_a >> (20 - PAGE_SHIFT),
+               avail >> (20 - PAGE_SHIFT),
+               dom0_size.ln_b >> (20 - PAGE_SHIFT));
 
     d->max_pages = min_t(unsigned long, max_pages, UINT_MAX);
 

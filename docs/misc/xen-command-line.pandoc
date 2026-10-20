@@ -1044,13 +1044,14 @@ with a floor of 1G and a ceiling of 4G, and never more than three quarters of
 the machine.
 
 ### dom0_mem (x86)
-> `= List of ( min:<sz> | max:<sz> | <sz> )`
+> `= List of ( min:<sz> | max:<sz> | <sz> | ln[:<a>/<b>] )`
 
 Set the amount of memory for the initial domain (dom0). If a size is
 positive, it represents an absolute value.  If a size is negative, it
 is subtracted from the total available memory.
 
 * `<sz>` specifies the exact amount of memory.
+* `ln[:<a>/<b>]` specifies the amount of memory by a curve, see below.
 * `min:<sz>` specifies the minimum amount of memory.
 * `max:<sz>` specifies the maximum amount of memory.
 
@@ -1075,6 +1076,19 @@ allow it to balloon up as far as 1GB use `dom0_mem=512M,max:1G`
 * `<frac>` specifies a fraction of host memory size in percent.
 
 So `<sz>` being `1G+25%` on a 256 GB host would result in 65 GB.
+
+`ln[:<a>/<b>]` sets the amount of memory to `<a> * ln(1 + avail / <b>)`,
+where `avail` is the available memory that `<frac>` is a fraction of.  dom0's
+share of host memory falls as the host grows: once host memory is well above
+`<b>`, dom0 gets about `<a> * ln(2)` more each time host memory doubles.
+`<a>` and `<b>` are sizes, and default to 13G and 24G, which give about
+6.6 GB on a 16 GB host, 17 GB on a 64 GB host and 40 GB on a 512 GB host.
+`<a>` and `<b>` must be at least one page and no larger than the physical
+address space.  `min:` and `max:` apply to it as they do to `<sz>`, but
+cannot take `ln` themselves.
+
+So `ln,max:50%` sizes dom0 by the default curve and lets it balloon up to
+half of the host's memory.
 
 If you use this option then it is highly recommended that you disable
 any dom0 autoballooning feature present in your toolstack. See the
