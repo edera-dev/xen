@@ -520,7 +520,18 @@ static int cf_check amd_iommu_context_teardown(struct domain *d,
     struct amd_iommu *iommu;
     pcidevs_lock();
 
-    // TODO: Cleanup mappings
+    /*
+     * Drop the page references the context's PV-IOMMU mappings hold before
+     * the page tables are freed: a leaked reference keeps the owning
+     * domain's page allocated, and for a dying domain that pins the whole
+     * domain as an unreapable zombie.
+     */
+    if ( amd_iommu_cleanup_mappings(ctx, flags & IOMMU_TEARDOWN_PREEMPT) < 0 )
+    {
+        pcidevs_unlock();
+        return -ERESTART;
+    }
+
     ASSERT(ctx->arch.amd.didmap);
 
     for_each_amd_iommu(iommu)
