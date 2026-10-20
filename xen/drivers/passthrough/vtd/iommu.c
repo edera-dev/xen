@@ -1608,9 +1608,14 @@ static int __must_check cf_check intel_iommu_map_page(
      *
      * hd->lock guarantees that d->is_dying will be observed
      * before any page tables are freed (see iommu_free_pgtables())
+     *
+     * Only the default context may ignore the request: a PV-IOMMU caller
+     * holds a page reference per frame it maps, so it must see a failure
+     * here to drop it, or the reference would leak and keep the dying
+     * domain's page from ever being freed.
      */
     if ( d->is_dying )
-        return 0;
+        return ctx->id ? -ESRCH : 0;
 
     pg_maddr = addr_to_dma_page_maddr(d, ctx, dfn_to_daddr(dfn), level, flush_flags,
                                       true);
