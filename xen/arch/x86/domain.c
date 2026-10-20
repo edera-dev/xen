@@ -2480,7 +2480,8 @@ int domain_relinquish_resources(struct domain *d)
         d->arch.rel_priv = PROG_ ## x; /* Fallthrough */ case PROG_ ## x
 
         enum {
-            PROG_iommu_pagetables = 1,
+            PROG_iommu_contexts = 1,
+            PROG_iommu_pagetables,
             PROG_shared,
             PROG_mappings,
             PROG_paging,
@@ -2494,6 +2495,19 @@ int domain_relinquish_resources(struct domain *d)
 
     case 0:
         ret = pci_release_devices(d);
+        if ( ret )
+            return ret;
+
+    PROGRESS(iommu_contexts):
+
+        /*
+         * PV-IOMMU mappings hold a reference per mapped frame, and a frame
+         * whose reference is never returned can never be relinquished, which
+         * would leave the domain as an unreapable zombie. The contexts'
+         * devices went back to quarantine in pci_release_devices() above, so
+         * nothing walks their page tables any more.
+         */
+        ret = iommu_relinquish_contexts(d);
         if ( ret )
             return ret;
 
