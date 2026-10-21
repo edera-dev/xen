@@ -35,8 +35,8 @@ struct memsize {
 };
 
 /* <a> and <b> of dom0_mem=ln when it gives no values. */
-#define DOM0_LN_A (GB(13) >> PAGE_SHIFT)
-#define DOM0_LN_B (GB(24) >> PAGE_SHIFT)
+#define DOM0_LN_A (GB(9) >> PAGE_SHIFT)
+#define DOM0_LN_B (GB(20) >> PAGE_SHIFT)
 /* No <a> or <b> can be larger than the physical address space. */
 #define DOM0_LN_MAX (1UL << (PADDR_BITS - PAGE_SHIFT))
 
