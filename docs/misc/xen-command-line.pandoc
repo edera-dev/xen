@@ -1083,8 +1083,8 @@ So `<sz>` being `1G+25%` on a 256 GB host would result in 65 GB.
 where `avail` is the available memory that `<frac>` is a fraction of.  dom0's
 share of host memory falls as the host grows: once host memory is well above
 `<b>`, dom0 gets about `<a> * ln(2)` more each time host memory doubles.
-`<a>` and `<b>` are sizes, and default to 13G and 24G, which give about
-6.6 GB on a 16 GB host, 17 GB on a 64 GB host and 40 GB on a 512 GB host.
+`<a>` and `<b>` are sizes, and default to 9G and 20G, which give about
+5.3 GB on a 16 GB host, 13 GB on a 64 GB host and 30 GB on a 512 GB host.
 `<a>` and `<b>` must be at least one page and no larger than the physical
 address space.  `min:` and `max:` apply to it as they do to `<sz>`, but
 cannot take `ln` themselves.
