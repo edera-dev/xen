@@ -612,6 +612,7 @@ int iommu_detach_context(struct domain *d, struct pci_dev *pdev);
  * the caller.
  */
 DECLARE_PER_CPU(bool, iommu_dont_flush_iotlb);
+DECLARE_PER_CPU(unsigned int, iommu_skipped_flush_flags);
 
 DECLARE_PER_CPU(uint64_t, pv_mmu_update_ns);
 DECLARE_PER_CPU(uint64_t, pv_mmu_update_calls);
