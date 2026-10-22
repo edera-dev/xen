@@ -1722,6 +1722,7 @@ gnttab_unmap_grant_ref(
         c = min(count, (unsigned int)GNTTAB_UNMAP_BATCH_SIZE);
         partial_done = 0;
 
+        gnttab_unmap_batch_begin();
         for ( i = 0; i < c; i++ )
         {
             if ( unlikely(__copy_from_guest(&op, uop, 1)) )
@@ -1734,6 +1735,9 @@ gnttab_unmap_grant_ref(
         }
 
         gnttab_flush_tlb(current->domain);
+        /* After a failed flush the pages may still be reachable: leak them. */
+        if ( gnttab_unmap_batch_end() )
+            partial_done = 0;
 
         for ( i = 0; i < partial_done; i++ )
             unmap_common_complete(&common[i]);
@@ -1749,6 +1753,8 @@ gnttab_unmap_grant_ref(
 
 fault:
     gnttab_flush_tlb(current->domain);
+    if ( gnttab_unmap_batch_end() )
+        partial_done = 0;
 
     for ( i = 0; i < partial_done; i++ )
         unmap_common_complete(&common[i]);
