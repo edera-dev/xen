@@ -980,6 +980,10 @@ out:
                                    (iommu_flags ? IOMMU_FLUSHF_added : 0) |
                                    (vtd_pte_present ? IOMMU_FLUSHF_modified
                                                     : 0), 0);
+        else if ( iommu_use_hap_pt(d) )
+            this_cpu(iommu_skipped_flush_flags) |=
+                (iommu_flags ? IOMMU_FLUSHF_added : 0) |
+                (vtd_pte_present ? IOMMU_FLUSHF_modified : 0);
         else if ( need_iommu_pt_sync(d) )
             rc = iommu_flags ?
                 iommu_legacy_map(d, _dfn(gfn), mfn, 1ul << order, iommu_flags) :
