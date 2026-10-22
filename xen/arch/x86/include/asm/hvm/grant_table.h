@@ -19,6 +19,8 @@ int create_grant_p2m_mapping(uint64_t addr, mfn_t frame,
                              unsigned int cache_flags);
 int replace_grant_p2m_mapping(uint64_t addr, mfn_t frame,
                               uint64_t new_addr, unsigned int flags);
+void grant_p2m_unmap_batch_begin(void);
+int grant_p2m_unmap_batch_end(void);
 
 #else
 
@@ -36,6 +38,9 @@ static inline int replace_grant_p2m_mapping(uint64_t addr, mfn_t frame,
 {
     return GNTST_general_error;
 }
+
+static inline void grant_p2m_unmap_batch_begin(void) {}
+static inline int grant_p2m_unmap_batch_end(void) { return 0; }
 
 #endif
 

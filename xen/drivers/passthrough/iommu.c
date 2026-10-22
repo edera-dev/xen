@@ -65,6 +65,7 @@ bool __read_mostly iommu_hap_pt_share = true;
 bool __read_mostly iommu_debug;
 
 DEFINE_PER_CPU(bool, iommu_dont_flush_iotlb);
+DEFINE_PER_CPU(unsigned int, iommu_skipped_flush_flags);
 
 static int __init cf_check parse_iommu_param(const char *s)
 {
@@ -750,7 +751,9 @@ int iommu_legacy_unmap(struct domain *d, dfn_t dfn, unsigned long page_count)
     {
         rc = iommu_unmap(d, dfn, page_count, 0, &flush_flags, 0);
 
-        if ( !this_cpu(iommu_dont_flush_iotlb) && !rc )
+        if ( this_cpu(iommu_dont_flush_iotlb) )
+            this_cpu(iommu_skipped_flush_flags) |= flush_flags;
+        else if ( !rc )
             rc = iommu_iotlb_flush(d, dfn, page_count, flush_flags, 0);
     }
 
