@@ -106,6 +106,14 @@ struct altp2mvcpu {
 
 #define vcpu_altp2m(v) ((v)->arch.hvm.avcpu)
 
+/* Per vCPU, as the guest copies between the unmaps can sleep. */
+struct hvm_grant_unmap_batch {
+    bool          open;
+    bool          tlb_flush;
+    unsigned int  iommu_flags;
+    unsigned long gfn_lo, gfn_hi;
+};
+
 struct hvm_vcpu {
     /* Guest control-register and EFER values, just as the guest sees them. */
     unsigned long       guest_cr[5];
@@ -169,6 +177,8 @@ struct hvm_vcpu {
 
     /* Pending hw/sw interrupt (.vector = -1 means nothing pending). */
     struct x86_event     inject_event;
+
+    struct hvm_grant_unmap_batch grant_unmap_batch;
 
 #ifdef CONFIG_VIRIDIAN
     struct viridian_vcpu *viridian;
