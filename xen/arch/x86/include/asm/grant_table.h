@@ -32,6 +32,19 @@ static inline int replace_grant_host_mapping(uint64_t addr, mfn_t frame,
     return replace_grant_pv_mapping(addr, frame, new_addr, flags);
 }
 
+static inline void gnttab_unmap_batch_begin(void)
+{
+    if ( paging_mode_external(current->domain) )
+        grant_p2m_unmap_batch_begin();
+}
+
+static inline int __must_check gnttab_unmap_batch_end(void)
+{
+    if ( paging_mode_external(current->domain) )
+        return grant_p2m_unmap_batch_end();
+    return 0;
+}
+
 #define gnttab_get_frame_gfn(gt, st, idx) ({                             \
     mfn_t mfn_ = (st) ? gnttab_status_mfn(gt, idx)                       \
                       : gnttab_shared_mfn(gt, idx);                      \
