@@ -2364,7 +2364,7 @@ static int intel_iommu_cleanup_pte(uint64_t pte_maddr, bool preempt)
             mfn_t mfn = maddr_to_mfn(dma_pte_addr(pte[i]));
 
             if ( mfn_valid(mfn) )
-                put_page(mfn_to_page(mfn));
+                iommu_put_mapped_page(mfn_to_page(mfn));
 
             if ( preempt )
                 dma_clear_pte(pte[i]);
@@ -2398,7 +2398,7 @@ static int intel_iommu_cleanup_superpage(struct iommu_context *ctx,
 
     for (page += i; i < page_count; i++, page++)
     {
-        put_page(page);
+        iommu_put_mapped_page(page);
 
         if ( preempt && (i & 0xff) && general_preempt_check() )
         {

@@ -421,7 +421,7 @@ static int amd_iommu_cleanup_superpage(struct iommu_context *ctx,
         mfn_t cur = mfn_add(mfn, i);
 
         if ( mfn_valid(cur) )
-            put_page(mfn_to_page(cur));
+            iommu_put_mapped_page(mfn_to_page(cur));
 
         if ( preempt && (i & 0xff) && general_preempt_check() )
         {
@@ -466,7 +466,7 @@ static int amd_iommu_cleanup_pt(struct iommu_context *ctx, mfn_t pt_mfn,
         else if ( level == 1 )
         {
             if ( mfn_valid(_mfn(pte->mfn)) )
-                put_page(mfn_to_page(_mfn(pte->mfn)));
+                iommu_put_mapped_page(mfn_to_page(_mfn(pte->mfn)));
         }
         else
             rc = amd_iommu_cleanup_superpage(ctx, level, _mfn(pte->mfn),
