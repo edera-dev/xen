@@ -142,9 +142,17 @@ static long capabilities_op(struct pv_iommu_capabilities *cap, struct domain *d)
     return 0;
 }
 
+/*
+ * The arena is allocated without an owner, so nothing accounts for it, and
+ * the context array is sized per domain. Both are chosen by the guest.
+ */
+#define PVIOMMU_MAX_CTX_NO      1023
+#define PVIOMMU_MAX_ARENA_ORDER 14
+
 static long init_op(struct pv_iommu_init *init, struct domain *d)
 {
-    if (init->max_ctx_no >= UINT16_MAX)
+    if (init->max_ctx_no > PVIOMMU_MAX_CTX_NO ||
+        init->arena_order > PVIOMMU_MAX_ARENA_ORDER)
         return -E2BIG;
 
     return iommu_domain_pviommu_init(d, init->max_ctx_no + 1, init->arena_order);
