@@ -76,7 +76,15 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
             *page = NULL;
             return -EPERM;
         }
-        ret = 0;
+
+        if ( !iommu_get_mapped_page_type(*page) )
+        {
+            put_page(*page);
+            *page = NULL;
+            ret = -EBUSY;
+        }
+        else
+            ret = 0;
     }
     else if ( pv_iommu_is_mmio(p2mt) ||
               iomem_access_permitted(d, mfn_x(*mfn),mfn_x(*mfn)) )
@@ -293,7 +301,7 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
              !iommu_lookup_page(d, dfn, &mfn_lookup, &lookup_flags, map->ctx_no) )
         {
             if ( page && mfn_valid(mfn) )
-                put_page(page);
+                iommu_put_mapped_page(page);
 
             ret = -EADDRINUSE;
             break;
@@ -304,7 +312,7 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
         if ( ret )
         {
             if ( page && mfn_valid(mfn) )
-                put_page(page);
+                iommu_put_mapped_page(page);
 
             break;
         }
@@ -398,7 +406,7 @@ static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
 
         /* Decrement reference counter (if needed) */
         if ( mfn_valid(mfn) )
-            put_page(mfn_to_page(mfn));
+            iommu_put_mapped_page(mfn_to_page(mfn));
 
         if ( (i & 0xff) && hypercall_preempt_check() )
         {
