@@ -203,7 +203,8 @@ int iommu_domain_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_
     struct domain_iommu *hd = dom_iommu(d);
     int rc;
 
-    BUG_ON(nb_ctx == 0); /* sanity check (prevent underflow) */
+    if ( nb_ctx == 0 )
+        return -EINVAL;
 
     /*
      * hd->other_contexts.count is always reported as 0 during initialization
