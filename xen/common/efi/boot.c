@@ -962,6 +962,7 @@ static bool __init read_media_loader(const CHAR16 *name, const EFI_GUID *media_g
     EFI_LOAD_FILE2_INTERFACE *lf2;
     EFI_STATUS ret;
     EFI_HANDLE handle;
+    UINTN pages;
 
     EFI_DEVICE_PATH* dp = devp;
     EFI_GUID lf2_proto_guid = LOAD_FILE2_PROTOCOL;
@@ -984,9 +985,9 @@ static bool __init read_media_loader(const CHAR16 *name, const EFI_GUID *media_g
      * As in read_file(), allocate an extra byte for config files to put a
      * NUL there.  free_cfg() relies on that extra byte when freeing.
      */
+    pages = PFN_UP(file->size + (file == &cfg));
     ret = efi_bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
-                                PFN_UP(file->size + (file == &cfg)),
-                                &file->addr);
+                                pages, &file->addr);
     if ( EFI_ERROR(ret) )
         goto fail;
 
@@ -995,7 +996,7 @@ static bool __init read_media_loader(const CHAR16 *name, const EFI_GUID *media_g
 
     ret = lf2->LoadFile(lf2, dp, false, &file->size, (void*) file->addr);
     if ( EFI_ERROR(ret) ) {
-        efi_bs->FreePages(file->addr, PFN_UP(file->size));
+        efi_bs->FreePages(file->addr, pages);
         goto fail;
     }
     efi_arch_flush_dcache_area(file->ptr, file->size);
