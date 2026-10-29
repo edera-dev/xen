@@ -71,7 +71,8 @@ struct page_info *iommu_arena_allocate_page(struct iommu_arena *arena)
     unsigned int index;
     unsigned int tsl_tries = 0;
 
-    BUG_ON(mfn_x(arena->region_start) == 0);
+    if ( mfn_x(arena->region_start) == 0 )
+        return NULL;
 
     if ( atomic_read(&arena->used_pages) == iommu_arena_size(arena) )
         /* All pages used */
