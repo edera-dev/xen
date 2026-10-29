@@ -198,6 +198,42 @@ static void __hwdom_init check_hwdom_reqs(struct domain *d)
 }
 
 
+/*
+ * A PV guest must not get DMA write access to its own page tables or
+ * descriptor tables. Holding a writable type reference for as long as a frame
+ * is mapped keeps it from being pinned or used as one, and fails the mapping
+ * if it already is.
+ */
+static bool pv_page_needs_type(const struct page_info *pg)
+{
+#ifdef CONFIG_X86
+    const struct domain *owner = page_get_owner(pg);
+
+    return owner && !is_system_domain(owner) && is_pv_domain(owner);
+#else
+    return false;
+#endif
+}
+
+bool iommu_get_mapped_page_type(struct page_info *pg)
+{
+#ifdef CONFIG_X86
+    if ( pv_page_needs_type(pg) )
+        return get_page_type(pg, PGT_writable_page);
+#endif
+    return true;
+}
+
+void iommu_put_mapped_page(struct page_info *pg)
+{
+#ifdef CONFIG_X86
+    if ( pv_page_needs_type(pg) )
+        put_page_and_type(pg);
+    else
+#endif
+        put_page(pg);
+}
+
 int iommu_domain_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_order)
 {
     struct domain_iommu *hd = dom_iommu(d);
