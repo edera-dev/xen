@@ -980,8 +980,13 @@ static bool __init read_media_loader(const CHAR16 *name, const EFI_GUID *media_g
 
     file->addr = min(1UL << (32 + PAGE_SHIFT),
                      HYPERVISOR_VIRT_END - DIRECTMAP_VIRT_START);
+    /*
+     * As in read_file(), allocate an extra byte for config files to put a
+     * NUL there.  free_cfg() relies on that extra byte when freeing.
+     */
     ret = efi_bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
-                                PFN_UP(file->size), &file->addr);
+                                PFN_UP(file->size + (file == &cfg)),
+                                &file->addr);
     if ( EFI_ERROR(ret) )
         goto fail;
 
@@ -994,6 +999,10 @@ static bool __init read_media_loader(const CHAR16 *name, const EFI_GUID *media_g
         goto fail;
     }
     efi_arch_flush_dcache_area(file->ptr, file->size);
+
+    if ( file == &cfg )
+        file->str[file->size] = 0;
+
     return true;
 
  fail:
