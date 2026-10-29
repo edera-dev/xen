@@ -136,7 +136,7 @@ static long capabilities_op(struct pv_iommu_capabilities *cap, struct domain *d)
 
 static long init_op(struct pv_iommu_init *init, struct domain *d)
 {
-    if (init->max_ctx_no == UINT32_MAX)
+    if (init->max_ctx_no >= UINT16_MAX)
         return -E2BIG;
 
     return iommu_domain_pviommu_init(d, init->max_ctx_no + 1, init->arena_order);
