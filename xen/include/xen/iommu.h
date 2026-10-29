@@ -554,6 +554,8 @@ static inline int iommu_do_domctl(struct xen_domctl *domctl, struct domain *d,
 #endif
 
 int iommu_domain_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_order);
+bool iommu_get_mapped_page_type(struct page_info *pg);
+void iommu_put_mapped_page(struct page_info *pg);
 int iommu_domain_pviommu_teardown(struct domain *d);
 int __must_check iommu_relinquish_contexts(struct domain *d);
 
