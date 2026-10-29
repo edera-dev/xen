@@ -997,6 +997,7 @@ static bool __init read_media_loader(const CHAR16 *name, const EFI_GUID *media_g
     ret = lf2->LoadFile(lf2, dp, false, &file->size, (void*) file->addr);
     if ( EFI_ERROR(ret) ) {
         efi_bs->FreePages(file->addr, pages);
+        file->need_to_free = false;
         goto fail;
     }
     efi_arch_flush_dcache_area(file->ptr, file->size);
