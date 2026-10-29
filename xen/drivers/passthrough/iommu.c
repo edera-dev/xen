@@ -204,16 +204,14 @@ static void __hwdom_init check_hwdom_reqs(struct domain *d)
  * is mapped keeps it from being pinned or used as one, and fails the mapping
  * if it already is.
  */
+#ifdef CONFIG_X86
 static bool pv_page_needs_type(const struct page_info *pg)
 {
-#ifdef CONFIG_X86
     const struct domain *owner = page_get_owner(pg);
 
     return owner && !is_system_domain(owner) && is_pv_domain(owner);
-#else
-    return false;
-#endif
 }
+#endif
 
 bool iommu_get_mapped_page_type(struct page_info *pg)
 {
