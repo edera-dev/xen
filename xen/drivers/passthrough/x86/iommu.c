@@ -227,7 +227,7 @@ int arch_iommu_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_or
     struct domain_iommu *hd = dom_iommu(d);
 
     if ( arena_order == 0 )
-        return 0;
+        return -EINVAL;
 
     return iommu_arena_initialize(&hd->arch.pt_arena, NULL, arena_order, 0);
 }
