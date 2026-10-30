@@ -2614,7 +2614,6 @@ static int intel_iommu_cleanup_mappings(struct iommu_context *ctx,
 static int cf_check intel_iommu_context_teardown(struct domain *d,
                                         struct iommu_context *ctx, u32 flags)
 {
-    struct acpi_drhd_unit *drhd;
     pcidevs_lock();
 
     // Cleanup mappings
@@ -2628,14 +2627,9 @@ static int cf_check intel_iommu_context_teardown(struct domain *d,
 
     ASSERT(ctx->arch.vtd.didmap);
 
-    for_each_drhd_unit(drhd)
-    {
-        unsigned long index = drhd->iommu->index;
-
-        iommu_free_domid(ctx->arch.vtd.didmap[index], drhd->iommu->domid_bitmap);
-    }
-
-    xfree(ctx->arch.vtd.didmap);
+    intel_iommu_free_dids(ctx);
+    XFREE(ctx->arch.vtd.didmap);
+    XFREE(ctx->arch.vtd.iommu_dev_cnt);
 
     pcidevs_unlock();
     return arch_iommu_context_teardown(d, ctx, flags);
