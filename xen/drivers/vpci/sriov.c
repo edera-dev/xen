@@ -301,15 +301,39 @@ int vf_init_header(struct pci_dev *vf_pdev)
         if ( rc )
             return rc;
 
+        /* Work out this VF's BARs first: access is granted from them below. */
+        rc = vf_init_bars(vf_pdev);
+        if ( rc )
+            return rc;
+
         for ( i = 0; i < PCI_SRIOV_NUM_BARS; i++ )
         {
-            rc = iomem_permit_access(vf_pdev->domain,
-                                     PFN_DOWN(bars[i].addr),
-                                     PFN_DOWN(bars[i].addr + bars[i].size - 1));
-            if ( rc )
+            const struct vpci_bar *bar = &bars[i];
+
+            /*
+             * Only memory BARs that have been sized and placed describe a
+             * range to grant. The upper half of a 64-bit BAR is covered by
+             * its lower half.
+             */
+            if ( (bar->type == VPCI_BAR_MEM32 ||
+                  bar->type == VPCI_BAR_MEM64_LO) && bar->size )
             {
-                printk(XENLOG_WARNING "Failed to grant MMIO access for VF BAR%d: %d\n", i, rc);
-                return rc;
+                if ( !bar->addr || bar->addr + bar->size - 1 < bar->addr )
+                {
+                    printk(XENLOG_WARNING
+                           "%pp: VF BAR%u not placed (%#"PRIx64", size %#"PRIx64")\n",
+                           &vf_pdev->sbdf, i, bar->addr, bar->size);
+                    return -EINVAL;
+                }
+
+                rc = iomem_permit_access(vf_pdev->domain,
+                                         PFN_DOWN(bar->addr),
+                                         PFN_DOWN(bar->addr + bar->size - 1));
+                if ( rc )
+                {
+                    printk(XENLOG_WARNING "Failed to grant MMIO access for VF BAR%d: %d\n", i, rc);
+                    return rc;
+                }
             }
 
             switch ( pf_pdev->vpci->sriov->vf_bars[i].type )
@@ -333,10 +357,6 @@ int vf_init_header(struct pci_dev *vf_pdev)
                 break;
             }
         }
-
-        rc = vf_init_bars(vf_pdev);
-        if ( rc )
-            return rc;
     }
 #endif /* CONFIG_HAS_VPCI_GUEST_SUPPORT */
 
