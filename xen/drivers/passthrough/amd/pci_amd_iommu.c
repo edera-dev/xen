@@ -432,7 +432,8 @@ static void amd_iommu_disable_domain_device(const struct domain *domain,
     spin_lock_irqsave(&iommu->lock, flags);
     if ( dte->tv || dte->v )
     {
-        domid_t prev_domid = dte->domain_id;
+        /* Only an entry that was translating can have anything cached. */
+        domid_t prev_domid = dte->tv ? dte->domain_id : DOMID_INVALID;
 
         /* See the comment in amd_iommu_setup_device_table(). */
         dte->int_ctl = IOMMU_DEV_TABLE_INT_CONTROL_ABORTED;
