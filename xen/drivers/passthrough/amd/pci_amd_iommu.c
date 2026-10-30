@@ -147,6 +147,10 @@ static int __must_check amd_iommu_setup_domain_device(
     root_pg = ctx->arch.amd.root_table;
     domid = ctx->arch.amd.didmap[iommu->index];
 
+    /* Never point a device table entry at a table that doesn't exist. */
+    if ( !root_pg && (sr_flags & SET_ROOT_VALID) )
+        return -EINVAL;
+
     spin_lock_irqsave(&iommu->lock, flags);
 
     if ( !dte->v || !dte->tv )
@@ -488,6 +492,7 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
     struct amd_iommu *iommu;
     struct domain_iommu *hd = dom_iommu(d);
     unsigned int i;
+    int rc;
 
     ctx->arch.amd.didmap = xmalloc_array(domid_t, nr_amd_iommus);
     if ( !ctx->arch.amd.didmap )
@@ -533,14 +538,32 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
         ctx->arch.amd.paging_mode = max(amd_iommu_guest_pt_levels,
                                         (unsigned int)amd_iommu_min_paging_mode);
 
+    /*
+     * Set up the page table list first: iommu_alloc_pgtable() puts the root
+     * on it, and teardown frees what is on it.
+     */
+    rc = arch_iommu_context_init(d, ctx, flags);
+    if ( rc )
+        goto fail;
+
     if ( !ctx->opaque )
     {
         /* Create initial context page */
         ctx->arch.amd.root_table = iommu_alloc_pgtable(hd, ctx, 0);
+        if ( !ctx->arch.amd.root_table )
+        {
+            rc = -ENOMEM;
+            goto fail;
+        }
     }
 
-    return arch_iommu_context_init(d, ctx, flags);
+    return 0;
 
+ fail:
+    amd_iommu_free_dids(ctx);
+    XFREE(ctx->arch.amd.didmap);
+    XFREE(ctx->arch.amd.iommu_dev_cnt);
+    return rc;
 }
 
 static int cf_check amd_iommu_context_teardown(struct domain *d,
