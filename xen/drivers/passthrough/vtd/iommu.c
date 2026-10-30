@@ -2598,7 +2598,12 @@ static int intel_iommu_cleanup_mappings(struct iommu_context *ctx,
             if ( preempt && !rc )
                 /* Fold pgd (no more mappings in it) */
                 dma_clear_pte(pgd[i]);
-            else if ( preempt && (rc == -ERESTART || general_preempt_check()) )
+
+            /*
+             * Check for preemption after every entry, cleared or not: an
+             * entry that is done has been cleared, so a restart skips it.
+             */
+            if ( preempt && (rc == -ERESTART || general_preempt_check()) )
             {
                 unmap_vtd_domain_page(pgd);
                 return -ERESTART;
