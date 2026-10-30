@@ -668,7 +668,7 @@ unsigned long *__init iommu_init_domid(domid_t reserve)
 
     BUILD_BUG_ON(DOMID_MASK * 2U >= UINT16_MAX);
 
-    map = xzalloc_array(unsigned long, BITS_TO_LONGS(UINT16_MAX - DOMID_MASK));
+    map = xzalloc_array(unsigned long, BITS_TO_LONGS(IOMMU_DOMID_MAP_SIZE));
     if ( map && reserve != DOMID_INVALID )
     {
         ASSERT(reserve > DOMID_MASK);
@@ -678,27 +678,33 @@ unsigned long *__init iommu_init_domid(domid_t reserve)
     return map;
 }
 
-domid_t iommu_alloc_domid(unsigned long *map)
+/*
+ * Allocate a DID from a map of nr bits, returning UINT16_MAX when none is
+ * left. Contexts are set up without a common lock, so claim the bit
+ * atomically and retry if another CPU got there first.
+ */
+domid_t iommu_alloc_domid(unsigned long *map, unsigned int nr)
 {
-    /* TODO: Consider nr_doms ? */
-    unsigned int idx = find_next_zero_bit(map, UINT16_MAX, 0);
+    unsigned int idx;
 
-    if ( idx >= UINT16_MAX )
-        return UINT16_MAX;
+    /* UINT16_MAX is the "none left" value, so it can't be handed out. */
+    nr = min(nr, (unsigned int)UINT16_MAX);
 
-    __set_bit(idx, map);
+    do {
+        idx = find_next_zero_bit(map, nr, 0);
+        if ( idx >= nr )
+            return UINT16_MAX;
+    } while ( test_and_set_bit(idx, map) );
 
     return idx;
 }
 
 void iommu_free_domid(domid_t domid, unsigned long *map)
 {
-    ASSERT(pcidevs_locked());
-
     if ( domid == UINT16_MAX )
         return;
 
-    if ( !__test_and_clear_bit(domid & DOMID_MASK, map) )
+    if ( !test_and_clear_bit(domid, map) )
         BUG();
 }
 
