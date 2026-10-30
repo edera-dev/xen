@@ -1526,15 +1526,18 @@ int apply_context(struct domain *d, struct iommu_context *ctx,
                   struct iommu_context *prev_ctx)
 {
     struct acpi_drhd_unit *drhd = acpi_find_matched_drhd_unit(pdev);
-    struct vtd_iommu *iommu = drhd->iommu;
+    struct vtd_iommu *iommu;
     int ret = 0;
 
     if ( !drhd )
         return -EINVAL;
 
+    iommu = drhd->iommu;
+
     ASSERT(pcidevs_locked());
 
-    ret = apply_context_single(d, ctx, iommu, pdev->bus, pdev->devfn, prev_ctx);
+    /* Phantom functions are set up with their own devfn. */
+    ret = apply_context_single(d, ctx, iommu, pdev->bus, devfn, prev_ctx);
 
     if ( !ret && ats_device(pdev, drhd) > 0 )
         enable_ats_device(pdev, &iommu->ats_devices);
