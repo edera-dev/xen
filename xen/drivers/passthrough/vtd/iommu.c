@@ -287,6 +287,8 @@ static paddr_t get_context_pgd(struct domain *d, struct iommu_context *ctx,
 
         if ( !ctx->arch.vtd.pgd_maddr )
             return 0;
+
+        pgd_maddr = ctx->arch.vtd.pgd_maddr;
     }
 
     /* Skip top level(s) of page tables for less-than-maximum level DRHDs. */
@@ -1249,6 +1251,7 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
 {
     struct acpi_drhd_unit *drhd;
     unsigned int i;
+    int rc;
 
     ctx->arch.vtd.didmap = xmalloc_array(domid_t, nr_iommus);
     if ( !ctx->arch.vtd.didmap )
@@ -1303,11 +1306,32 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
         }
     }
 
+    /*
+     * Set up the page table list first: iommu_alloc_pgtable() puts the new
+     * tables on it, and teardown frees what is on it.
+     */
+    rc = arch_iommu_context_init(d, ctx, flags);
+    if ( rc )
+        goto fail;
+
     if ( !ctx->opaque )
+    {
         /* Create initial context page */
         addr_to_dma_page_maddr(d, ctx, 0, min_pt_levels, NULL, true);
+        if ( !ctx->arch.vtd.pgd_maddr )
+        {
+            rc = -ENOMEM;
+            goto fail;
+        }
+    }
 
-    return arch_iommu_context_init(d, ctx, flags);
+    return 0;
+
+ fail:
+    intel_iommu_free_dids(ctx);
+    XFREE(ctx->arch.vtd.didmap);
+    XFREE(ctx->arch.vtd.iommu_dev_cnt);
+    return rc;
 }
 
 static int cf_check intel_iommu_domain_init(struct domain *d)
@@ -1418,8 +1442,8 @@ int apply_context_single(struct domain *domain, struct iommu_context *ctx,
         root = get_context_pgd(domain, ctx, iommu->nr_pt_levels);
         if ( !root )
         {
-            unmap_vtd_domain_page(context_entries);
-            return -ENOMEM;
+            rc = -ENOMEM;
+            goto unlock;
         }
 
         context_set_address_root(lctxt, root);
