@@ -695,6 +695,18 @@ static int pci_reassign_device(struct domain *prev_dom, struct domain *next_dom,
     if ( pdev->broken && next_dom != hardware_domain && next_dom != dom_io )
         return -EBADF;
 
+    if ( !is_hardware_domain(next_dom) && !is_system_domain(next_dom) )
+    {
+        const struct iommu_ops *ops = dom_iommu(next_dom)->platform_ops;
+
+        if ( ops->check_assign )
+        {
+            rc = ops->check_assign(next_dom, pdev, flag);
+            if ( rc )
+                return rc;
+        }
+    }
+
     if ( prev_dom )
     {
         write_lock(&prev_dom->pci_lock);
