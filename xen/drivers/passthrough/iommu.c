@@ -1264,13 +1264,29 @@ int cf_check iommu_context_teardown(struct domain *d, struct iommu_context *ctx,
     if ( flags & IOMMU_TEARDOWN_REATTACH_DEFAULT )
     {
 #ifdef CONFIG_HAS_PCI
-        struct pci_dev *device;
+        struct pci_dev *device, *tmp;
+        int rc = 0;
 
-        list_for_each_entry(device, &ctx->devices, context_list)
-            iommu_reattach_context(d, d, device, 0);
+        /*
+         * Reattaching moves the device onto the default context's list, so
+         * the walk must not depend on the entry it just moved.
+         */
+        pcidevs_lock();
+        list_for_each_entry_safe(device, tmp, &ctx->devices, context_list)
+        {
+            rc = iommu_reattach_context(d, d, device, 0);
+            if ( rc )
+                break;
+        }
+        pcidevs_unlock();
+
+        /* Don't free mappings a device may still be using. */
+        if ( rc )
+            return rc;
 #endif
     }
-    else if (!list_empty(&ctx->devices))
+
+    if ( !list_empty(&ctx->devices) )
         return -EBUSY; /* there is a device in context */
 
     return iommu_call(hd->platform_ops, context_teardown, d, ctx, flags);
