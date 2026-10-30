@@ -110,9 +110,8 @@ struct amd_iommu {
     int enabled;
 
     /*
-     * Set when the command buffer is found never to advance its head pointer.
-     * Invalidation then cannot be issued at all, so it is skipped rather than
-     * waited on; only correct for an IOMMU that does not cache translations.
+     * Set by amd_iommu_cmd_buffer_died() once invalidations can no longer be
+     * issued or confirmed. Nothing further is sent to the IOMMU.
      */
     bool cmd_buffer_dead;
     /* Consecutive command buffer timeouts, reset by one that completes. */
@@ -273,6 +272,7 @@ void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
                             domid_t domid);
 void amd_iommu_flush_intremap(struct amd_iommu *iommu, uint16_t bdf);
 void amd_iommu_flush_all_caches(struct amd_iommu *iommu);
+void amd_iommu_cmd_buffer_died(struct amd_iommu *iommu);
 void amd_iommu_probe_cmd_buffer(struct amd_iommu *iommu);
 
 /* find iommu for bdf */
