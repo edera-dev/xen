@@ -1400,9 +1400,16 @@ static int ats_device(const struct pci_dev *pdev,
  * @param bus PCI device bus
  * @param devfn PCI device function
  */
-int apply_context_single(struct domain *domain, struct iommu_context *ctx,
-                         struct vtd_iommu *iommu, uint8_t bus, uint8_t devfn,
-                         struct iommu_context *prev_ctx)
+/*
+ * Program one context entry. A counted entry belongs to the device being
+ * (re)attached and is accounted in the context's iommu_dev_cnt; an uncounted
+ * one is a requester ID alias shared with other devices (see
+ * apply_bridge_aliases()) and has no owner to account it to.
+ */
+static int apply_context_entry(struct domain *domain, struct iommu_context *ctx,
+                               struct vtd_iommu *iommu, uint8_t bus,
+                               uint8_t devfn, struct iommu_context *prev_ctx,
+                               bool counted)
 {
     struct context_entry *context, *context_entries, lctxt;
     __uint128_t res, old;
@@ -1505,7 +1512,8 @@ int apply_context_single(struct domain *domain, struct iommu_context *ctx,
         prev_ctx->arch.vtd.iommu_dev_cnt[iommu->index]--;
     }
 
-    ctx->arch.vtd.iommu_dev_cnt[iommu->index]++;
+    if ( counted )
+        ctx->arch.vtd.iommu_dev_cnt[iommu->index]++;
 
     unmap_vtd_domain_page(context_entries);
     spin_unlock(&iommu->lock);
@@ -1519,6 +1527,65 @@ int apply_context_single(struct domain *domain, struct iommu_context *ctx,
         unmap_vtd_domain_page(context_entries);
         spin_unlock(&iommu->lock);
         return rc;
+}
+
+int apply_context_single(struct domain *domain, struct iommu_context *ctx,
+                         struct vtd_iommu *iommu, uint8_t bus, uint8_t devfn,
+                         struct iommu_context *prev_ctx)
+{
+    return apply_context_entry(domain, ctx, iommu, bus, devfn, prev_ctx, true);
+}
+
+/*
+ * A conventional PCI device behind a bridge can issue DMA with the
+ * bridge's requester ID, and behind a PCIe-to-PCI/PCI-X bridge also with
+ * (secbus, 00.0). Point those at the same context as the device, as
+ * domain_context_mapping() did before the context rework. The aliases are
+ * shared by everything behind the bridge, so they aren't counted.
+ */
+static int apply_bridge_aliases(struct domain *d, struct iommu_context *ctx,
+                                struct vtd_iommu *iommu, struct pci_dev *pdev)
+{
+    uint8_t bus = pdev->bus, devfn = pdev->devfn, secbus;
+    int ret;
+
+    if ( pdev->type != DEV_TYPE_PCI )
+        return 0;
+
+    ret = find_upstream_bridge(pdev->seg, &bus, &devfn, &secbus);
+    if ( ret < 1 )
+        return ret ? -ENXIO : 0;
+
+    ret = apply_context_entry(d, ctx, iommu, bus, devfn, NULL, false);
+
+    if ( !ret &&
+         pdev_type(pdev->seg, bus, devfn) == DEV_TYPE_PCIe2PCI_BRIDGE &&
+         (secbus != pdev->bus || pdev->devfn != 0) )
+        ret = apply_context_entry(d, ctx, iommu, secbus, 0, NULL, false);
+
+    return ret;
+}
+
+/* Undo apply_bridge_aliases(), as domain_context_unmap() did. */
+static int unapply_bridge_aliases(struct domain *d, struct vtd_iommu *iommu,
+                                  struct pci_dev *pdev)
+{
+    uint8_t bus = pdev->bus, devfn = pdev->devfn, secbus;
+    int ret;
+
+    if ( pdev->type != DEV_TYPE_PCI )
+        return 0;
+
+    ret = find_upstream_bridge(pdev->seg, &bus, &devfn, &secbus);
+    if ( ret < 1 )
+        return ret ? -ENXIO : 0;
+
+    ret = unapply_context_single(d, iommu, NULL, bus, devfn);
+
+    if ( !ret && pdev_type(pdev->seg, bus, devfn) == DEV_TYPE_PCIe2PCI_BRIDGE )
+        ret = unapply_context_single(d, iommu, NULL, secbus, 0);
+
+    return ret;
 }
 
 int apply_context(struct domain *d, struct iommu_context *ctx,
@@ -1538,6 +1605,18 @@ int apply_context(struct domain *d, struct iommu_context *ctx,
 
     /* Phantom functions are set up with their own devfn. */
     ret = apply_context_single(d, ctx, iommu, pdev->bus, devfn, prev_ctx);
+
+    if ( !ret && devfn == pdev->devfn )
+    {
+        ret = apply_bridge_aliases(d, ctx, iommu, pdev);
+
+        /* Put the device's own entry back where it was. */
+        if ( ret && prev_ctx )
+            apply_context_single(pdev->domain, prev_ctx, iommu, pdev->bus,
+                                 devfn, ctx);
+        else if ( ret )
+            unapply_context_single(d, iommu, ctx, pdev->bus, devfn);
+    }
 
     if ( !ret && ats_device(pdev, drhd) > 0 )
         enable_ats_device(pdev, &iommu->ats_devices);
@@ -1601,7 +1680,8 @@ int unapply_context_single(struct domain *domain, struct vtd_iommu *iommu,
     if ( rc > 0 )
         rc = 0;
 
-    if ( !rc )
+    /* Bridge aliases are passed without a context: they aren't counted. */
+    if ( !rc && prev_ctx )
     {
         BUG_ON(!prev_ctx->arch.vtd.iommu_dev_cnt[iommu->index]);
         prev_ctx->arch.vtd.iommu_dev_cnt[iommu->index]--;
@@ -2682,6 +2762,9 @@ static int cf_check intel_iommu_detach(struct domain *d, struct pci_dev *pdev,
         return -EINVAL;
 
     ret = unapply_context_single(d, drhd->iommu, prev_ctx, pdev->bus, pdev->devfn);
+
+    if ( !ret )
+        ret = unapply_bridge_aliases(d, drhd->iommu, pdev);
 
     if ( ret )
         return ret;
