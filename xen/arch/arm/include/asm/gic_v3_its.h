@@ -190,6 +190,9 @@ void gicv3_free_host_lpi_block(uint32_t first_lpi);
 
 void vgic_vcpu_inject_lpi(struct domain *d, unsigned int virq);
 
+unsigned int gicv3_its_guest_device_eventids(struct domain *d,
+                                             paddr_t vdoorbell_address,
+                                             uint32_t vdevid);
 struct pending_irq *gicv3_its_get_event_pending_irq(struct domain *d,
                                                     paddr_t vdoorbell_address,
                                                     uint32_t vdevid,
