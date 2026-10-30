@@ -467,15 +467,35 @@ static void amd_iommu_disable_domain_device(const struct domain *domain,
     prev_ctx->arch.amd.iommu_dev_cnt[iommu->index]--;
 }
 
+/* Return a context's DIDs to their IOMMUs' maps. */
+static void amd_iommu_free_dids(struct iommu_context *ctx)
+{
+    struct amd_iommu *iommu;
+
+    if ( !ctx->arch.amd.didmap )
+        return;
+
+    for_each_amd_iommu(iommu)
+    {
+        iommu_free_domid(ctx->arch.amd.didmap[iommu->index], iommu->domid_map);
+        ctx->arch.amd.didmap[iommu->index] = UINT16_MAX;
+    }
+}
+
 static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_context *ctx,
                                            u32 flags)
 {
     struct amd_iommu *iommu;
     struct domain_iommu *hd = dom_iommu(d);
+    unsigned int i;
 
-    ctx->arch.amd.didmap = xzalloc_array(domid_t, nr_amd_iommus);
+    ctx->arch.amd.didmap = xmalloc_array(domid_t, nr_amd_iommus);
     if ( !ctx->arch.amd.didmap )
         return -ENOMEM;
+
+    /* Nothing allocated yet, so an early unwind frees nothing. */
+    for ( i = 0; i < nr_amd_iommus; i++ )
+        ctx->arch.amd.didmap[i] = UINT16_MAX;
 
     ctx->arch.amd.iommu_dev_cnt = xzalloc_array(unsigned long, nr_amd_iommus);
     if ( !ctx->arch.amd.iommu_dev_cnt )
@@ -489,7 +509,15 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
     for_each_amd_iommu(iommu)
     {
         ctx->arch.amd.didmap[iommu->index] =
-            iommu_alloc_domid(iommu->domid_map);
+            iommu_alloc_domid(iommu->domid_map, IOMMU_DOMID_MAP_SIZE);
+
+        if ( ctx->arch.amd.didmap[iommu->index] == UINT16_MAX )
+        {
+            amd_iommu_free_dids(ctx);
+            XFREE(ctx->arch.amd.didmap);
+            XFREE(ctx->arch.amd.iommu_dev_cnt);
+            return -ENOSPC;
+        }
     }
 
     /*
@@ -691,6 +719,13 @@ static void cf_check amd_iommu_domain_destroy(struct domain *d)
 
     iommu_identity_map_teardown(d, ctx);
     ASSERT(!ctx->arch.amd.root_table);
+
+    /*
+     * Its devices have been moved to dom_io by now. Return the default
+     * context's DIDs so they can be reused, but keep the arrays: the
+     * domain's p2m is only torn down after this.
+     */
+    amd_iommu_free_dids(ctx);
 }
 
 static int cf_check amd_iommu_group_id(u16 seg, u8 bus, u8 devfn)
