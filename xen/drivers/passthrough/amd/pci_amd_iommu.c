@@ -676,7 +676,7 @@ static int cf_check amd_iommu_add_devfn(struct domain *d, struct pci_dev *pdev,
     if ( !iommu )
         return 0;
 
-    return amd_iommu_setup_domain_device(d, ctx, iommu, pdev->devfn, pdev, NULL);
+    return amd_iommu_setup_domain_device(d, ctx, iommu, devfn, pdev, NULL);
 }
 
 static int cf_check amd_iommu_remove_devfn(struct domain *d, struct pci_dev *pdev,
@@ -687,7 +687,7 @@ static int cf_check amd_iommu_remove_devfn(struct domain *d, struct pci_dev *pde
     if ( !iommu )
         return 0;
 
-    amd_iommu_disable_domain_device(d, iommu, prev_ctx, pdev->devfn, pdev);
+    amd_iommu_disable_domain_device(d, iommu, prev_ctx, devfn, pdev);
 
     return 0;
 }
