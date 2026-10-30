@@ -152,8 +152,11 @@ static inline void iommu_sync_cache(const void *addr, unsigned int size)
         cache_writeback(addr, size);
 }
 
+/* Number of DIDs in a map from iommu_init_domid(). */
+#define IOMMU_DOMID_MAP_SIZE (UINT16_MAX - DOMID_MASK)
+
 unsigned long *iommu_init_domid(domid_t reserve);
-domid_t iommu_alloc_domid(unsigned long *map);
+domid_t iommu_alloc_domid(unsigned long *map, unsigned int nr);
 void iommu_free_domid(domid_t domid, unsigned long *map);
 
 int __must_check cf_check iommu_free_pgtables(struct domain *d, struct iommu_context *ctx);
