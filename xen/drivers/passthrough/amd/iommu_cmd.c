@@ -467,13 +467,18 @@ void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
     const struct amd_iommu_dte *dte = iommu->dev_table.buffer;
 
     /*
-     * An entry with TV clear translates nothing, so there is nothing cached
-     * to invalidate. Skipping it also avoids naming such an entry at all:
-     * Linux prefills V and TV together and never invalidates a V-only entry,
-     * and an emulated IOMMU has been seen to reject the command outright and
-     * halt its command processor, starving every later invalidation.
+     * An entry that has never had TV set translates nothing, so there is
+     * nothing cached to invalidate. Skipping it also avoids naming such an
+     * entry at all: Linux prefills V and TV together and never invalidates a
+     * V-only entry, and an emulated IOMMU has been seen to reject the command
+     * outright and halt its command processor.
+     *
+     * Callers pass a real domid only when the entry was translating for that
+     * domain until just now, as when a device is detached and TV has just
+     * been cleared. The IOMMU may still hold the old entry, so it must be
+     * invalidated regardless of what the table says now.
      */
-    if ( dte && !dte[bdf].tv )
+    if ( dte && !dte[bdf].tv && domid == DOMID_INVALID )
         return;
 
     /*
