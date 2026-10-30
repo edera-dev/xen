@@ -2783,16 +2783,28 @@ static int cf_check intel_iommu_reattach(struct domain *d,
 {
     int ret, rc;
     const struct acpi_drhd_unit *drhd = acpi_find_matched_drhd_unit(pdev);
+    struct domain *source;
+    bool first_device;
 
     if ( !pdev || !drhd )
         return -EINVAL;
+
+    /*
+     * Install the posted interrupt hooks when a domain gets its first device
+     * and remove them when it loses its last, as reassign_device_ownership()
+     * did. The device is still on its previous owner's list at this point.
+     */
+    source = pdev->domain;
+    first_device = source != d && !has_arch_pdevs(d);
+    if ( first_device )
+        vmx_pi_hooks_assign(d);
 
     vtd_note_domu_device(d);
 
     ret = intel_iommu_dev_rmrr(d, pdev, ctx, false);
 
     if ( ret )
-        return ret;
+        goto fail_hooks;
 
     ret = apply_context(d, ctx, pdev, pdev->devfn, prev_ctx);
 
@@ -2804,7 +2816,7 @@ static int cf_check intel_iommu_reattach(struct domain *d,
                    " Unable to unmap RMRR from d%dc%d for %pp (%d)\n",
                    d->domain_id, ctx->id, &pdev->sbdf, rc);
 
-        return ret;
+        goto fail_hooks;
     }
 
     /*
@@ -2819,7 +2831,16 @@ static int cf_check intel_iommu_reattach(struct domain *d,
                " Unable to unmap previous RMRR from %pd for %pp (%d)\n",
                pdev->domain, &pdev->sbdf, rc);
 
+    if ( source && source != d && list_is_singular(&source->pdev_list) )
+        vmx_pi_hooks_deassign(source);
+
     pci_vtd_quirk(pdev);
+
+    return ret;
+
+ fail_hooks:
+    if ( first_device )
+        vmx_pi_hooks_deassign(d);
 
     return ret;
 }
