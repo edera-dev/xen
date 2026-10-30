@@ -1226,14 +1226,37 @@ void __init iommu_free(struct acpi_drhd_unit *drhd)
         agaw = 64;                              \
     agaw; })
 
+/* Return a context's DIDs to their IOMMUs' maps. */
+static void intel_iommu_free_dids(struct iommu_context *ctx)
+{
+    struct acpi_drhd_unit *drhd;
+
+    if ( !ctx->arch.vtd.didmap )
+        return;
+
+    for_each_drhd_unit(drhd)
+    {
+        unsigned int index = drhd->iommu->index;
+
+        iommu_free_domid(ctx->arch.vtd.didmap[index],
+                         drhd->iommu->domid_bitmap);
+        ctx->arch.vtd.didmap[index] = UINT16_MAX;
+    }
+}
+
 static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_context *ctx,
                                              u32 flags)
 {
     struct acpi_drhd_unit *drhd;
+    unsigned int i;
 
-    ctx->arch.vtd.didmap = xzalloc_array(domid_t, nr_iommus);
+    ctx->arch.vtd.didmap = xmalloc_array(domid_t, nr_iommus);
     if ( !ctx->arch.vtd.didmap )
         return -ENOMEM;
+
+    /* Nothing allocated yet, so an early unwind frees nothing. */
+    for ( i = 0; i < nr_iommus; i++ )
+        ctx->arch.vtd.didmap[i] = UINT16_MAX;
 
     ctx->arch.vtd.iommu_dev_cnt = xzalloc_array(unsigned long, nr_iommus);
     if ( !ctx->arch.vtd.iommu_dev_cnt )
@@ -1268,7 +1291,16 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
     for_each_drhd_unit(drhd)
     {
         ctx->arch.vtd.didmap[drhd->iommu->index] =
-            iommu_alloc_domid(drhd->iommu->domid_bitmap);
+            iommu_alloc_domid(drhd->iommu->domid_bitmap,
+                              cap_ndoms(drhd->iommu->cap));
+
+        if ( ctx->arch.vtd.didmap[drhd->iommu->index] == UINT16_MAX )
+        {
+            intel_iommu_free_dids(ctx);
+            XFREE(ctx->arch.vtd.didmap);
+            XFREE(ctx->arch.vtd.iommu_dev_cnt);
+            return -ENOSPC;
+        }
     }
 
     if ( !ctx->opaque )
@@ -1585,6 +1617,13 @@ static void cf_check iommu_domain_teardown(struct domain *d)
         return;
 
     ASSERT(!ctx->arch.vtd.pgd_maddr);
+
+    /*
+     * Its devices have been moved to dom_io by now. Return the default
+     * context's DIDs so they can be reused, but keep the arrays: the
+     * domain's p2m is only torn down after this.
+     */
+    intel_iommu_free_dids(ctx);
 }
 
 static int __must_check cf_check intel_iommu_map_page(
