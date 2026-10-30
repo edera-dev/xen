@@ -593,6 +593,21 @@ static int cf_check amd_iommu_context_teardown(struct domain *d,
     return arch_iommu_context_teardown(d, ctx, flags);
 }
 
+/*
+ * Once an IOMMU can no longer confirm invalidations, nothing it caches can be
+ * relied on to go away, so don't let it isolate a device for anyone but the
+ * hardware domain or a system domain.
+ */
+static int amd_iommu_usable_for(const struct amd_iommu *iommu,
+                                const struct domain *d)
+{
+    if ( iommu->cmd_buffer_dead && !is_hardware_domain(d) &&
+         !is_system_domain(d) )
+        return -EIO;
+
+    return 0;
+}
+
 static int cf_check amd_iommu_attach(
     struct domain *d, struct pci_dev *pdev, struct iommu_context *ctx)
 {
@@ -605,6 +620,10 @@ static int cf_check amd_iommu_attach(
 
     if ( !iommu )
         return 0;
+
+    ret = amd_iommu_usable_for(iommu, d);
+    if ( ret )
+        return ret;
 
     ivrs_mappings = get_ivrs_mappings(pdev->seg);
     req_id = get_dma_requestor_id(pdev->seg, bdf);
@@ -668,9 +687,14 @@ static int cf_check amd_iommu_add_devfn(struct domain *d, struct pci_dev *pdev,
                                         u16 devfn, struct iommu_context *ctx)
 {
     struct amd_iommu *iommu = find_iommu_for_device(pdev->sbdf);
+    int rc;
 
     if ( !iommu )
         return 0;
+
+    rc = amd_iommu_usable_for(iommu, d);
+    if ( rc )
+        return rc;
 
     return amd_iommu_setup_domain_device(d, ctx, iommu, devfn, pdev, NULL);
 }
@@ -700,6 +724,10 @@ static int cf_check amd_iommu_reattach(struct domain *d,
 
     if ( !iommu )
         return 0;
+
+    ret = amd_iommu_usable_for(iommu, d);
+    if ( ret )
+        return ret;
 
     req_id = get_dma_requestor_id(pdev->seg, pdev->sbdf.bdf);
     ivrs_mapping = &get_ivrs_mappings(pdev->seg)[req_id];
