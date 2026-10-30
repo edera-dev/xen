@@ -263,6 +263,11 @@ struct identity_map {
     unsigned int count;
 };
 
+/*
+ * The helpers below take the exclusive frame range [base_pfn, end_pfn), as
+ * computed by iommu_identity_mapping().
+ */
+
 static int unmap_identity_region(struct domain *d, struct iommu_context *ctx,
                                  unsigned int base_pfn, unsigned int end_pfn)
 {
@@ -286,8 +291,8 @@ static int unmap_identity_region(struct domain *d, struct iommu_context *ctx,
     }
     else
     {
-        size_t page_count = end_pfn - base_pfn + 1;
-        unsigned int flush_flags;
+        size_t page_count = end_pfn - base_pfn;
+        unsigned int flush_flags = 0;
 
         ret = iommu_unmap(d, _dfn(base_pfn), page_count, 0, &flush_flags,
                           ctx->id);
@@ -306,24 +311,21 @@ static int map_identity_region(struct domain *d, struct iommu_context *ctx,
                                unsigned int base_pfn, unsigned int end_pfn,
                                p2m_access_t p2ma, unsigned int flag)
 {
-    int ret = 0;
+    int ret = 0, rc;
     unsigned int flush_flags = 0;
-    size_t page_count = end_pfn - base_pfn + 1;
+    size_t i = 0, page_count = end_pfn - base_pfn;
 
     if ( ctx->opaque && !ctx->id )
     {
         #ifdef CONFIG_HVM
-        int i;
         this_cpu(iommu_dont_flush_iotlb) = true;
 
-        for (i = 0; i < page_count; i++)
+        for ( i = 0; i < page_count; i++ )
         {
             ret = p2m_add_identity_entry(d, base_pfn + i, p2ma, flag);
 
             if ( ret )
                 break;
-
-            base_pfn++;
         }
         this_cpu(iommu_dont_flush_iotlb) = false;
         #else
@@ -332,9 +334,7 @@ static int map_identity_region(struct domain *d, struct iommu_context *ctx,
     }
     else
     {
-        int i;
-
-        for (i = 0; i < page_count; i++)
+        for ( i = 0; i < page_count; i++ )
         {
             ret = iommu_map(d, _dfn(base_pfn + i), _mfn(base_pfn + i), 1,
                             p2m_access_to_iommu_flags(p2ma), &flush_flags,
@@ -345,10 +345,19 @@ static int map_identity_region(struct domain *d, struct iommu_context *ctx,
         }
     }
 
-    ret = iommu_iotlb_flush(d, _dfn(base_pfn), page_count, flush_flags,
-                            ctx->id);
+    rc = iommu_iotlb_flush(d, _dfn(base_pfn), page_count, flush_flags,
+                           ctx->id);
 
-    return ret;
+    /* Don't leave part of a region mapped that the caller will forget. */
+    if ( ret )
+    {
+        if ( i )
+            unmap_identity_region(d, ctx, base_pfn, base_pfn + i);
+
+        return ret;
+    }
+
+    return rc;
 }
 
 /* p2m_access_x removes the mapping */
