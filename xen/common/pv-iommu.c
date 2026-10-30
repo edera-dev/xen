@@ -91,6 +91,29 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
     {
         *page = NULL;
         ret = 0;
+
+        /*
+         * Unmap and context teardown drop a reference on every mapped frame
+         * that has a struct page_info, and MMIO can have one too (e.g. a BAR
+         * below max_page, owned by dom_io). Take the matching reference here
+         * so the two stay balanced.
+         */
+        if ( mfn_valid(*mfn) )
+        {
+            *page = mfn_to_page(*mfn);
+
+            if ( !page_get_owner_and_reference(*page) )
+            {
+                *page = NULL;
+                ret = -EPERM;
+            }
+            else if ( !iommu_get_mapped_page_type(*page) )
+            {
+                put_page(*page);
+                *page = NULL;
+                ret = -EBUSY;
+            }
+        }
     }
     else
     {
