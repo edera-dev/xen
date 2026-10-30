@@ -2433,8 +2433,14 @@ static int intel_iommu_cleanup_mappings(struct iommu_context *ctx,
         {
             uint64_t pte_maddr = dma_pte_addr(pgd[i]);
 
+            /*
+             * A superpage in a level-N table spans the (N-1) levels below it,
+             * e.g. 2M (order 9) at level 2 and 1G (order 18) at level 3.
+             */
             if ( dma_pte_superpage(pgd[i]) )
-                rc = intel_iommu_cleanup_superpage(ctx, nr_pt_levels * SUPERPAGE_ORDER,
+                rc = intel_iommu_cleanup_superpage(ctx,
+                                                   (nr_pt_levels - 1) *
+                                                   SUPERPAGE_ORDER,
                                                    pte_maddr, preempt);
             else if ( nr_pt_levels > 2 )
                 /* Next level is not PTE */
