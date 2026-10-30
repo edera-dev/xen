@@ -49,12 +49,28 @@ static void reset_cmd_buffer(struct amd_iommu *iommu)
     spin_unlock_irqrestore(&iommu->lock, flags);
 }
 
+/*
+ * Called when invalidations can no longer be issued or confirmed. From here
+ * on nothing is sent, so nothing cached by this IOMMU can be trusted to go
+ * away.
+ */
+void amd_iommu_cmd_buffer_died(struct amd_iommu *iommu)
+{
+    if ( iommu->cmd_buffer_dead )
+        return;
+
+    iommu->cmd_buffer_dead = true;
+    printk(XENLOG_ERR "AMD IOMMU %pp: command buffer is dead\n",
+           &iommu->sbdf);
+}
+
 static void send_iommu_command(struct amd_iommu *iommu,
                                const uint32_t cmd[4])
 {
     uint32_t tail;
     unsigned long flags;
     s_time_t timeout;
+    bool died = false;
 
     spin_lock_irqsave(&iommu->lock, flags);
 
@@ -75,7 +91,7 @@ static void send_iommu_command(struct amd_iommu *iommu,
             printk(XENLOG_ERR
                    "AMD IOMMU %pp: command buffer never drains, "
                    "giving up on invalidation\n", &iommu->sbdf);
-            iommu->cmd_buffer_dead = true;
+            died = true;
             goto out;
         }
         cpu_relax();
@@ -90,6 +106,9 @@ static void send_iommu_command(struct amd_iommu *iommu,
 
  out:
     spin_unlock_irqrestore(&iommu->lock, flags);
+
+    if ( died )
+        amd_iommu_cmd_buffer_died(iommu);
 }
 
 /*
@@ -99,6 +118,108 @@ static void send_iommu_command(struct amd_iommu *iommu,
  */
 DEFINE_PER_CPU(uint64_t, amd_iommu_cw_done);
 DEFINE_PER_CPU(uint64_t, amd_iommu_cw_ns);
+
+static void invalidate_iommu_all(struct amd_iommu *iommu);
+static void invalidate_iommu_pages(struct amd_iommu *iommu,
+                                   u64 io_addr, u16 domain_id, u16 order);
+static void invalidate_dev_table_entry(struct amd_iommu *iommu,
+                                       u16 device_id);
+static void invalidate_interrupt_table(struct amd_iommu *iommu, u16 device_id);
+static bool skip_dte_invalidation(const struct amd_iommu *iommu,
+                                  uint16_t bdf);
+
+/*
+ * Queue commands that leave nothing cached that Xen relies on being gone:
+ * Invalidate All where the IOMMU has it. Otherwise name everything Xen can
+ * have caused to be cached: the TLB entries of every DomainID currently
+ * allocated on this IOMMU (a DID is only freed after its last invalidation
+ * has been confirmed, and 0 is never handed out), and every valid device
+ * table entry and interrupt table behind this IOMMU, leaving out the
+ * entries skip_dte_invalidation() says an emulated IOMMU would reject.
+ */
+static void queue_invalidate_everything(struct amd_iommu *iommu)
+{
+    const struct amd_iommu_dte *dte = iommu->dev_table.buffer;
+    const struct ivrs_mappings *ivrs = get_ivrs_mappings(iommu->sbdf.seg);
+    unsigned int i;
+
+    if ( iommu->features.flds.ia_sup )
+    {
+        invalidate_iommu_all(iommu);
+        return;
+    }
+
+    for ( i = find_next_bit(iommu->domid_map, IOMMU_DOMID_MAP_SIZE, 1);
+          i < IOMMU_DOMID_MAP_SIZE;
+          i = find_next_bit(iommu->domid_map, IOMMU_DOMID_MAP_SIZE, i + 1) )
+        invalidate_iommu_pages(iommu, INV_IOMMU_ALL_PAGES_ADDRESS, i, 0);
+
+    if ( !dte || !ivrs )
+        return;
+
+    for ( i = 0; i < ivrs_bdf_entries; i++ )
+    {
+        if ( ivrs[i].iommu != iommu || !dte[i].v )
+            continue;
+
+        if ( !skip_dte_invalidation(iommu, i) )
+            invalidate_dev_table_entry(iommu, i);
+
+        if ( dte[i].iv )
+            invalidate_interrupt_table(iommu, i);
+    }
+}
+
+/* Queue a completion wait and poll for it, giving up at the deadline. */
+static bool completion_wait(struct amd_iommu *iommu, uint64_t *poll_slot,
+                            const uint32_t cmd[4], s_time_t timeout)
+{
+    ACCESS_ONCE(*poll_slot) = CMD_COMPLETION_INIT;
+
+    send_iommu_command(iommu, cmd);
+
+    if ( iommu->cmd_buffer_dead )
+        return false;
+
+    while ( ACCESS_ONCE(*poll_slot) != CMD_COMPLETION_DONE )
+    {
+        if ( NOW() > timeout )
+            return false;
+        cpu_relax();
+    }
+
+    return true;
+}
+
+static void dump_cmd_buffer_state(struct amd_iommu *iommu, bool iotlb,
+                                  paddr_t store)
+{
+    const uint32_t *ring = iommu->cmd_buffer.buffer;
+    unsigned int i;
+
+    printk(XENLOG_WARNING
+           "AMD IOMMU %pp: %scompletion wait timed out "
+           "(head %#x tail %#x status %#x store %#"PRIpaddr")\n",
+           &iommu->sbdf, iotlb ? "iotlb " : "",
+           readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET),
+           readl(iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET),
+           readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET),
+           store);
+
+    for ( i = 0; i < 2; ++i )
+        printk(XENLOG_WARNING
+               "AMD IOMMU %pp: ring[%u] %08x %08x %08x %08x\n",
+               &iommu->sbdf, i, ring[i * 4], ring[i * 4 + 1],
+               ring[i * 4 + 2], ring[i * 4 + 3]);
+
+    printk(XENLOG_WARNING
+           "AMD IOMMU %pp: event log head %#x tail %#x\n",
+           &iommu->sbdf,
+           readl(iommu->mmio_base + IOMMU_EVENT_LOG_HEAD_OFFSET),
+           readl(iommu->mmio_base + IOMMU_EVENT_LOG_TAIL_OFFSET));
+
+    iommu_check_event_log(iommu);
+}
 
 static void flush_command_buffer(struct amd_iommu *iommu,
                                  unsigned int timeout_base)
@@ -115,7 +236,7 @@ static void flush_command_buffer(struct amd_iommu *iommu,
         CMD_COMPLETION_DONE,
         0
     };
-    s_time_t start, timeout, cw_start;
+    s_time_t cw_start;
     static unsigned int __read_mostly threshold = 1;
 
     if ( iommu->cmd_buffer_dead )
@@ -124,73 +245,57 @@ static void flush_command_buffer(struct amd_iommu *iommu,
     this_cpu(amd_iommu_cw_done)++;
     cw_start = NOW();
 
-    ACCESS_ONCE(*this_poll_slot) = CMD_COMPLETION_INIT;
-
-    send_iommu_command(iommu, cmd);
+    if ( completion_wait(iommu, this_poll_slot, cmd,
+                         NOW() + (timeout_base ?: 100) * MILLISECS(threshold)) )
+    {
+        /* The ring is answering. */
+        iommu->cmd_failures = 0;
+        this_cpu(amd_iommu_cw_ns) += NOW() - cw_start;
+        return;
+    }
 
     if ( iommu->cmd_buffer_dead )
         return;
 
-    start = NOW();
-    timeout = start + (timeout_base ?: 100) * MILLISECS(threshold);
-    while ( ACCESS_ONCE(*this_poll_slot) != CMD_COMPLETION_DONE )
+    threshold |= threshold << 1;
+    dump_cmd_buffer_state(iommu, timeout_base, addr);
+
+    /*
+     * The commands this wait was meant to confirm may not have run, and
+     * restarting the ring below discards anything still queued, including
+     * other CPUs' invalidations. Returning now would let callers go on to
+     * free page tables or frames the IOMMU may still have cached. So only
+     * return once a full invalidation is confirmed to have completed after
+     * the restart, and declare the command buffer dead if that can't be
+     * done.
+     */
+    for ( ; ; )
     {
-        if ( NOW() > timeout )
+        if ( ++iommu->cmd_failures >= 8 )
         {
-            threshold |= threshold << 1;
-            /*
-             * An IOMMU that never stores the completion word would otherwise
-             * wedge us here forever, so report what it did with the command
-             * and carry on rather than hanging the boot.
-             */
-            printk(XENLOG_WARNING
-                   "AMD IOMMU %pp: %scompletion wait timed out "
-                   "(head %#x tail %#x status %#x store %#"PRIpaddr")\n",
-                   &iommu->sbdf,
-                   timeout_base ? "iotlb " : "",
-                   readl(iommu->mmio_base + IOMMU_CMD_BUFFER_HEAD_OFFSET),
-                   readl(iommu->mmio_base + IOMMU_CMD_BUFFER_TAIL_OFFSET),
-                   readl(iommu->mmio_base + IOMMU_STATUS_MMIO_OFFSET),
-                   addr);
-            {
-                const uint32_t *ring = iommu->cmd_buffer.buffer;
-                unsigned int i;
-
-                for ( i = 0; i < 2; ++i )
-                    printk(XENLOG_WARNING
-                           "AMD IOMMU %pp: ring[%u] %08x %08x %08x %08x\n",
-                           &iommu->sbdf, i, ring[i * 4], ring[i * 4 + 1],
-                           ring[i * 4 + 2], ring[i * 4 + 3]);
-            }
-            printk(XENLOG_WARNING
-                   "AMD IOMMU %pp: event log head %#x tail %#x\n",
-                   &iommu->sbdf,
-                   readl(iommu->mmio_base + IOMMU_EVENT_LOG_HEAD_OFFSET),
-                   readl(iommu->mmio_base + IOMMU_EVENT_LOG_TAIL_OFFSET));
-            iommu_check_event_log(iommu);
-            /*
-             * Restart the ring rather than give up on it. Only stop using it
-             * altogether once restarting has repeatedly failed to help, so a
-             * genuinely dead command buffer cannot cost a timeout per flush.
-             */
-            reset_cmd_buffer(iommu);
-
-            if ( ++iommu->cmd_failures >= 8 )
-            {
-                printk(XENLOG_WARNING
-                       "AMD IOMMU %pp: giving up on the command buffer\n",
-                       &iommu->sbdf);
-                iommu->cmd_buffer_dead = true;
-            }
+            printk(XENLOG_ERR
+                   "AMD IOMMU %pp: giving up on the command buffer\n",
+                   &iommu->sbdf);
+            amd_iommu_cmd_buffer_died(iommu);
             return;
         }
-        cpu_relax();
+
+        reset_cmd_buffer(iommu);
+        queue_invalidate_everything(iommu);
+
+        if ( completion_wait(iommu, this_poll_slot, cmd,
+                             NOW() + 100 * MILLISECS(threshold)) )
+        {
+            printk(XENLOG_WARNING
+                   "AMD IOMMU %pp: command buffer restarted, all caches invalidated\n",
+                   &iommu->sbdf);
+            iommu->cmd_failures = 0;
+            return;
+        }
+
+        if ( iommu->cmd_buffer_dead )
+            return;
     }
-
-    /* The ring is answering again. */
-    iommu->cmd_failures = 0;
-
-    this_cpu(amd_iommu_cw_ns) += NOW() - cw_start;
 }
 
 /* Build low level iommu command messages */
