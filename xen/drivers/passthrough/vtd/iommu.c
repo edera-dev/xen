@@ -2802,15 +2802,22 @@ static int cf_check intel_iommu_reattach(struct domain *d,
         if ( (rc = intel_iommu_dev_rmrr(d, pdev, ctx, true)) )
             printk(XENLOG_WARNING VTDPREFIX
                    " Unable to unmap RMRR from d%dc%d for %pp (%d)\n",
-                   d->domain_id, prev_ctx->id, &pdev->sbdf, rc);
+                   d->domain_id, ctx->id, &pdev->sbdf, rc);
 
         return ret;
     }
 
-    /* Remove previous context RMRR  */
-    if ( (rc = intel_iommu_dev_rmrr(d, pdev, prev_ctx, true)) )
+    /*
+     * Remove the RMRR from the previous context, which belongs to the
+     * device's previous owner: pdev->domain is only updated once this
+     * returns. As upstream did, leave it mapped for the hardware domain,
+     * since firmware may keep using the region.
+     */
+    if ( !is_hardware_domain(pdev->domain) &&
+         (rc = intel_iommu_dev_rmrr(pdev->domain, pdev, prev_ctx, true)) )
         printk(XENLOG_WARNING VTDPREFIX
-               " Unable to unmap previous RMRR for %pp (%d)\n", &pdev->sbdf, rc);
+               " Unable to unmap previous RMRR from %pd for %pp (%d)\n",
+               pdev->domain, &pdev->sbdf, rc);
 
     pci_vtd_quirk(pdev);
 
