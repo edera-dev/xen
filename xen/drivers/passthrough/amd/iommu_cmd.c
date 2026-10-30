@@ -461,40 +461,44 @@ void amd_iommu_flush_pages(struct domain *d, struct iommu_context *ctx,
     _amd_iommu_flush_pages(d, ctx, __dfn_to_daddr(dfn), order);
 }
 
-void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
-                            domid_t domid)
+/*
+ * An emulated AMD-Vi (seen on Google Compute Engine) halts its command
+ * processor with ILLEGAL_COMMAND_ERROR on two forms of
+ * INVALIDATE_DEVTAB_ENTRY that Linux never sends: one naming an entry with
+ * TV clear (Linux prefills V and TV together, Xen prefills V alone), and,
+ * with amd-iommu-guest-pt-levels set, one naming an entry deeper than Linux
+ * would program. Leave those out when Xen runs as a guest. On bare metal
+ * every entry Xen changes is invalidated.
+ */
+static bool skip_dte_invalidation(const struct amd_iommu *iommu,
+                                  uint16_t bdf)
 {
     const struct amd_iommu_dte *dte = iommu->dev_table.buffer;
 
-    /*
-     * An entry that has never had TV set translates nothing, so there is
-     * nothing cached to invalidate. Skipping it also avoids naming such an
-     * entry at all: Linux prefills V and TV together and never invalidates a
-     * V-only entry, and an emulated IOMMU has been seen to reject the command
-     * outright and halt its command processor.
-     *
-     * Callers pass a real domid only when the entry was translating for that
-     * domain until just now, as when a device is detached and TV has just
-     * been cleared. The IOMMU may still hold the old entry, so it must be
-     * invalidated regardless of what the table says now.
-     */
-    if ( dte && !dte[bdf].tv && domid == DOMID_INVALID )
-        return;
+    if ( !cpu_has_hypervisor || !dte )
+        return false;
+
+    if ( !dte[bdf].tv )
+        return true;
+
+    return amd_iommu_guest_pt_levels &&
+           dte[bdf].paging_mode > amd_iommu_guest_pt_levels;
+}
+
+void amd_iommu_flush_device(struct amd_iommu *iommu, uint16_t bdf,
+                            domid_t domid)
+{
+    if ( !skip_dte_invalidation(iommu, bdf) )
+    {
+        invalidate_dev_table_entry(iommu, bdf);
+        flush_command_buffer(iommu, 0);
+    }
 
     /*
-     * Likewise skip an entry deeper than the shape guests are capped to. Xen
-     * derives the hardware domain's depth from the address width and lands on
-     * five levels where Linux programs three, and an IOMMU that has only seen
-     * Linux may reject the command naming such an entry.
+     * Invalidate the IOMMU TLB entries of the domain the entry translated
+     * for, even if the entry itself had to be left out above: they are
+     * tagged by DomainID, not by entry.
      */
-    if ( dte && amd_iommu_guest_pt_levels &&
-         dte[bdf].paging_mode > amd_iommu_guest_pt_levels )
-        return;
-
-    invalidate_dev_table_entry(iommu, bdf);
-    flush_command_buffer(iommu, 0);
-
-    /* Also invalidate IOMMU TLB entries when flushing the DTE. */
     if ( domid != DOMID_INVALID )
     {
         invalidate_iommu_pages(iommu, INV_IOMMU_ALL_PAGES_ADDRESS, domid, 0);
