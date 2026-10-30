@@ -50,9 +50,58 @@ static void reset_cmd_buffer(struct amd_iommu *iommu)
 }
 
 /*
+ * Stop every device that a domain other than the hardware domain owns
+ * behind an IOMMU whose command buffer has died: turn off its bus
+ * mastering so it can't use anything the IOMMU still caches, mark it
+ * broken so it isn't handed to a guest again, and crash its owner.
+ * Runs as a tasklet so it can take pcidevs_lock.
+ */
+static void cf_check amd_iommu_contain_dead(void *unused)
+{
+    struct domain *d;
+
+    pcidevs_lock();
+    rcu_read_lock(&domlist_read_lock);
+
+    for_each_domain ( d )
+    {
+        struct pci_dev *pdev;
+
+        if ( is_hardware_domain(d) )
+            continue;
+
+        read_lock(&d->pci_lock);
+        for_each_pdev ( d, pdev )
+        {
+            const struct amd_iommu *iommu = find_iommu_for_device(pdev->sbdf);
+            uint16_t cmd;
+
+            if ( !iommu || !iommu->cmd_buffer_dead )
+                continue;
+
+            cmd = pci_conf_read16(pdev->sbdf, PCI_COMMAND);
+            pci_conf_write16(pdev->sbdf, PCI_COMMAND,
+                             cmd & ~PCI_COMMAND_MASTER);
+            pdev->broken = true;
+
+            printk(XENLOG_ERR
+                   "AMD IOMMU %pp: stopped %pp and crashing %pd\n",
+                   &iommu->sbdf, &pdev->sbdf, d);
+            domain_crash(d);
+        }
+        read_unlock(&d->pci_lock);
+    }
+
+    rcu_read_unlock(&domlist_read_lock);
+    pcidevs_unlock();
+}
+
+static DECLARE_TASKLET(amd_iommu_dead_tasklet, amd_iommu_contain_dead, NULL);
+
+/*
  * Called when invalidations can no longer be issued or confirmed. From here
  * on nothing is sent, so nothing cached by this IOMMU can be trusted to go
- * away.
+ * away: stop relying on it for any domain but the hardware domain.
  */
 void amd_iommu_cmd_buffer_died(struct amd_iommu *iommu)
 {
@@ -62,6 +111,8 @@ void amd_iommu_cmd_buffer_died(struct amd_iommu *iommu)
     iommu->cmd_buffer_dead = true;
     printk(XENLOG_ERR "AMD IOMMU %pp: command buffer is dead\n",
            &iommu->sbdf);
+
+    tasklet_schedule(&amd_iommu_dead_tasklet);
 }
 
 static void send_iommu_command(struct amd_iommu *iommu,
