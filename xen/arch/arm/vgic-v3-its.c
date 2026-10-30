@@ -735,14 +735,24 @@ static int its_discard_event(struct virt_its *its,
 static void its_unmap_device(struct virt_its *its, uint32_t devid)
 {
     dev_table_entry_t itt;
-    uint64_t evid;
+    uint64_t evid, nr_events;
 
     spin_lock(&its->its_lock);
 
     if ( its_get_itt(its, devid, &itt) )
         goto out;
 
-    for ( evid = 0; evid < DEV_TABLE_ITT_SIZE(itt); evid++ )
+    /*
+     * The device table lives in guest memory, so its ITT size can say
+     * anything up to 2^32. Only events below the count Xen set up at MAPD
+     * time can have anything to discard, so don't walk further than that.
+     */
+    nr_events = min_t(uint64_t, DEV_TABLE_ITT_SIZE(itt),
+                      gicv3_its_guest_device_eventids(its->d,
+                                                      its->doorbell_address,
+                                                      devid));
+
+    for ( evid = 0; evid < nr_events; evid++ )
         /* Don't care about errors here, clean up as much as possible. */
         its_discard_event(its, devid, evid);
 

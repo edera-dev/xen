@@ -977,6 +977,26 @@ static struct pending_irq *get_event_pending_irq(struct domain *d,
     return pirq;
 }
 
+/*
+ * Number of event IDs Xen set up for a guest device at MAPD time, or 0 if
+ * the device isn't mapped.
+ */
+unsigned int gicv3_its_guest_device_eventids(struct domain *d,
+                                             paddr_t vdoorbell_address,
+                                             uint32_t vdevid)
+{
+    struct its_device *dev;
+    unsigned int nr = 0;
+
+    spin_lock(&d->arch.vgic.its_devices_lock);
+    dev = get_its_device(d, vdoorbell_address, vdevid);
+    if ( dev )
+        nr = dev->eventids;
+    spin_unlock(&d->arch.vgic.its_devices_lock);
+
+    return nr;
+}
+
 struct pending_irq *gicv3_its_get_event_pending_irq(struct domain *d,
                                                     paddr_t vdoorbell_address,
                                                     uint32_t vdevid,
