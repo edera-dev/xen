@@ -2572,6 +2572,53 @@ static void vtd_note_domu_device(const struct domain *d)
 #endif
 }
 
+/*
+ * An RMRR listing several devices is identity mapped for each of them, so
+ * assigning one of those devices to a domU would map the region into that
+ * domU while other owners use it too. Refuse that unless the toolstack
+ * asked for it with rdm_policy=relaxed (XEN_DOMCTL_DEV_RDM_RELAXED), as
+ * intel_iommu_assign_device() did before the context rework.
+ *
+ * TODO: assigning all the devices that share an RMRR to the same domain
+ * together would be safe, but there is no interface for that.
+ */
+static int cf_check intel_iommu_check_assign(const struct domain *d,
+                                             const struct pci_dev *pdev,
+                                             uint32_t flag)
+{
+    struct acpi_rmrr_unit *rmrr;
+    bool relaxed = flag & XEN_DOMCTL_DEV_RDM_RELAXED;
+    uint8_t devfn = pdev->devfn;
+    uint16_t bdf;
+    unsigned int i;
+
+    /* Phantom functions issue requests with their own requester IDs. */
+    do {
+        for_each_rmrr_device ( rmrr, bdf, i )
+        {
+            if ( rmrr->segment != pdev->seg ||
+                 bdf != PCI_BDF(pdev->bus, devfn) ||
+                 rmrr->scope.devices_cnt <= 1 )
+                continue;
+
+            printk(XENLOG_GUEST "%s" VTDPREFIX
+                   " %s %pp with RMRR at %"PRIx64" shared by %u devices to %pd\n",
+                   relaxed ? XENLOG_WARNING : XENLOG_ERR,
+                   relaxed ? "Assigning" : "Refusing to assign",
+                   &PCI_SBDF(pdev->seg, pdev->bus, devfn), rmrr->base_address,
+                   rmrr->scope.devices_cnt, d);
+
+            if ( !relaxed )
+                return -EPERM;
+        }
+
+        devfn += pdev->phantom_stride;
+    } while ( devfn != pdev->devfn &&
+              PCI_SLOT(devfn) == PCI_SLOT(pdev->devfn) );
+
+    return 0;
+}
+
 static int cf_check intel_iommu_attach(struct domain *d, struct pci_dev *pdev,
                                        struct iommu_context *ctx)
 {
@@ -2738,6 +2785,7 @@ static const struct iommu_ops __initconst_cf_clobber vtd_ops = {
     .attach = intel_iommu_attach,
     .detach = intel_iommu_detach,
     .reattach = intel_iommu_reattach,
+    .check_assign = intel_iommu_check_assign,
     .add_devfn = intel_iommu_add_devfn,
     .remove_devfn = intel_iommu_remove_devfn,
     .teardown = iommu_domain_teardown,
