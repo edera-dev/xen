@@ -343,6 +343,12 @@ struct iommu_ops {
                     struct iommu_context *ctx);
 
 #ifdef CONFIG_HAS_PCI
+    /*
+     * Optional: veto assigning pdev to domain d (neither the hardware domain
+     * nor a system domain), given the XEN_DOMCTL_DEV_* assignment flags.
+     */
+    int (*check_assign)(const struct domain *d, const struct pci_dev *pdev,
+                        uint32_t flag);
     int (*get_device_group_id)(uint16_t seg, uint8_t bus, uint8_t devfn);
     int (*add_devfn)(struct domain *d, struct pci_dev *pdev, u16 devfn,
                      struct iommu_context *ctx);
