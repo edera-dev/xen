@@ -569,7 +569,6 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
 static int cf_check amd_iommu_context_teardown(struct domain *d,
                                         struct iommu_context *ctx, u32 flags)
 {
-    struct amd_iommu *iommu;
     pcidevs_lock();
 
     /*
@@ -586,12 +585,9 @@ static int cf_check amd_iommu_context_teardown(struct domain *d,
 
     ASSERT(ctx->arch.amd.didmap);
 
-    for_each_amd_iommu(iommu)
-    {
-        iommu_free_domid(ctx->arch.amd.didmap[iommu->index], iommu->domid_map);
-    }
-
-    xfree(ctx->arch.amd.didmap);
+    amd_iommu_free_dids(ctx);
+    XFREE(ctx->arch.amd.didmap);
+    XFREE(ctx->arch.amd.iommu_dev_cnt);
 
     pcidevs_unlock();
     return arch_iommu_context_teardown(d, ctx, flags);
