@@ -2558,6 +2558,20 @@ static int intel_iommu_dev_rmrr(struct domain *d, struct pci_dev *pdev,
     return 0;
 }
 
+/*
+ * Without interrupt remapping, nothing stops a device given to a domU from
+ * writing an arbitrary MSI address/data pair. Have the PV int $0x82 entry
+ * path check for such writes from then on, as reassign_device_ownership()
+ * did before the context rework.
+ */
+static void vtd_note_domu_device(const struct domain *d)
+{
+#ifdef CONFIG_PV
+    if ( !iommu_intremap && !is_hardware_domain(d) && !is_system_domain(d) )
+        untrusted_msi = true;
+#endif
+}
+
 static int cf_check intel_iommu_attach(struct domain *d, struct pci_dev *pdev,
                                        struct iommu_context *ctx)
 {
@@ -2566,6 +2580,8 @@ static int cf_check intel_iommu_attach(struct domain *d, struct pci_dev *pdev,
 
     if ( !pdev || !drhd )
         return -EINVAL;
+
+    vtd_note_domu_device(d);
 
     ret = intel_iommu_dev_rmrr(d, pdev, ctx, false);
 
@@ -2614,6 +2630,8 @@ static int cf_check intel_iommu_reattach(struct domain *d,
 
     if ( !pdev || !drhd )
         return -EINVAL;
+
+    vtd_note_domu_device(d);
 
     ret = intel_iommu_dev_rmrr(d, pdev, ctx, false);
 
