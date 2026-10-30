@@ -84,6 +84,13 @@ static int emulate_hyperv_hypercall(struct cpu_user_regs *regs)
          !hyperv_pt_hypercall_ready(curr->domain) )
         return 0;
 
+    /*
+     * Hyper-V only accepts hypercalls from CPL0 and raises #UD otherwise.
+     * Do the same: leave a user mode ud2 to be reflected as #UD.
+     */
+    if ( !guest_kernel_mode(curr, regs) )
+        return 0;
+
     if ( (rc = copy_from_guest_pv(sig, (char __user *)eip, sizeof(sig))) != 0 )
     {
         pv_inject_page_fault(0, eip + sizeof(sig) - rc);
