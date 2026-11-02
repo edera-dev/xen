@@ -3,6 +3,7 @@
 
 #ifdef CONFIG_HAS_VPCI
 
+#include <xen/atomic.h>
 #include <xen/pci.h>
 #include <xen/types.h>
 #include <xen/list.h>
@@ -87,6 +88,13 @@ struct vpci {
 
         /* Guest (domU only) view of the PCI_COMMAND register. */
         uint16_t guest_cmd;
+
+        /*
+         * Map/unmap tasks queued for this device and not yet finished. A
+         * BAR's enabled flag only changes when its task completes, so this
+         * is what says a mapping is in flight.
+         */
+        atomic_t map_pending;
 
         /*
          * Store whether the ROM enable bit is set (doesn't imply ROM BAR
@@ -291,6 +299,8 @@ bool vpci_ecam_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int len,
                     unsigned long *data);
 
 /* Map/unmap the BARs of a vPCI device. */
+/* Take back what vPCI gave a domain for a device's BARs (deassign). */
+void vpci_release_bars(struct pci_dev *pdev);
 int vpci_modify_bars(const struct pci_dev *pdev, uint16_t cmd,
                      enum vpci_map_op map_op, bool rom_only);
 
