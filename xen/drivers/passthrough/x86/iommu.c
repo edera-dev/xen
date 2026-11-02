@@ -727,6 +727,18 @@ int cf_check iommu_free_pgtables(struct domain *d, struct iommu_context *ctx)
         return 0;
 
     /*
+     * Wait for any map into the context still in flight: maps run under the
+     * context lock, and any that start after this see the domain dying (or,
+     * for a non-default context, the context dying) and add nothing. This is
+     * what upstream's spin_barrier() on the mapping lock did. Take and drop
+     * the lock rather than rspin_barrier(): the caller tearing down a
+     * non-default context already holds it, which the barrier would wait on
+     * forever.
+     */
+    rspin_lock(&ctx->lock);
+    rspin_unlock(&ctx->lock);
+
+    /*
      * Pages will be moved to the free list below. So we want to
      * clear the root page-table to avoid any potential use after-free.
      */
