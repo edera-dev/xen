@@ -1205,32 +1205,32 @@ static int cf_check x86_msix_write(struct vcpu *v, unsigned long addr,
     unsigned int len, unsigned long data)
 {
     struct domain *d = v->domain;
-    struct vpci_msix *msix;
+    bool done;
 
+    /*
+     * Hold the lock across finding the table and using it: dropping it in
+     * between would let the device be deassigned and the table freed under
+     * the write.
+     */
     read_lock(&d->pci_lock);
-    msix = vpci_msix_find(d, addr);
+    done = vpci_msix_write(d, vpci_msix_find(d, addr), addr, len, data);
     read_unlock(&d->pci_lock);
 
-    if( !vpci_msix_write(msix, addr, len, data) )
-        return X86EMUL_RETRY;
-
-    return X86EMUL_OKAY;
+    return done ? X86EMUL_OKAY : X86EMUL_RETRY;
 }
 
 static int cf_check x86_msix_read(struct vcpu *v, unsigned long addr,
     unsigned int len, unsigned long *data)
 {
     struct domain *d = v->domain;
-    struct vpci_msix *msix;
+    bool done;
 
+    /* As for x86_msix_write(). */
     read_lock(&d->pci_lock);
-    msix = vpci_msix_find(d, addr);
+    done = vpci_msix_read(d, vpci_msix_find(d, addr), addr, len, data);
     read_unlock(&d->pci_lock);
 
-    if ( !vpci_msix_read(msix, addr, len, data) )
-        return X86EMUL_RETRY;
-
-    return X86EMUL_OKAY;
+    return done ? X86EMUL_OKAY : X86EMUL_RETRY;
 }
 
 static const struct hvm_mmio_ops vpci_msix_table_ops = {
