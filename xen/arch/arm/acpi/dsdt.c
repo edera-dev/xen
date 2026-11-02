@@ -374,7 +374,8 @@ static int __init scan_device(struct aml_span body, struct crs_search *search)
         if ( !memcmp(seg, "_HID", 4) || !memcmp(seg, "_CID", 4) )
         {
             /* Either a string, or a compressed EisaId in a DWord. */
-            if ( data.p < data.end && *data.p == AML_STRING_PREFIX &&
+            /* Prefix byte plus "PNP0A0x" and its NUL: 9 bytes. */
+            if ( data.p + 9 <= data.end && *data.p == AML_STRING_PREFIX &&
                  (!memcmp(data.p + 1, "PNP0A08", 8) ||
                   !memcmp(data.p + 1, "PNP0A03", 8)) )
                 is_host_bridge = true;
