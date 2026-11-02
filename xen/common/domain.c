@@ -1542,6 +1542,8 @@ static void cf_check complete_domain_destroy(struct rcu_head *head)
         if ( (v = d->vcpu[i]) == NULL )
             continue;
         tasklet_kill(&v->continue_hypercall_tasklet);
+        /* Before _domain_destroy() frees the rangesets the tasks use. */
+        vpci_vcpu_destroy(v);
         arch_vcpu_destroy(v);
         sched_destroy_vcpu(v);
         destroy_waitqueue_vcpu(v);

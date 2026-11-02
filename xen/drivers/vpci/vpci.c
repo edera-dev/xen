@@ -88,6 +88,8 @@ struct vpci_register *vpci_get_register(const struct vpci *vpci,
 
 void vpci_deassign_device(struct pci_dev *pdev)
 {
+    bool had_tasks;
+
     ASSERT(rw_is_write_locked(&pdev->domain->pci_lock));
 
     if ( !has_vpci(pdev->domain) || !pdev->vpci )
@@ -101,8 +103,11 @@ void vpci_deassign_device(struct pci_dev *pdev)
 
     vpci_cleanup_capabilities(pdev, false);
 
+    /* For every owner: a queued task must not outlive the device. */
+    had_tasks = vpci_cancel_map_tasks(pdev);
+
     if ( !is_hardware_domain(pdev->domain) )
-        vpci_release_bars(pdev);
+        vpci_release_bars(pdev, had_tasks);
 
     spin_lock(&pdev->vpci->lock);
     while ( !list_empty(&pdev->vpci->handlers) )
