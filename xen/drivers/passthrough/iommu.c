@@ -615,7 +615,8 @@ static long _iommu_map(struct domain *d, dfn_t dfn0, mfn_t mfn0,
         if ( likely(!rc) )
             continue;
 
-        if ( !d->is_shutting_down && printk_ratelimit() )
+        /* A refused replacement (IOMMUF_no_replace) is the caller's to report. */
+        if ( rc != -EEXIST && !d->is_shutting_down && printk_ratelimit() )
             printk(XENLOG_ERR
                    "d%d: IOMMU mapping dfn %"PRI_dfn" to mfn %"PRI_mfn" failed: %d\n",
                    d->domain_id, dfn_x(dfn), mfn_x(mfn), rc);
