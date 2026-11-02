@@ -85,6 +85,7 @@ void cpuid_hyperv_passthrough_leaves(const struct vcpu *v, uint32_t leaf,
  */
 struct domain;
 int hyperv_pt_domain_init(struct domain *d);
+void hyperv_pt_domain_relinquish(struct domain *d);
 void hyperv_pt_domain_destroy(struct domain *d);
 int guest_rdmsr_hyperv_pt(const struct vcpu *v, uint32_t idx, uint64_t *val);
 int guest_wrmsr_hyperv_pt(struct vcpu *v, uint32_t idx, uint64_t val);
