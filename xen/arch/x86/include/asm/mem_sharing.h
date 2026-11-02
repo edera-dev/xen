@@ -87,6 +87,12 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
 int mem_sharing_fork_complete(struct domain *d, bool lazy);
 
 /*
+ * Drop a fork's link to its parent, and the pause and reference the fork took
+ * on it, unless something else already has.
+ */
+void mem_sharing_fork_release_parent(struct domain *cd);
+
+/*
  * If called by a foreign domain, possible errors are
  *   -EBUSY -> ring full
  *   -ENOSYS -> no ring to begin with
