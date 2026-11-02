@@ -20,6 +20,7 @@
 #include <xen/iocap.h>
 #include <xen/device_tree.h>
 #include <xen/libfdt/libfdt.h>
+#include <xen/sizes.h>
 #include <acpi/actables.h>
 
 #include <asm/iort.h>
@@ -28,6 +29,30 @@
 /* Override macros from asm/page.h to make them work with mfn_t */
 #undef virt_to_mfn
 #define virt_to_mfn(va) _mfn(__virt_to_mfn(va))
+
+/*
+ * Keep the hardware domain off an SMMUv3's registers. Xen drives the SMMUs,
+ * and the IORT the domain is given doesn't describe them, so it has no
+ * business there; with access it could reprogram the stream tables that
+ * isolate devices passed through to other domains. Deny the full 128K (both
+ * register pages), whatever the driver ends up using.
+ */
+static int __init acpi_deny_smmu_v3(const struct acpi_iort_node *node,
+                                    void *arg)
+{
+    struct domain *d = arg;
+    const struct acpi_iort_smmu_v3 *smmu = (const void *)node->node_data;
+    paddr_t base = smmu->base_address;
+    int rc;
+
+    rc = iomem_deny_access(d, paddr_to_pfn(base),
+                           paddr_to_pfn(base + SZ_128K - 1));
+    if ( rc )
+        printk(XENLOG_ERR "Unable to deny %pd access to the SMMU at %#"PRIpaddr"\n",
+               d, base);
+
+    return rc;
+}
 
 static int __init acpi_iomem_deny_access(struct domain *d)
 {
@@ -41,7 +66,11 @@ static int __init acpi_iomem_deny_access(struct domain *d)
     if ( rc )
         return rc;
 
-    /* TODO: Deny MMIO access for SMMU, GIC ITS */
+    /* Deny MMIO access for the SMMUs (the GIC, ITS included, follows). */
+    rc = iort_for_each_smmu_v3(acpi_deny_smmu_v3, d);
+    if ( rc && rc != -ENODEV )
+        return rc;
+
     status = acpi_get_table(ACPI_SIG_SPCR, 0,
                             (struct acpi_table_header **)&spcr);
 
