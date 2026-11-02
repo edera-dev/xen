@@ -254,11 +254,94 @@ bool vpci_process_pending(struct vcpu *v)
         }
 
         list_del(&task->next);
+        if ( task->pdev && task->pdev->vpci )
+            atomic_dec(&task->pdev->vpci->header.map_pending);
         destroy_map_task(task);
     }
 
     read_unlock(&v->domain->pci_lock);
     return false;
+}
+
+/*
+ * Unmap [gfn, gfn + nr) from d where it maps the given MFNs, stepping over
+ * pages that aren't mapped: the range can have holes (MSI-X tables), or
+ * have been mapped only partly when a deferred map was abandoned.
+ */
+static void vpci_unmap_range(struct domain *d, unsigned long gfn,
+                             unsigned long mfn, unsigned long nr)
+{
+    while ( nr )
+    {
+        int rc = unmap_mmio_regions(d, _gfn(gfn), nr, _mfn(mfn));
+        unsigned long done;
+
+        if ( !rc )
+            break;
+
+        /* Partial progress, or nothing mapped at gfn: move on. */
+        done = rc > 0 ? rc : 1;
+        gfn += done;
+        mfn += done;
+        nr -= done;
+    }
+}
+
+/*
+ * The device is leaving a domain other than the hardware domain: take away
+ * everything vPCI gave that domain for it. Drop the device's queued map
+ * tasks, unmap its BARs from wherever the domain put them, and revoke the
+ * iomem permission vpci_init_header() (or the SR-IOV code) granted for
+ * them, so the domain can't map the BARs again once the device has a new
+ * owner.
+ */
+void vpci_release_bars(struct pci_dev *pdev)
+{
+    struct domain *d = pdev->domain;
+    struct vpci_header *header = &pdev->vpci->header;
+    bool pending = false;
+    struct vcpu *v;
+    unsigned int i;
+
+    ASSERT(rw_is_write_locked(&d->pci_lock));
+
+    for_each_vcpu ( d, v )
+    {
+        struct vpci_map_task *task, *tmp;
+
+        list_for_each_entry_safe ( task, tmp, &v->vpci.task_queue, next )
+        {
+            if ( task->pdev != pdev )
+                continue;
+
+            list_del(&task->next);
+            destroy_map_task(task);
+            pending = true;
+        }
+    }
+    atomic_set(&header->map_pending, 0);
+
+    for ( i = 0; i < ARRAY_SIZE(header->bars); i++ )
+    {
+        struct vpci_bar *bar = &header->bars[i];
+
+        if ( !MAPPABLE_BAR(bar) || !bar->size )
+            continue;
+
+        /* A map may have been abandoned part way, so don't trust enabled. */
+        if ( header->bars_mapped || bar->enabled || pending )
+            vpci_unmap_range(d, PFN_DOWN(bar->guest_addr),
+                             PFN_DOWN(bar->addr), PFN_UP(bar->size));
+        bar->enabled = false;
+
+        if ( iomem_deny_access(d, PFN_DOWN(bar->addr),
+                               PFN_DOWN(bar->addr + bar->size - 1)) )
+            printk(XENLOG_WARNING
+                   "%pp: failed to revoke BAR%u MMIO access from %pd\n",
+                   &pdev->sbdf, i, d);
+    }
+
+    header->bars_mapped = false;
 }
 
 static int __init apply_map(struct vpci_map_task *task)
@@ -353,6 +436,7 @@ static void defer_map(struct vpci_map_task *task)
      * started for the same device if the domain is not well-behaved.
      */
 
+    atomic_inc(&task->pdev->vpci->header.map_pending);
     list_add_tail(&task->next, &curr->vpci.task_queue);
 
     /*
@@ -732,9 +816,12 @@ void cf_check vpci_guest_mem_bar_write(const struct pci_dev *pdev,
 
     /*
      * Xen only cares whether the BAR is mapped into the p2m, so allow BAR
-     * writes as long as the BAR is not mapped into the p2m.
+     * writes as long as the BAR is not mapped into the p2m, and no map or
+     * unmap for the device is still queued: a queued task works from the
+     * address it was given, and moving the BAR under it would leave a
+     * mapping behind that nothing tracks.
      */
-    if ( bar->enabled )
+    if ( bar->enabled || atomic_read(&pdev->vpci->header.map_pending) )
     {
         /* If the value written is the current one avoid printing a warning. */
         if ( guest_addr != bar->guest_addr )
