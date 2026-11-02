@@ -318,23 +318,34 @@ static void vtimer_ppi_poll_again(void)
  * Every path that wants the PPI back -- virt_timer_restore() on the pCPU a
  * guest is about to run on, the retire hook when the guest finishes with the
  * interrupt, and the poll above -- comes through here, and none of them may
- * have it while IMASK is still set.
+ * have it while the timer is still asserting under IMASK.
  *
- * IMASK is Xen's marker for an interrupt injected and not yet acknowledged, so
- * unmasking under it puts a line that does not follow IMASK straight back into
+ * Unmasking then puts a line that does not follow IMASK straight back into
  * the handler, and the vCPU never runs long enough to re-arm the deadline that
  * would have stopped it.  Defer instead, and keep polling, because only the
  * guest can end this and it can only do so by running.
+ *
+ * Only that case needs holding, though.  IMASK alone is not it: the guest
+ * owns CNTV_CTL and sets IMASK itself whenever it has no next deadline
+ * (Linux's handler does), and virt_timer_save() leaves the outgoing guest's
+ * IMASK loaded on an idle pCPU.  Keying on IMASK kept the poll running for as
+ * long as either lasted.  The line can only assert while the timer is
+ * enabled and its condition is met (ISTATUS), so unmask otherwise.  And with
+ * no guest on the pCPU there is nothing to wait for: virt_timer_restore()
+ * comes back here before one runs, so stop polling.
  */
 void vtimer_ppi_unmask(void)
 {
+    const register_t stuck = CNTx_CTL_ENABLE | CNTx_CTL_PENDING | CNTx_CTL_MASK;
+
     if ( likely(!this_cpu(vtimer_ppi_masked)) )
         return;
 
-    if ( READ_SYSREG(CNTV_CTL_EL0) & CNTx_CTL_MASK )
+    if ( (READ_SYSREG(CNTV_CTL_EL0) & stuck) == stuck )
     {
         perfc_incr(virt_timer_unmask_no);
-        vtimer_ppi_poll_again();
+        if ( !is_idle_vcpu(current) )
+            vtimer_ppi_poll_again();
         return;
     }
 
