@@ -754,32 +754,39 @@ int gicv3_its_map_guest_device(struct domain *d,
                                uint64_t nr_events, bool valid)
 {
     void *itt_addr = NULL;
-    struct host_its *hw_its;
+    struct host_its *hw_its = NULL;
     struct its_device *dev = NULL;
     struct rb_node **new = &d->arch.vgic.its_devices.rb_node, *parent = NULL;
     int i, ret = -ENOENT;      /* "i" must be signed to check for >= 0 below. */
     unsigned int order;
 
-    hw_its = gicv3_its_find_by_doorbell(host_doorbell);
-    if ( !hw_its )
-        return ret;
-
-    /* Sanitise the provided hardware values against the host ITS. */
-    if ( host_devid >= BIT(hw_its->devid_bits, UL) )
-        return -EINVAL;
-
     /*
-     * The ITS requires the number of events to be a power of 2. We allocate
-     * events and LPIs in chunks of LPI_BLOCK (=32), so make sure we
-     * allocate at least that many.
-     * TODO: Investigate if the number of events can be limited to smaller
-     * values if the guest does not require that many.
+     * Removing a mapping only needs the guest's view: the host ITS and
+     * DeviceID are recorded in the its_device found below.
      */
-    nr_events = BIT(fls(nr_events - 1), UL);
-    if ( nr_events < LPI_BLOCK )
-        nr_events = LPI_BLOCK;
-    if ( nr_events >= BIT(hw_its->evid_bits, UL) )
-        return -EINVAL;
+    if ( valid )
+    {
+        hw_its = gicv3_its_find_by_doorbell(host_doorbell);
+        if ( !hw_its )
+            return ret;
+
+        /* Sanitise the provided hardware values against the host ITS. */
+        if ( host_devid >= BIT(hw_its->devid_bits, UL) )
+            return -EINVAL;
+
+        /*
+         * The ITS requires the number of events to be a power of 2. We
+         * allocate events and LPIs in chunks of LPI_BLOCK (=32), so make
+         * sure we allocate at least that many.
+         * TODO: Investigate if the number of events can be limited to
+         * smaller values if the guest does not require that many.
+         */
+        nr_events = BIT(fls(nr_events - 1), UL);
+        if ( nr_events < LPI_BLOCK )
+            nr_events = LPI_BLOCK;
+        if ( nr_events >= BIT(hw_its->evid_bits, UL) )
+            return -EINVAL;
+    }
 
     /* check for already existing mappings */
     spin_lock(&d->arch.vgic.its_devices_lock);
