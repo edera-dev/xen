@@ -1672,12 +1672,22 @@ static int vgic_v3_its_init_virtual(struct domain *d, paddr_t guest_addr,
 
     register_mmio_handler(d, &vgic_its_mmio_handler, guest_addr, SZ_64K, its);
 
+    /*
+     * Devices behind the SMMU write their MSIs to the doorbell, so its page
+     * has to be in the domain's stage-2 tables. On Arm the SMMU shares those
+     * tables with the CPU, so the domain's vCPUs can reach the page too:
+     * map it as Device memory, as the MMIO register it is, rather than
+     * through iommu_map(), whose p2m_iommu_map_rw entries are cacheable
+     * Normal memory and can provoke an SError on a CPU access. Which
+     * DeviceID the ITS assigns to a write coming from a CPU rather than a
+     * device is up to the platform and can't be controlled here.
+     */
     if ( is_iommu_enabled(its->d) )
     {
-        mfn_t mfn = maddr_to_mfn(host_doorbell_addr);
-        unsigned int flush_flags = 0;
-        int ret = iommu_map(its->d, _dfn(PFN_DOWN(its->doorbell_address)),
-                            mfn, 1, IOMMUF_writable, &flush_flags, 0);
+        int ret = map_regions_p2mt(its->d,
+                                   gaddr_to_gfn(its->doorbell_address), 1,
+                                   maddr_to_mfn(host_doorbell_addr),
+                                   p2m_mmio_direct_dev);
 
         if ( ret < 0 )
         {
@@ -1686,11 +1696,6 @@ static int vgic_v3_its_init_virtual(struct domain *d, paddr_t guest_addr,
                     its->d);
             return ret;
         }
-
-        ret = iommu_iotlb_flush(its->d, _dfn(PFN_DOWN(its->doorbell_address)),
-                                1, flush_flags, 0);
-        if ( ret < 0 )
-            return ret;
     }
 
     /* Register the virtual ITS to be able to clean it up later. */
