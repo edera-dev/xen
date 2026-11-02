@@ -218,8 +218,9 @@ static int __init domU_assign_pci_device(struct domain *d,
             if ( !size )
                 continue;
 
+            /* The range is inclusive: stop at the BAR's last page. */
             rc = iomem_permit_access(d, paddr_to_pfn(addr),
-                                     paddr_to_pfn(PAGE_ALIGN(addr + size - 1)));
+                                     paddr_to_pfn(addr + size - 1));
             if ( rc )
                 return rc;
         }
