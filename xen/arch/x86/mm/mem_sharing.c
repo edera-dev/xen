@@ -1873,6 +1873,55 @@ static int copy_settings(struct domain *cd, struct domain *d)
     return rc;
 }
 
+/*
+ * Clear @cd's link to its parent if it is still @d, under the child's p2m lock
+ * that mem_sharing_fork_complete() reads it under.  Returns whether this call
+ * cleared it, and so owns the pause and reference the fork took on @d.
+ */
+static bool fork_detach(struct domain *cd, const struct domain *d)
+{
+    struct p2m_domain *cp2m = p2m_get_hostp2m(cd);
+    bool detached;
+
+    p2m_lock(cp2m);
+    detached = d && cd->parent == d;
+    if ( detached )
+        cd->parent = NULL;
+    p2m_unlock(cp2m);
+
+    return detached;
+}
+
+/*
+ * Take a reference of our own on @cd's parent, or return NULL if it has none.
+ * The fork's reference keeps the parent alive while cd->parent is set, and
+ * fork_detach() only clears it under the same lock.
+ */
+static struct domain *fork_get_parent(struct domain *cd)
+{
+    struct p2m_domain *cp2m = p2m_get_hostp2m(cd);
+    struct domain *d;
+
+    p2m_lock(cp2m);
+    d = cd->parent;
+    if ( d )
+        get_knownalive_domain(d);
+    p2m_unlock(cp2m);
+
+    return d;
+}
+
+void mem_sharing_fork_release_parent(struct domain *cd)
+{
+    struct domain *d = cd->parent;
+
+    if ( fork_detach(cd, d) )
+    {
+        domain_unpause(d);
+        put_domain(d);
+    }
+}
+
 static int fork(struct domain *cd, struct domain *d)
 {
     int rc = -EBUSY;
@@ -1907,9 +1956,8 @@ static int fork(struct domain *cd, struct domain *d)
     rc = copy_settings(cd, d);
 
  done:
-    if ( rc && rc != -ERESTART )
+    if ( rc && rc != -ERESTART && fork_detach(cd, d) )
     {
-        cd->parent = NULL;
         domain_unpause(d);
         put_domain(d);
     }
@@ -1931,11 +1979,19 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
                            bool reset_memory)
 {
     int rc = 0;
-    struct domain *pd = d->parent;
+    struct domain *pd;
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     struct page_info *page, *tmp;
 
     ASSERT(reset_state || reset_memory);
+
+    /*
+     * The fork may be completed or torn down concurrently, dropping the
+     * parent that the reset copies state from and refills memory from.
+     */
+    pd = fork_get_parent(d);
+    if ( !pd )
+        return -ENOSYS;
 
     domain_pause(d);
 
@@ -1987,6 +2043,7 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
     }
 
     domain_unpause(d);
+    put_domain(pd);
 
     return rc;
 }
@@ -2012,8 +2069,13 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
  * unshares just that page.
  *
  * Preemptible: the caller re-issues the hypercall until it stops returning
- * -ERESTART.  Both domains are expected to be paused for the operation (the
- * fork already holds the parent paused; the child has not yet been resumed).
+ * -ERESTART.  Both domains must be paused for the operation: the fork already
+ * holds the parent paused, and the child must be paused by the toolstack.
+ *
+ * Calls for the same child may run concurrently, with each other and with the
+ * child's destruction.  Each call holds its own reference on the parent, and
+ * the parent link is only read and cleared under the child's p2m lock (see
+ * fork_detach()), so exactly one of them drops the fork's pause and reference.
  *
  * Both p2ms are locked across a run of frames rather than once per frame.
  * Reaching mem_sharing_fork_page() through get_gfn() costs three walks of the
@@ -2043,17 +2105,22 @@ int mem_sharing_fork_reset(struct domain *d, bool reset_state,
  */
 int mem_sharing_fork_complete(struct domain *d, bool lazy)
 {
-    struct domain *pd = d->parent;
-    struct p2m_domain *pp2m, *cp2m;
+    struct domain *pd;
+    struct p2m_domain *pp2m, *cp2m = p2m_get_hostp2m(d);
     struct mem_sharing_domain *msd = &d->arch.hvm.mem_sharing;
     unsigned long gfn, max_pfn, count = 0, failed = 0;
     struct vcpu *v;
+    int rc;
 
-    if ( !mem_sharing_is_fork(d) )
+    /* The vCPU areas are unmapped below, which needs the child paused. */
+    if ( !d->controller_pause_count )
+        return -EBUSY;
+
+    pd = fork_get_parent(d);
+    if ( !pd )
         return -EINVAL;
 
     pp2m = p2m_get_hostp2m(pd);
-    cp2m = p2m_get_hostp2m(d);
     max_pfn = pp2m->max_mapped_pfn;
 
     p2m_lock(cp2m);
@@ -2171,6 +2238,7 @@ int mem_sharing_fork_complete(struct domain *d, bool lazy)
     if ( lazy )
     {
         msd->block_interrupts = false;
+        put_domain(pd);
         return 0;
     }
 
@@ -2181,13 +2249,19 @@ int mem_sharing_fork_complete(struct domain *d, bool lazy)
      * the teardown in domain_relinquish_resources() will not unpause the
      * parent a second time.  Re-enable interrupt injection, which only made
      * sense to block for a short-lived fork.
+     *
+     * Another call, or the domain's destruction, may have got here first;
+     * only the one that clears the link releases the fork's pause and
+     * reference.
      */
-    d->parent = NULL;
     msd->next_gfn_to_materialize = 0;
     msd->block_interrupts = false;
 
-    domain_unpause(pd);
-    put_domain(pd);
+    if ( fork_detach(d, pd) )
+    {
+        domain_unpause(pd);
+        put_domain(pd);
+    }
 
  out:
     /*
@@ -2201,7 +2275,10 @@ int mem_sharing_fork_complete(struct domain *d, bool lazy)
         gprintk(XENLOG_WARNING, "d%d: %lu forked frame(s) not materialised\n",
                 d->domain_id, failed);
 
-    return msd->next_gfn_to_materialize ? -ERESTART : 0;
+    rc = msd->next_gfn_to_materialize ? -ERESTART : 0;
+    put_domain(pd);
+
+    return rc;
 }
 
 int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
