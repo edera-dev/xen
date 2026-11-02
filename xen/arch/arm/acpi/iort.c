@@ -42,11 +42,14 @@ static bool iort_node_valid(const struct acpi_iort_node *node)
     if ( node->length < sizeof(*node) || p + node->length > end )
         return false;
 
-    /* The mapping array has to be inside the node too. */
-    if ( node->mapping_count &&
-         ((uint64_t)node->mapping_offset +
-          (uint64_t)node->mapping_count * sizeof(struct acpi_iort_id_mapping) >
-          node->length) )
+    /*
+     * The mapping array has to be inside the node too. Check the offset even
+     * when there are no mappings: iort_hwdom_walk() copies a root complex
+     * node up to mapping_offset either way.
+     */
+    if ( (uint64_t)node->mapping_offset +
+         (uint64_t)node->mapping_count * sizeof(struct acpi_iort_id_mapping) >
+         node->length )
         return false;
 
     return true;
