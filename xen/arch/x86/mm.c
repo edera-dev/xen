@@ -103,6 +103,7 @@
 #include <xen/lib.h>
 #include <xen/livepatch.h>
 #include <xen/mm.h>
+#include <xen/nospec.h>
 #include <xen/numa.h>
 #include <xen/param.h>
 #include <xen/perfc.h>
@@ -5032,11 +5033,28 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         for ( i = 0; i < req.nr_mfns; i++ )
         {
             mfn_t mfn = _mfn(mfns[i]);
+            unsigned long idx;
+            nodeid_t nid;
 
-            if ( mfn_valid(mfn) )
-                pxms[i] = numa_node_to_arch_nid(mfn_to_nid(mfn));
-            else
-                pxms[i] = XEN_INVALID_NUMA_ID;
+            pxms[i] = XEN_INVALID_NUMA_ID;
+
+            /*
+             * mfn_to_nid() only ASSERT()s its lookups are in range.  A valid
+             * MFN can still lie past the memory node map (e.g. MMIO covered
+             * by the frame table) or in a hole with no node.
+             */
+            if ( !mfn_valid(mfn) )
+                continue;
+
+            idx = mfn_to_pdx(mfn) >> memnode_shift;
+            if ( idx >= memnodemapsize )
+                continue;
+
+            nid = memnodemap[array_index_nospec(idx, memnodemapsize)];
+            if ( nid >= MAX_NUMNODES || !node_spanned_pages(nid) )
+                continue;
+
+            pxms[i] = numa_node_to_arch_nid(nid);
         }
 
         if ( copy_to_guest(req.pxms, pxms, req.nr_mfns) )
