@@ -268,6 +268,43 @@ struct identity_map {
  * computed by iommu_identity_mapping().
  */
 
+/*
+ * A non-default context's teardown walk drops a page reference for every
+ * mapped frame that has a struct page_info, which is right for the frames
+ * PV-IOMMU maps, as it took one for each. Take the same reference for
+ * identity-mapped frames in such a context (RMRR/IVMD regions are usually
+ * reserved memory below max_page, owned by dom_io), and drop it when the
+ * identity mapping goes, so the two stay balanced. The default context has
+ * no such walk.
+ */
+static bool identity_frame_get(const struct iommu_context *ctx,
+                               unsigned long pfn)
+{
+    struct page_info *pg;
+
+    if ( !ctx->id || !mfn_valid(_mfn(pfn)) )
+        return true;
+
+    pg = mfn_to_page(_mfn(pfn));
+    if ( !page_get_owner_and_reference(pg) )
+        return false;
+
+    if ( !iommu_get_mapped_page_type(pg) )
+    {
+        put_page(pg);
+        return false;
+    }
+
+    return true;
+}
+
+static void identity_frame_put(const struct iommu_context *ctx,
+                               unsigned long pfn)
+{
+    if ( ctx->id && mfn_valid(_mfn(pfn)) )
+        iommu_put_mapped_page(mfn_to_page(_mfn(pfn)));
+}
+
 static int unmap_identity_region(struct domain *d, struct iommu_context *ctx,
                                  unsigned int base_pfn, unsigned int end_pfn)
 {
@@ -302,6 +339,15 @@ static int unmap_identity_region(struct domain *d, struct iommu_context *ctx,
 
         ret = iommu_iotlb_flush(d, _dfn(base_pfn), page_count,
                                 flush_flags, ctx->id);
+
+        /*
+         * Only once the device can no longer reach the frames. If the flush
+         * failed, keep the references rather than risk a frame being freed
+         * under it.
+         */
+        if ( !ret )
+            for ( ; base_pfn < end_pfn; base_pfn++ )
+                identity_frame_put(ctx, base_pfn);
     }
 
     return ret;
@@ -336,12 +382,26 @@ static int map_identity_region(struct domain *d, struct iommu_context *ctx,
     {
         for ( i = 0; i < page_count; i++ )
         {
+            if ( !identity_frame_get(ctx, base_pfn + i) )
+            {
+                ret = -EBUSY;
+                break;
+            }
+
+            /*
+             * In a guest's own context, don't overwrite what the guest has
+             * mapped there itself: its frame's reference would be lost.
+             */
             ret = iommu_map(d, _dfn(base_pfn + i), _mfn(base_pfn + i), 1,
-                            p2m_access_to_iommu_flags(p2ma), &flush_flags,
-                            ctx->id);
+                            p2m_access_to_iommu_flags(p2ma) |
+                            (ctx->id ? IOMMUF_no_replace : 0),
+                            &flush_flags, ctx->id);
 
             if ( ret )
+            {
+                identity_frame_put(ctx, base_pfn + i);
                 break;
+            }
         }
     }
 
