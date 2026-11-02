@@ -2494,6 +2494,9 @@ int domain_relinquish_resources(struct domain *d)
         };
 
     case 0:
+        if ( is_hyperv_passthrough_domain(d) )
+            hyperv_pt_domain_relinquish(d);
+
         ret = pci_release_devices(d);
         if ( ret )
             return ret;
