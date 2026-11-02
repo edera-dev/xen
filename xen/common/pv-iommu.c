@@ -44,10 +44,11 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
     p2m_type_t p2mt = p2m_invalid;
 
     #ifdef CONFIG_X86
-    p2m_query_t query = P2M_ALLOC;
-
-    if ( !readonly )
-        query |= P2M_UNSHARE;
+    /*
+     * Unshare even for a read-only mapping: a shared page is owned by
+     * dom_cow, which the ownership check below would refuse.
+     */
+    p2m_query_t query = P2M_ALLOC | P2M_UNSHARE;
 
     *mfn = get_gfn_type(d, gfn_x(gfn), &p2mt, query);
     #else
@@ -63,6 +64,17 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
 
         ret = -ENOENT;
     }
+#ifdef CONFIG_X86
+    /*
+     * Don't hand a device write access the CPU doesn't have: a read-only RAM
+     * page, or MMIO Xen keeps read-only (e.g. MSI-X tables). Upstream's p2m
+     * code drops IOMMUF_writable for these.
+     */
+    else if ( !readonly &&
+              (p2mt == p2m_ram_ro ||
+               rangeset_contains_singleton(mmio_ro_ranges, mfn_x(*mfn))) )
+        ret = -EPERM;
+#endif
     else if ( p2m_is_any_ram(p2mt) && mfn_valid(*mfn) )
     {
         struct domain *owner;
@@ -349,7 +361,8 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
         }
 #endif
 
-        ret = get_paged_frame(d, gfn, &mfn, &page, 0);
+        ret = get_paged_frame(d, gfn, &mfn, &page,
+                              !(flags & IOMMUF_writable));
 
         if ( ret )
             break;
