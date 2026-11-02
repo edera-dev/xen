@@ -320,6 +320,15 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
     if ( map->map_flags & IOMMU_MAP_writeable )
         flags |= IOMMUF_writable;
 
+    /*
+     * Never let a map replace what is already there: the old frame's page
+     * reference would be lost, and mapping the same frame again would take
+     * a second reference only one unmap returns, so the domain could never
+     * be reaped. The drivers check as they install the entry, which costs
+     * nothing, unlike the lookup below.
+     */
+    flags |= IOMMUF_no_replace;
+
     for (i = 0; i < map->nr_pages; i++)
     {
         gfn_t gfn = _gfn(map->gfn + i);
@@ -366,6 +375,10 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
         {
             if ( page && mfn_valid(mfn) )
                 iommu_put_mapped_page(page);
+
+            /* Same answer as the explicit conflict check gives. */
+            if ( ret == -EEXIST )
+                ret = -EADDRINUSE;
 
             break;
         }
