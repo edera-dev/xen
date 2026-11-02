@@ -902,30 +902,36 @@ int iommu_context_alloc(struct domain *d, uint16_t *ctx_id, unsigned int flags)
     struct domain_iommu *hd = dom_iommu(d);
     struct iommu_context *ctx;
 
-    do {
-        i = find_first_zero_bit(hd->other_contexts.bitmap, hd->other_contexts.count);
-
+    /*
+     * Take the slot's lock before claiming its bit: once the bit is set,
+     * iommu_get_context() hands the context out, and it must not get one
+     * that is still being initialised. Another allocator may claim the same
+     * slot in between, so claim it atomically and move on if it lost.
+     */
+    for ( ; ; )
+    {
+        i = find_first_zero_bit(hd->other_contexts.bitmap,
+                                hd->other_contexts.count);
         if ( i >= hd->other_contexts.count )
             return -ENOSPC;
 
         ctx = &hd->other_contexts.map[i];
+        rspin_lock(&ctx->lock);
 
-        /* Try to lock the mutex, can fail on concurrent accesses */
-        if ( !rspin_trylock(&ctx->lock) )
-            continue;
+        if ( !test_and_set_bit(i, hd->other_contexts.bitmap) )
+            break;
 
-        /* We can now set it as used, we keep the lock for initialization. */
-        set_bit(i, hd->other_contexts.bitmap);
-    } while (0);
+        rspin_unlock(&ctx->lock);
+    }
 
     *ctx_id = i + 1;
 
     ret = iommu_context_init(d, ctx, *ctx_id, flags);
 
     if ( ret )
-        clear_bit(*ctx_id, hd->other_contexts.bitmap);
+        clear_bit(i, hd->other_contexts.bitmap);
 
-    iommu_put_context(ctx);
+    rspin_unlock(&ctx->lock);
     return ret;
 }
 
