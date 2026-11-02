@@ -194,6 +194,8 @@ static struct vtcon {
     void __iomem *common;
     void __iomem *notify_base;
     uint32_t notify_mult;
+    /* Where common and notify are, for keeping the hardware domain off them. */
+    struct vtcon_region regs[2];
 
     struct vtcon_vq rx, tx;
 
@@ -527,6 +529,23 @@ bool vtcon_in_use(void)
 paddr_t vtcon_config_space(void)
 {
     return vtcon_com.ready ? vtcon_com.cfg_addr : 0;
+}
+
+/*
+ * The common configuration and notify regions Xen drives the console
+ * through.  Whoever can write them can reset the device and point its queues
+ * anywhere, so the hardware domain has to be kept off them as well as off the
+ * configuration space.  None when Xen is not using the device.
+ */
+unsigned int vtcon_registers(struct vtcon_region regions[2])
+{
+    if ( !vtcon_com.ready )
+        return 0;
+
+    regions[0] = vtcon_com.regs[0];
+    regions[1] = vtcon_com.regs[1];
+
+    return 2;
 }
 
 static void __init vtcon_init_preirq(struct serial_port *port)
@@ -967,6 +986,8 @@ void __init virtio_console_init(void)
 
     vtcon_com.common = ioremap_nocache(barbase + off, len);
     vtcon_com.notify_base = ioremap_nocache(barbase + noff, nlen);
+    vtcon_com.regs[0] = (struct vtcon_region){ barbase + off, len };
+    vtcon_com.regs[1] = (struct vtcon_region){ barbase + noff, nlen };
     vtcon_com.notify_mult = cfg_readl(notify_cap + VIRTIO_PCI_NOTIFY_CAP_MULT);
 
     if ( !vtcon_com.common || !vtcon_com.notify_base )
