@@ -405,9 +405,13 @@ static int vm_event_resume(struct domain *d, struct vm_event_domain *ved)
                 bool reset_state = rsp.flags & VM_EVENT_FLAG_RESET_FORK_STATE;
                 bool reset_mem = rsp.flags & VM_EVENT_FLAG_RESET_FORK_MEMORY;
 
+                /*
+                 * This can fail, e.g. if the fork was completed concurrently
+                 * and has no parent to reset from any more.
+                 */
                 if ( (reset_state || reset_mem) &&
                      mem_sharing_fork_reset(d, reset_state, reset_mem) )
-                    ASSERT_UNREACHABLE();
+                    gprintk(XENLOG_WARNING, "%pd: fork reset failed\n", d);
             }
 #endif
 
