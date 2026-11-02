@@ -261,6 +261,9 @@ static inline size_t vmsix_table_size(const struct vpci *vpci, unsigned int nr)
 
 void vpci_dump_msi(void);
 
+/* Free a vCPU's leftover map tasks when its domain is destroyed. */
+void vpci_vcpu_destroy(struct vcpu *v);
+
 /* Arch-specific vPCI MSI helpers. */
 void vpci_msi_arch_mask(struct vpci_msi *msi, const struct pci_dev *pdev,
                         unsigned int entry, bool mask);
@@ -300,7 +303,8 @@ bool vpci_ecam_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int len,
 
 /* Map/unmap the BARs of a vPCI device. */
 /* Take back what vPCI gave a domain for a device's BARs (deassign). */
-void vpci_release_bars(struct pci_dev *pdev);
+void vpci_release_bars(struct pci_dev *pdev, bool had_tasks);
+bool vpci_cancel_map_tasks(const struct pci_dev *pdev);
 int vpci_modify_bars(const struct pci_dev *pdev, uint16_t cmd,
                      enum vpci_map_op map_op, bool rom_only);
 
@@ -335,6 +339,8 @@ static inline int vpci_assign_device(struct pci_dev *pdev)
 static inline void vpci_deassign_device(struct pci_dev *pdev) { }
 
 static inline void vpci_dump_msi(void) { }
+
+static inline void vpci_vcpu_destroy(struct vcpu *v) { }
 
 static inline uint32_t vpci_read(pci_sbdf_t sbdf, unsigned int reg,
                                  unsigned int size)
