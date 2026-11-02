@@ -909,6 +909,17 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     {
         struct vnuma_info *vnuma;
 
+        /*
+         * The vNUMA layout feeds CPUID and APIC IDs, which are read without
+         * vnuma_rwlock and must not change under a running guest, so it can
+         * only be set before the domain first runs.
+         */
+        if ( d->creation_finished )
+        {
+            ret = -EBUSY;
+            break;
+        }
+
         vnuma = vnuma_init(&op->u.vnuma, d);
         if ( IS_ERR(vnuma) )
         {
@@ -922,9 +933,8 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
          * Notify the architecture layer that vNUMA topology has changed.
          * On x86 this recalculates CPUID topology leaves (leaf 0xB and
          * 0x80000008 ECX) that are derived from the vNUMA node count and
-         * vCPU-per-node distribution.  This domctl is a construction-time
-         * operation issued before the domain is started, so no domain_pause()
-         * is required.
+         * vCPU-per-node distribution.  The domain hasn't run yet (checked
+         * above), so no domain_pause() is required.
          */
         arch_domain_update_vnuma(d);
 
