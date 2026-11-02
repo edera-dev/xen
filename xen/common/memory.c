@@ -340,6 +340,15 @@ static void populate_physmap(struct memop_args *a)
                     (a->memflags & MEMF_exact_node) ? MEMF_get_node(a->memflags)
                                                     : NUMA_NO_NODE;
 
+                /*
+                 * While the domain is being built, pages are allocated
+                 * unscrubbed and scrubbed below, which can be preempted.
+                 * The allocator refuses to zero an unscrubbed allocation, so
+                 * zeroing is done below too.
+                 */
+                if ( memflags & MEMF_no_scrub )
+                    memflags &= ~MEMF_zero;
+
                 page = get_stashed_allocation(d, a->extent_order, node,
                                               &scrub_start);
 
@@ -359,14 +368,22 @@ static void populate_physmap(struct memop_args *a)
                 {
                     unsigned int dirty_cnt = 0;
 
-                    /* Check if there's anything to scrub. */
+                    /*
+                     * Check if there's anything to scrub.  A zeroed extent
+                     * clears every page: a clean page has been scrubbed, which
+                     * with CONFIG_SCRUB_DEBUG leaves a poison pattern.
+                     */
                     for ( j = scrub_start; j < (1U << a->extent_order); j++ )
                     {
-                        if ( !test_and_clear_bit(_PGC_need_scrub,
-                                                 &page[j].count_info) )
-                            continue;
+                        bool dirty = test_and_clear_bit(_PGC_need_scrub,
+                                                        &page[j].count_info);
 
-                        scrub_one_page(&page[j], true);
+                        if ( a->memflags & MEMF_zero )
+                            clear_domain_page(page_to_mfn(&page[j]));
+                        else if ( dirty )
+                            scrub_one_page(&page[j], true);
+                        else
+                            continue;
 
                         if ( (j + 1) != (1U << a->extent_order) &&
                              !(++dirty_cnt & 0xff) &&
