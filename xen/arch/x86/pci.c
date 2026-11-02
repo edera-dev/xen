@@ -109,16 +109,21 @@ bool pci_check_bar(const struct pci_dev *pdev, mfn_t start, mfn_t end)
      * Check if BAR is not overlapping with any memory region defined
      * in the memory map.
      */
-    if ( !is_memory_hole(start, end) )
-        gdprintk(XENLOG_WARNING,
-                 "%pp: BAR at [%"PRI_mfn", %"PRI_mfn"] not in memory map hole\n",
-                 &pdev->sbdf, mfn_x(start), mfn_x(end));
+    if ( is_memory_hole(start, end) )
+        return true;
+
+    gdprintk(XENLOG_WARNING,
+             "%pp: BAR at [%"PRI_mfn", %"PRI_mfn"] not in memory map hole\n",
+             &pdev->sbdf, mfn_x(start), mfn_x(end));
 
     /*
-     * Unconditionally return true, pci_sanitize_bar_memory() will remove any
-     * non-hole regions.
+     * For the hardware domain, pci_sanitize_bar_memory() removes any
+     * non-hole regions before mapping. That isn't done for other domains,
+     * whose BARs go wherever they choose in their own address space, so for
+     * them refuse a BAR whose host range overlaps the memory map: it could
+     * be RAM belonging to Xen or another domain.
      */
-    return true;
+    return pdev->domain && is_hardware_domain(pdev->domain);
 }
 
 /* Remove overlaps with any ranges defined in the host memory map. */
