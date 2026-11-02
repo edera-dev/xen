@@ -101,6 +101,9 @@ void vpci_deassign_device(struct pci_dev *pdev)
 
     vpci_cleanup_capabilities(pdev, false);
 
+    if ( !is_hardware_domain(pdev->domain) )
+        vpci_release_bars(pdev);
+
     spin_lock(&pdev->vpci->lock);
     while ( !list_empty(&pdev->vpci->handlers) )
     {
