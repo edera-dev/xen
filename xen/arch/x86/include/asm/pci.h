@@ -52,6 +52,11 @@ static inline bool arch_pci_device_physdevop(void)
 
 void arch_pci_init_pdev(struct pci_dev *pdev);
 
+/* A device is leaving domain d: nothing arch-specific to undo on x86. */
+struct domain;
+static inline void arch_pci_release_device(struct domain *d,
+                                           struct pci_dev *pdev) {}
+
 bool pci_check_bar(const struct pci_dev *pdev, mfn_t start, mfn_t end);
 
 struct rangeset;
