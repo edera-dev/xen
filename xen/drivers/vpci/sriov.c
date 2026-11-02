@@ -161,21 +161,71 @@ static void cf_check control_write(const struct pci_dev *pdev, unsigned int reg,
 
     if ( new_mem_enabled != mem_enabled )
     {
+        struct pci_dev *vf_pdev;
+
         if ( new_mem_enabled )
         {
-            struct pci_dev *vf_pdev;
-
             /* FIXME casting away const-ness to modify vf_rlen */
             size_vf_bars((struct pci_dev *)pdev, sriov_pos);
 
             list_for_each_entry(vf_pdev, &pdev->vf_list, vf_list)
             {
-                int rc = map_vf(vf_pdev, PCI_COMMAND_MEMORY, VPCI_MAP);
+                int rc;
+
+                /*
+                 * A VF given to another domain is mapped when that domain
+                 * enables memory decoding on it (vf_cmd_write()), at the
+                 * address it chose, and under its own lock.
+                 */
+                if ( vf_pdev->domain != pdev->domain || !vf_pdev->vpci )
+                    continue;
+
+                rc = map_vf(vf_pdev, PCI_COMMAND_MEMORY, VPCI_MAP);
                 if ( rc )
                     return;
             }
         }
-        /* TODO: unmap vf */
+        else
+        {
+            /*
+             * The VF BARs stop decoding, and their owner may move them before
+             * enabling them again, so nobody may keep a mapping of them.
+             */
+            list_for_each_entry(vf_pdev, &pdev->vf_list, vf_list)
+            {
+                struct domain *vf_d = vf_pdev->domain;
+
+                if ( !vf_pdev->vpci )
+                    continue;
+
+                if ( vf_d == pdev->domain )
+                {
+                    /*
+                     * Our own lock is held: unmap the usual way, leaving the
+                     * rest of the VF's command register as it is.
+                     */
+                    if ( vf_pdev->vpci->header.bars_mapped )
+                        vpci_modify_bars(vf_pdev,
+                                         pci_conf_read16(vf_pdev->sbdf,
+                                                         PCI_COMMAND) &
+                                         ~PCI_COMMAND_MEMORY,
+                                         VPCI_UNMAP, false);
+                    continue;
+                }
+
+                /*
+                 * Another domain's VF: take that domain's lock and unmap it
+                 * now, as its vCPUs may not run the deferred task for a
+                 * while. It has to enable memory decoding on the VF again
+                 * to get it back.
+                 */
+                write_lock(&vf_d->pci_lock);
+                if ( vf_pdev->domain == vf_d && vf_pdev->vpci )
+                    vpci_unmap_bars_now(vf_pdev,
+                                        vpci_cancel_map_tasks(vf_pdev));
+                write_unlock(&vf_d->pci_lock);
+            }
+        }
     }
 
     pci_conf_write16(pdev->sbdf, reg, val);
