@@ -1714,8 +1714,9 @@ static int __init cf_check _assign_hwdom_pci_devices(struct pci_seg *pseg,
                 if ( !size )
                     continue;
 
+                /* The range is inclusive: stop at the BAR's last page. */
                 ret = iomem_permit_access(hardware_domain, paddr_to_pfn(addr),
-                                     paddr_to_pfn(PAGE_ALIGN(addr + size - 1)));
+                                          paddr_to_pfn(addr + size - 1));
                 if ( ret )
                     break;
             }
