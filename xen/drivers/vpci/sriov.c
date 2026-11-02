@@ -368,10 +368,13 @@ int vf_init_header(struct pci_dev *vf_pdev)
             if ( (bar->type == VPCI_BAR_MEM32 ||
                   bar->type == VPCI_BAR_MEM64_LO) && bar->size )
             {
-                if ( !bar->addr || bar->addr + bar->size - 1 < bar->addr )
+                if ( !bar->addr || bar->addr + bar->size - 1 < bar->addr ||
+                     !pci_check_bar(vf_pdev, _mfn(PFN_DOWN(bar->addr)),
+                                    _mfn(PFN_DOWN(bar->addr +
+                                                  bar->size - 1))) )
                 {
                     printk(XENLOG_WARNING
-                           "%pp: VF BAR%u not placed (%#"PRIx64", size %#"PRIx64")\n",
+                           "%pp: VF BAR%u not placed in an MMIO hole (%#"PRIx64", size %#"PRIx64")\n",
                            &vf_pdev->sbdf, i, bar->addr, bar->size);
                     return -EINVAL;
                 }
