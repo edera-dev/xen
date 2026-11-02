@@ -304,6 +304,7 @@ bool vpci_ecam_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int len,
 /* Map/unmap the BARs of a vPCI device. */
 /* Take back what vPCI gave a domain for a device's BARs (deassign). */
 void vpci_release_bars(struct pci_dev *pdev, bool had_tasks);
+void vpci_unmap_bars_now(struct pci_dev *pdev, bool had_tasks);
 bool vpci_cancel_map_tasks(const struct pci_dev *pdev);
 int vpci_modify_bars(const struct pci_dev *pdev, uint16_t cmd,
                      enum vpci_map_op map_op, bool rom_only);
