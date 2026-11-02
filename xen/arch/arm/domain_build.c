@@ -2156,6 +2156,8 @@ static int __init construct_dom0(struct domain *d)
 static int __init hide_vtcon_from_hwdom(struct domain *d)
 {
     paddr_t cfg = vtcon_config_space() & PAGE_MASK;
+    struct vtcon_region regs[2];
+    unsigned int i, n;
     unsigned long pfn;
     int rc;
 
@@ -2185,6 +2187,33 @@ static int __init hide_vtcon_from_hwdom(struct domain *d)
 
     printk("vtcon: configuration space at %#"PRIpaddr" hidden from %pd\n",
            cfg, d);
+
+    /*
+     * Hiding the configuration space stops the domain finding the device,
+     * but its registers stay reachable in the BAR: mapped with the rest of
+     * the aperture on DT, and faulted in on demand on ACPI. Through them the
+     * domain could reset the device and point its queues at Xen's memory,
+     * which the host would then write the console's traffic into. Take the
+     * pages Xen drives it through away as well. Nothing legitimate in the
+     * domain touches them once the device is hidden, so no handler is
+     * needed: a stray access just faults.
+     */
+    for ( n = vtcon_registers(regs), i = 0; i < n; i++ )
+    {
+        unsigned long s = PFN_DOWN(regs[i].start);
+        unsigned long e = PFN_DOWN(regs[i].start + regs[i].size - 1);
+
+        if ( !regs[i].size )
+            continue;
+
+        rc = unmap_mmio_regions(d, _gfn(s), e - s + 1, _mfn(s));
+        if ( rc )
+            return rc;
+
+        rc = iomem_deny_access(d, s, e);
+        if ( rc )
+            return rc;
+    }
 
     return 0;
 }
