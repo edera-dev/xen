@@ -288,20 +288,16 @@ static void vpci_unmap_range(struct domain *d, unsigned long gfn,
 }
 
 /*
- * The device is leaving a domain other than the hardware domain: take away
- * everything vPCI gave that domain for it. Drop the device's queued map
- * tasks, unmap its BARs from wherever the domain put them, and revoke the
- * iomem permission vpci_init_header() (or the SR-IOV code) granted for
- * them, so the domain can't map the BARs again once the device has a new
- * owner.
+ * Drop every map task still queued for the device on any of its owner's
+ * vCPUs. A task holds a plain pointer to the device, which is about to stop
+ * being this domain's or to be freed altogether. Returns whether any were
+ * dropped.
  */
-void vpci_release_bars(struct pci_dev *pdev)
+bool vpci_cancel_map_tasks(const struct pci_dev *pdev)
 {
     struct domain *d = pdev->domain;
-    struct vpci_header *header = &pdev->vpci->header;
-    bool pending = false;
+    bool dropped = false;
     struct vcpu *v;
-    unsigned int i;
 
     ASSERT(rw_is_write_locked(&d->pci_lock));
 
@@ -316,10 +312,48 @@ void vpci_release_bars(struct pci_dev *pdev)
 
             list_del(&task->next);
             destroy_map_task(task);
-            pending = true;
+            dropped = true;
         }
     }
-    atomic_set(&header->map_pending, 0);
+
+    if ( pdev->vpci )
+        atomic_set(&pdev->vpci->header.map_pending, 0);
+
+    return dropped;
+}
+
+/*
+ * Free whatever is left on a vCPU's task queue when the domain is destroyed.
+ * The tasks' rangesets belong to the domain, so this has to run before
+ * rangeset_domain_destroy(). Their devices may be gone, so don't touch them.
+ */
+void vpci_vcpu_destroy(struct vcpu *v)
+{
+    struct vpci_map_task *task, *tmp;
+
+    list_for_each_entry_safe ( task, tmp, &v->vpci.task_queue, next )
+    {
+        list_del(&task->next);
+        destroy_map_task(task);
+    }
+}
+
+/*
+ * The device is leaving a domain other than the hardware domain: take away
+ * everything vPCI gave that domain for it. Unmap its BARs from wherever the
+ * domain put them, and revoke the iomem permission vpci_init_header() (or
+ * the SR-IOV code) granted for them, so the domain can't map the BARs again
+ * once the device has a new owner. had_tasks says map tasks for the device
+ * were dropped by vpci_cancel_map_tasks(), so a mapping may be half done.
+ */
+void vpci_release_bars(struct pci_dev *pdev, bool had_tasks)
+{
+    struct domain *d = pdev->domain;
+    struct vpci_header *header = &pdev->vpci->header;
+    bool pending = had_tasks;
+    unsigned int i;
+
+    ASSERT(rw_is_write_locked(&d->pci_lock));
 
     for ( i = 0; i < ARRAY_SIZE(header->bars); i++ )
     {
