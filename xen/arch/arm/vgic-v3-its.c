@@ -152,7 +152,8 @@ static struct vcpu *get_vcpu_from_collection(struct virt_its *its,
     if ( vcpu_id == UNMAPPED_COLLECTION || vcpu_id >= its->d->max_vcpus )
         return NULL;
 
-    return its->d->vcpu[vcpu_id];
+    /* vcpu_id comes from the guest's collection table. */
+    return its->d->vcpu[array_index_nospec(vcpu_id, its->d->max_vcpus)];
 }
 
 /* Set the address of an ITT for a given device ID. */
