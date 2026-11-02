@@ -190,6 +190,12 @@ void gicv3_free_host_lpi_block(uint32_t first_lpi);
 
 void vgic_vcpu_inject_lpi(struct domain *d, unsigned int virq);
 
+int gicv3_its_find_guest_device(struct domain *d, paddr_t host_doorbell,
+                                uint32_t host_devid, paddr_t *guest_doorbell,
+                                uint32_t *guest_devid);
+struct pci_dev;
+void vgic_v3_its_release_pci_device(struct domain *d,
+                                    const struct pci_dev *pdev);
 unsigned int gicv3_its_guest_device_eventids(struct domain *d,
                                              paddr_t vdoorbell_address,
                                              uint32_t vdevid);
@@ -268,6 +274,12 @@ static inline int vgic_v3_its_init_domain(struct domain *d)
 }
 
 static inline void vgic_v3_its_free_domain(struct domain *d)
+{
+}
+
+struct pci_dev;
+static inline void vgic_v3_its_release_pci_device(struct domain *d,
+                                                  const struct pci_dev *pdev)
 {
 }
 
