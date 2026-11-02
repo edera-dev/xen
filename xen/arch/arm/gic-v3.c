@@ -1699,6 +1699,16 @@ static int gicv3_make_hwdom_madt(const struct domain *d, u32 offset)
      * longer than the one Xen is built against.
      */
     size = host_gicc->header.length;
+
+    /*
+     * Every field written below lies before efficiency_class; an entry too
+     * short to hold them would have the writes land past the copy.
+     */
+    if ( size < ACPI_MADT_GICC_MIN_LENGTH )
+    {
+        printk("GICC entry too short (%u bytes)\n", size);
+        return -EINVAL;
+    }
     for ( i = 0; i < d->max_vcpus; i++ )
     {
         gicc = (struct acpi_madt_generic_interrupt *)(base_ptr + table_len);
