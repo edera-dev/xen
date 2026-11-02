@@ -1983,7 +1983,11 @@ int iommu_do_pci_domctl(
 
         if ( !pdev )
         {
-            printk(XENLOG_G_INFO "%pp doesn't exist", &PCI_SBDF(seg, bus, devfn));
+            printk(XENLOG_G_INFO "%pp doesn't exist\n",
+                   &PCI_SBDF(seg, bus, devfn));
+            pcidevs_unlock();
+            ret = domctl->cmd == XEN_DOMCTL_test_assign_device ? -EINVAL
+                                                               : -ENODEV;
             break;
         }
 
