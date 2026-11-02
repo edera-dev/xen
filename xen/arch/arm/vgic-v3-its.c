@@ -24,6 +24,7 @@
 #include <xen/domain_page.h>
 #include <xen/guest_access.h>
 #include <xen/lib.h>
+#include <xen/nospec.h>
 #include <xen/init.h>
 #include <xen/softirq.h>
 #include <xen/irq.h>
@@ -672,41 +673,46 @@ static int its_handle_invall(struct virt_its *its, uint64_t *cmdptr)
     return ret;
 }
 
-/* Must be called with the ITS lock held. */
+/*
+ * Disconnect an event from its virtual LPI. Only Xen's own state is used:
+ * the pending_irq Xen allocated for this event at MAPD time, and the vLPI
+ * and vCPU recorded in it at MAPTI/MOVI time. The guest's ITT and
+ * collection table live in guest memory and can say anything by now; acting
+ * on them could remove some other event's pending_irq from the LPI tree, or
+ * leave this one in it after the device's pending_irqs have been freed.
+ *
+ * Must be called with the ITS lock held.
+ */
 static int its_discard_event(struct virt_its *its,
                              uint32_t vdevid, uint32_t vevid)
 {
+    struct domain *d = its->d;
     struct pending_irq *p;
     unsigned long flags;
     struct vcpu *vcpu;
+    unsigned int vcpu_id;
     uint32_t vlpi;
 
     ASSERT(spin_is_locked(&its->its_lock));
 
-    if ( !read_itte(its, vdevid, vevid, &vcpu, &vlpi) )
+    p = gicv3_its_get_event_pending_irq(d, its->doorbell_address,
+                                        vdevid, vevid);
+    if ( !p || p->irq == INVALID_LPI )
         return -ENOENT;
 
-    if ( vlpi == INVALID_LPI )
+    vlpi = p->irq;
+    vcpu_id = p->lpi_vcpu_id;
+    if ( vcpu_id >= d->max_vcpus )
         return -ENOENT;
+    vcpu = d->vcpu[array_index_nospec(vcpu_id, d->max_vcpus)];
 
-    /*
-     * TODO: This relies on the VCPU being correct in the ITS tables.
-     * This can be fixed by either using a per-IRQ lock or by using
-     * the VCPU ID from the pending_irq instead.
-     */
     spin_lock_irqsave(&vcpu->arch.vgic.lock, flags);
 
-    /* Remove the pending_irq from the tree. */
-    write_lock(&its->d->arch.vgic.pend_lpi_tree_lock);
-    p = radix_tree_delete(&its->d->arch.vgic.pend_lpi_tree, vlpi);
-    write_unlock(&its->d->arch.vgic.pend_lpi_tree_lock);
-
-    if ( !p )
-    {
-        spin_unlock_irqrestore(&vcpu->arch.vgic.lock, flags);
-
-        return -ENOENT;
-    }
+    /* Remove the pending_irq from the tree, if it is what's there. */
+    write_lock(&d->arch.vgic.pend_lpi_tree_lock);
+    if ( radix_tree_lookup(&d->arch.vgic.pend_lpi_tree, vlpi) == p )
+        radix_tree_delete(&d->arch.vgic.pend_lpi_tree, vlpi);
+    write_unlock(&d->arch.vgic.pend_lpi_tree_lock);
 
     /* Cleanup the pending_irq and disconnect it from the LPI. */
     vgic_remove_irq_from_queues(vcpu, p);
@@ -715,35 +721,27 @@ static int its_discard_event(struct virt_its *its,
     spin_unlock_irqrestore(&vcpu->arch.vgic.lock, flags);
 
     /* Remove the corresponding host LPI entry */
-    return gicv3_remove_guest_event(its->d, its->doorbell_address,
-                                    vdevid, vevid);
+    return gicv3_remove_guest_event(d, its->doorbell_address, vdevid, vevid);
 }
 
+/*
+ * Disconnect every event of a device before MAPD V=0 frees its
+ * pending_irqs, going by the events Xen set up rather than the guest's
+ * device table.
+ */
 static void its_unmap_device(struct virt_its *its, uint32_t devid)
 {
-    dev_table_entry_t itt;
-    uint64_t evid, nr_events;
+    unsigned int evid, nr_events;
 
     spin_lock(&its->its_lock);
 
-    if ( its_get_itt(its, devid, &itt) )
-        goto out;
-
-    /*
-     * The device table lives in guest memory, so its ITT size can say
-     * anything up to 2^32. Only events below the count Xen set up at MAPD
-     * time can have anything to discard, so don't walk further than that.
-     */
-    nr_events = min_t(uint64_t, DEV_TABLE_ITT_SIZE(itt),
-                      gicv3_its_guest_device_eventids(its->d,
-                                                      its->doorbell_address,
-                                                      devid));
+    nr_events = gicv3_its_guest_device_eventids(its->d, its->doorbell_address,
+                                                devid);
 
     for ( evid = 0; evid < nr_events; evid++ )
-        /* Don't care about errors here, clean up as much as possible. */
+        /* Events never mapped report -ENOENT; carry on regardless. */
         its_discard_event(its, devid, evid);
 
-out:
     spin_unlock(&its->its_lock);
 }
 
@@ -884,6 +882,8 @@ static int its_handle_mapti(struct virt_its *its, uint64_t *cmdptr)
      */
 out_remove_host_entry:
     gicv3_remove_guest_event(its->d, its->doorbell_address, devid, eventid);
+    /* Not in the tree: mark it unconnected so the event can be mapped again. */
+    vgic_init_pending_irq(pirq, INVALID_LPI);
 
 out_remove_mapping:
     spin_lock(&its->its_lock);

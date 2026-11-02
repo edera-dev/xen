@@ -1048,7 +1048,12 @@ struct pending_irq *gicv3_assign_guest_event(struct domain *d,
     pirq = get_event_pending_irq(d, vdoorbell_address, vdevid, eventid,
                                  &host_lpi);
 
-    if ( !pirq )
+    /*
+     * Refuse an event that is already connected. MAPTI only checks the
+     * guest's ITT for that, and the guest can clear its entry; reusing the
+     * live pending_irq would put it in the LPI tree under a second vLPI.
+     */
+    if ( !pirq || pirq->irq != INVALID_LPI )
         return NULL;
 
     gicv3_lpi_update_host_entry(host_lpi, d->domain_id, virt_lpi);
