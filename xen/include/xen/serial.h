@@ -111,9 +111,17 @@ static inline void virtio_console_init(void) {}
 #ifdef CONFIG_HAS_VIRTIO_CONSOLE
 bool vtcon_in_use(void);
 paddr_t vtcon_config_space(void);
+/* The register ranges of the console Xen drives; returns how many (<= 2). */
+struct vtcon_region { paddr_t start, size; };
+unsigned int vtcon_registers(struct vtcon_region regions[2]);
 #else
 static inline bool vtcon_in_use(void) { return false; }
 static inline paddr_t vtcon_config_space(void) { return 0; }
+struct vtcon_region { paddr_t start, size; };
+static inline unsigned int vtcon_registers(struct vtcon_region regions[2])
+{
+    return 0;
+}
 #endif
 
 /* 'Serial handles' are composed from the following fields. */
