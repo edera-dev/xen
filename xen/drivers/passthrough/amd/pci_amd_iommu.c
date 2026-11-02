@@ -743,14 +743,22 @@ static int cf_check amd_iommu_reattach(struct domain *d,
     {
         if ( (rc = amd_iommu_reserve_domain_unity_unmap(d, ctx, map)) )
             AMD_IOMMU_DEBUG(" Unable to unmap RMRR from d%dc%d for %pp (%d)\n",
-                            d->domain_id, prev_ctx->id, &pdev->sbdf, rc);
+                            d->domain_id, ctx->id, &pdev->sbdf, rc);
 
         return ret;
     }
 
-    if ( (rc = amd_iommu_reserve_domain_unity_unmap(d, prev_ctx, map)) )
-        AMD_IOMMU_DEBUG(" Unable to unmap previous RMRR for %pp (%d)\n",
-                        &pdev->sbdf, rc);
+    /*
+     * Remove the unity maps from the previous context, which belongs to the
+     * device's previous owner: pdev->domain is only updated once this
+     * returns. As upstream did, leave them for the hardware domain, since
+     * firmware may still reference them.
+     */
+    if ( !is_hardware_domain(pdev->domain) &&
+         (rc = amd_iommu_reserve_domain_unity_unmap(pdev->domain, prev_ctx,
+                                                    map)) )
+        AMD_IOMMU_DEBUG(" Unable to unmap previous RMRR from %pd for %pp (%d)\n",
+                        pdev->domain, &pdev->sbdf, rc);
 
     return ret;
 }
