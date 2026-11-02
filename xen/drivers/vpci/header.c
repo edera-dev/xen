@@ -1188,7 +1188,19 @@ int vpci_init_header(struct pci_dev *pdev)
         bars[i].size = size;
         bars[i].prefetchable = val & PCI_BASE_ADDRESS_MEM_PREFETCH;
 
-        if ( !is_hwdom )
+        /*
+         * Only grant access to a host range that is really MMIO: a BAR left
+         * unassigned (0) or pointing into RAM would otherwise hand the
+         * domain that RAM. Such a BAR is left unmapped; vpci_modify_bars()
+         * skips it for the same reason.
+         */
+        if ( !is_hwdom &&
+             !pci_check_bar(pdev, _mfn(PFN_DOWN(addr)),
+                            _mfn(PFN_DOWN(addr + size - 1))) )
+            printk(XENLOG_WARNING
+                   "%pp: BAR%u at %#"PRIx64" not in an MMIO hole, not granting it to %pd\n",
+                   &pdev->sbdf, i, addr, pdev->domain);
+        else if ( !is_hwdom )
         {
             int rc = iomem_permit_access(pdev->domain,
                                         PFN_DOWN(addr),
