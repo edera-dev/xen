@@ -292,6 +292,32 @@ static int __init acpi_create_rsdp(struct domain *d, struct membank tbl_add[])
     return 0;
 }
 
+/* Remove the entry for a table from the XSDT; returns whether one was found. */
+static bool __init acpi_xsdt_remove_entry(u64 entry[],
+                                          unsigned long *entry_count,
+                                          const char *signature)
+{
+    unsigned long i;
+
+    for ( i = 0; i < *entry_count; i++ )
+    {
+        u64 size = sizeof(struct acpi_table_header);
+        struct acpi_table_header *table = acpi_os_map_memory(entry[i], size);
+        bool match = ACPI_COMPARE_NAME(table->signature, signature);
+
+        acpi_os_unmap_memory(table, size);
+        if ( !match )
+            continue;
+
+        memmove(&entry[i], &entry[i + 1],
+                (*entry_count - i - 1) * sizeof(entry[0]));
+        (*entry_count)--;
+        return true;
+    }
+
+    return false;
+}
+
 static void __init acpi_xsdt_modify_entry(u64 entry[],
                                           unsigned long entry_count,
                                           const char *signature, u64 addr)
@@ -313,12 +339,29 @@ static void __init acpi_xsdt_modify_entry(u64 entry[],
     }
 }
 
+/* Set when the hardware domain must not see the firmware's IORT at all. */
+static bool __initdata hwdom_omit_iort;
+
+static int __init acpi_count_smmu_v3(const struct acpi_iort_node *node,
+                                     void *arg)
+{
+    (*(unsigned int *)arg)++;
+
+    return 0;
+}
+
 /*
  * Replace the firmware's IORT with one that does not describe the SMMUs, so
  * that the hardware domain does not bind its own IOMMU driver to hardware Xen
- * owns.  On failure the firmware table is left in place: the domain then
- * drives the SMMU, which is what it did before this existed, and is better
- * than handing it a table that describes the machine incorrectly.
+ * owns.
+ *
+ * If that fails, the firmware table can still be left in place when it
+ * describes no SMMUv3: there is then nothing in it for the domain to take
+ * over. When it does describe some, Xen drives them, and handing it over
+ * would have the domain reset them and replace the stream tables isolating
+ * other domains' devices. Leave the domain without an IORT instead; it then
+ * can't route its PCI MSIs through the ITS, which is visible and fixable,
+ * unlike losing isolation.
  */
 static int __init acpi_create_iort(struct domain *d, struct membank tbl_add[])
 {
@@ -332,7 +375,17 @@ static int __init acpi_create_iort(struct domain *d, struct membank tbl_add[])
     rc = iort_make_hwdom_table(base_ptr, d->arch.efi_acpi_len - offset, &len);
     if ( rc )
     {
-        if ( rc != -ENODEV )
+        unsigned int smmus = 0;
+
+        iort_for_each_smmu_v3(acpi_count_smmu_v3, &smmus);
+        if ( smmus )
+        {
+            printk(XENLOG_ERR
+                   "Unable to rewrite the IORT (%d); it describes %u SMMUv3 Xen uses, so the hardware domain gets no IORT\n",
+                   rc, smmus);
+            hwdom_omit_iort = true;
+        }
+        else if ( rc != -ENODEV )
             printk(XENLOG_WARNING
                    "Unable to rewrite the IORT (%d), the hardware domain will see the firmware's\n",
                    rc);
@@ -390,6 +443,10 @@ static int __init acpi_create_xsdt(struct domain *d, struct membank tbl_add[])
     if ( tbl_add[TBL_IORT].size )
         acpi_xsdt_modify_entry(xsdt->table_offset_entry, entry_count,
                                ACPI_SIG_IORT, tbl_add[TBL_IORT].start);
+    else if ( hwdom_omit_iort &&
+              acpi_xsdt_remove_entry(xsdt->table_offset_entry, &entry_count,
+                                     ACPI_SIG_IORT) )
+        table_size -= sizeof(u64);
     xsdt->table_offset_entry[entry_count++] = tbl_add[TBL_STAO].start;
     if ( tbl_add[TBL_SSDT].size )
         xsdt->table_offset_entry[entry_count++] = tbl_add[TBL_SSDT].start;
