@@ -24,6 +24,7 @@
 #include <xen/domain_page.h>
 #include <xen/guest_access.h>
 #include <xen/lib.h>
+#include <xen/msi.h>
 #include <xen/nospec.h>
 #include <xen/init.h>
 #include <xen/softirq.h>
@@ -304,8 +305,23 @@ static int msi_map_id(uint32_t id_in, uint32_t *id_out)
 }
 
 /*
+ * The most MSI or MSI-X vectors a device can use, as recorded by
+ * pdev_msi_init() when the device was added.
+ */
+static unsigned int pdev_msi_vectors(const struct pci_dev *pdev)
+{
+#ifdef CONFIG_HAS_PCI_MSI
+    return max(pdev->msix ? pdev->msix->nr_entries : 0U,
+               (unsigned int)pdev->msi_maxvec);
+#else
+    /* Nothing is recorded; PCI_PASSTHROUGH always selects HAS_PCI_MSI. */
+    return 0;
+#endif
+}
+
+/*
  * Work out which host DeviceID and host ITS doorbell a guest's DeviceID
- * stands for.
+ * stands for, and how many events the device can raise (0 for no limit).
  *
  * The hardware domain, unless it uses vPCI (pci-scan), programs the real
  * DeviceIDs of the host, as it always has. Any other domain may only name a
@@ -314,13 +330,17 @@ static int msi_map_id(uint32_t id_in, uint32_t *id_out)
  * remap a device that belongs to someone else.
  */
 static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
-                              uint32_t *host_devid, paddr_t *host_doorbell)
+                              uint32_t *host_devid, paddr_t *host_doorbell,
+                              unsigned int *max_events)
 {
     struct domain *d = its->d;
     const struct pci_dev *pdev;
     const struct pci_host_bridge *bridge;
     pci_sbdf_t host_sbdf = { .sbdf = 0 };
+    unsigned int vectors = 0;
     bool found = false;
+
+    *max_events = 0;
 
     if ( !has_vpci_bridge(d) )
     {
@@ -343,13 +363,17 @@ static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
             continue;
 #endif
         host_sbdf = pdev->sbdf;
+        vectors = pdev_msi_vectors(pdev);
         found = true;
         break;
     }
     read_unlock(&d->pci_lock);
 
-    if ( !found )
+    /* A device without MSI or MSI-X has no events to map. */
+    if ( !found || !vectors )
         return -ENODEV;
+
+    *max_events = vectors;
 
     bridge = pci_find_host_bridge(host_sbdf.seg, host_sbdf.bus);
     if ( unlikely(!bridge) )
@@ -361,11 +385,14 @@ static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
 }
 #else
 static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
-                              uint32_t *host_devid, paddr_t *host_doorbell)
+                              uint32_t *host_devid, paddr_t *host_doorbell,
+                              unsigned int *max_events)
 {
     /* Without PCI, only the hardware domain has devices to name. */
     if ( !is_hardware_domain(its->d) )
         return -ENODEV;
+
+    *max_events = 0;
 
     *host_devid = guest_devid;
     *host_doorbell = its->doorbell_address;
@@ -754,6 +781,8 @@ static int its_handle_mapd(struct virt_its *its, uint64_t *cmdptr)
     bool valid = its_cmd_get_validbit(cmdptr);
     paddr_t itt_addr = its_cmd_get_ittaddr(cmdptr);
     paddr_t host_doorbell_address = 0;
+    unsigned long nr_events = BIT(size, UL);
+    unsigned int max_events = 0;
     int ret;
 
     /* Sanitize the number of events. */
@@ -771,12 +800,20 @@ static int its_handle_mapd(struct virt_its *its, uint64_t *cmdptr)
      */
     if ( valid &&
          its_resolve_device(its, guest_devid, &host_devid,
-                            &host_doorbell_address) )
+                            &host_doorbell_address, &max_events) )
         return -1;
+
+    /*
+     * Every event is backed by a pending_irq and a host LPI allocated up
+     * front from a pool all domains share, so don't set up more than the
+     * device can raise. Events above that just fail to map later.
+     */
+    if ( max_events && nr_events > max_events )
+        nr_events = max_events;
 
     ret = gicv3_its_map_guest_device(its->d, host_doorbell_address, host_devid,
                                      its->doorbell_address, guest_devid,
-                                     BIT(size, UL), valid);
+                                     nr_events, valid);
     if ( ret && valid )
         return ret;
 
