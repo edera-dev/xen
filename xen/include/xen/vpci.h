@@ -308,11 +308,14 @@ int vpci_init_capability_list(struct pci_dev *pdev);
 
 void vpci_msix_arch_register(struct vpci_msix *msix, struct domain *d);
 
-bool cf_check vpci_msix_write(struct vpci_msix *msix, unsigned long addr,
-                              unsigned int len, unsigned long data);
+/* The caller holds d->pci_lock for reading; msix may be NULL. */
+bool cf_check vpci_msix_write(struct domain *d, struct vpci_msix *msix,
+                              unsigned long addr, unsigned int len,
+                              unsigned long data);
 
-bool cf_check vpci_msix_read(struct vpci_msix *msix, unsigned long addr,
-                             unsigned int len, unsigned long *data);
+bool cf_check vpci_msix_read(struct domain *d, struct vpci_msix *msix,
+                             unsigned long addr, unsigned int len,
+                             unsigned long *data);
 
 #endif /* __XEN__ */
 
