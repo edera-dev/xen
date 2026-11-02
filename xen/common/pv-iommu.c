@@ -273,6 +273,18 @@ static long reattach_device_op(struct pv_iommu_reattach_device *reattach,
 static bool __read_mostly pv_iommu_check_conflicts;
 boolean_param("pv-iommu-check-conflicts", pv_iommu_check_conflicts);
 
+/*
+ * The last DFN the context's IOMMU can address. A larger one would be
+ * silently truncated by the driver to a smaller DFN, which then escapes
+ * the identity-map check made on the DFN as given.
+ */
+static unsigned long max_dfn(struct domain *d)
+{
+    uint64_t max = iommu_get_max_iova(d);
+
+    return max ? max >> PAGE_SHIFT : ~0UL;
+}
+
 static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
 {
     struct iommu_context *ctx;
@@ -282,6 +294,7 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
     unsigned int lookup_flags, flags = 0, flush_flags = 0;
     size_t i = 0;
     dfn_t dfn0 = _dfn(map->dfn); /* original map->dfn */
+    unsigned long last_dfn;
 
     if ( !map->ctx_no || !(ctx = iommu_get_context(d, map->ctx_no)) )
         return -EINVAL;
@@ -299,6 +312,8 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
         return -ESRCH;
     }
 
+    last_dfn = max_dfn(d);
+
     if ( map->map_flags & IOMMU_MAP_readable )
         flags |= IOMMUF_readable;
 
@@ -310,8 +325,15 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
         gfn_t gfn = _gfn(map->gfn + i);
         dfn_t dfn = _dfn(map->dfn + i);
 
+        if ( dfn_x(dfn) > last_dfn )
+        {
+            ret = -EINVAL;
+            break;
+        }
+
 #ifdef CONFIG_X86
-        if ( iommu_identity_map_check(d, ctx, _mfn(map->dfn)) )
+        /* Each DFN in turn, not just the first one. */
+        if ( iommu_identity_map_check(d, ctx, _mfn(dfn_x(dfn))) )
         {
             ret = -EADDRNOTAVAIL;
             break;
@@ -440,13 +462,22 @@ static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
     unsigned int flags, flush_flags = 0, nr = 0;
     size_t i = 0;
     dfn_t batch_dfn = _dfn(unmap->dfn);
+    unsigned long last_dfn;
 
     if ( !unmap->ctx_no || !(ctx = iommu_get_context(d, unmap->ctx_no)) )
         return -EINVAL;
 
+    last_dfn = max_dfn(d);
+
     for (i = 0; i < unmap->nr_pages; i++)
     {
         dfn_t dfn = _dfn(unmap->dfn + i);
+
+        if ( dfn_x(dfn) > last_dfn )
+        {
+            ret = -EINVAL;
+            break;
+        }
 
 #ifdef CONFIG_X86
         if ( iommu_identity_map_check(d, ctx, _mfn(dfn_x(dfn))) )
