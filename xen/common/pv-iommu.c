@@ -398,14 +398,48 @@ static long flush_pages_op(struct pv_iommu_flush_pages *flush, struct domain *d)
     return ret;
 }
 
+/* Frames unmapped before their references are dropped (see below). */
+#define UNMAP_BATCH 64
+
+/*
+ * Flush the IOTLB for a run of just-unmapped DFNs, and only then drop the
+ * page references their frames held. Dropping a reference first would let
+ * the frame be freed or retyped (e.g. pinned as a PV page table) while a
+ * device could still reach it through a stale IOTLB entry. If the flush
+ * fails, keep the references: leaking the frames is safe, freeing them
+ * isn't.
+ */
+static void unmap_finish_batch(struct domain *d, uint16_t ctx_no, dfn_t dfn,
+                              const mfn_t *mfns, unsigned int nr,
+                              unsigned int *flush_flags)
+{
+    unsigned int j;
+    int rc;
+
+    rc = iommu_iotlb_flush(d, dfn, nr, *flush_flags, ctx_no);
+    *flush_flags = 0;
+
+    if ( rc )
+    {
+        printk(XENLOG_WARNING PVIOMMU_PREFIX
+               "%pd: flush failed for c%u (%d), keeping %u frames referenced\n",
+               d, ctx_no, rc, nr);
+        return;
+    }
+
+    for ( j = 0; j < nr; j++ )
+        if ( mfn_valid(mfns[j]) )
+            iommu_put_mapped_page(mfn_to_page(mfns[j]));
+}
+
 static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
 {
     struct iommu_context *ctx;
-    mfn_t mfn;
-    int ret = 0, flush_ret;
-    unsigned int flags, flush_flags = 0;
+    mfn_t mfn, batch[UNMAP_BATCH];
+    int ret = 0;
+    unsigned int flags, flush_flags = 0, nr = 0;
     size_t i = 0;
-    dfn_t dfn0 = _dfn(unmap->dfn); /* original unmap->dfn */
+    dfn_t batch_dfn = _dfn(unmap->dfn);
 
     if ( !unmap->ctx_no || !(ctx = iommu_get_context(d, unmap->ctx_no)) )
         return -EINVAL;
@@ -435,9 +469,15 @@ static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
 
         unmap->unmapped++;
 
-        /* Decrement reference counter (if needed) */
-        if ( mfn_valid(mfn) )
-            iommu_put_mapped_page(mfn_to_page(mfn));
+        /* The reference is dropped once the IOTLB has been flushed. */
+        batch[nr++] = mfn;
+        if ( nr == ARRAY_SIZE(batch) )
+        {
+            unmap_finish_batch(d, unmap->ctx_no, batch_dfn, batch, nr,
+                               &flush_flags);
+            batch_dfn = dfn_add(dfn, 1);
+            nr = 0;
+        }
 
         if ( (i & 0xff) && hypercall_preempt_check() )
         {
@@ -451,13 +491,11 @@ static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
         }
     }
 
-    flush_ret = iommu_iotlb_flush(d, dfn0, i, flush_flags, unmap->ctx_no);
+    if ( nr )
+        unmap_finish_batch(d, unmap->ctx_no, batch_dfn, batch, nr,
+                           &flush_flags);
 
     iommu_put_context(ctx);
-
-    if ( flush_ret )
-        printk(XENLOG_WARNING PVIOMMU_PREFIX
-               "Flush operation failed for c%d (%d)\n", ctx->id, flush_ret);
 
     return ret;
 }
