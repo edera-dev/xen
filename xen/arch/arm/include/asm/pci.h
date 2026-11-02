@@ -144,6 +144,8 @@ static inline bool is_pci_scan_enabled(void)
 }
 
 void arch_pci_init_pdev(struct pci_dev *pdev);
+struct domain;
+void arch_pci_release_device(struct domain *d, struct pci_dev *pdev);
 
 int pci_get_new_domain_nr(void);
 
@@ -190,6 +192,9 @@ static inline bool is_pci_scan_enabled(void)
 struct pci_dev;
 
 static inline void arch_pci_init_pdev(struct pci_dev *pdev) {}
+struct domain;
+static inline void arch_pci_release_device(struct domain *d,
+                                           struct pci_dev *pdev) {}
 
 static inline int pci_get_host_bridge_segment(const struct dt_device_node *node,
                                               uint16_t *segment)

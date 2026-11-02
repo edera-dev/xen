@@ -743,6 +743,10 @@ static int pci_reassign_device(struct domain *prev_dom, struct domain *next_dom,
     if ( rc )
         goto done;
 
+    /* Let the architecture drop interrupt state the old owner set up. */
+    if ( prev_dom && prev_dom != next_dom )
+        arch_pci_release_device(prev_dom, pdev);
+
     if ( prev_dom )
     {
         write_lock(&prev_dom->pci_lock);

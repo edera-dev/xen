@@ -20,6 +20,8 @@
 #include <xen/param.h>
 #include <xen/pci.h>
 
+#include <asm/gic_v3_its.h>
+
 /*
  * PIRQ event channels are not supported on Arm, so nothing to do.
  */
@@ -38,6 +40,12 @@ struct pci_dev *dev_to_pci(struct device *dev)
 void arch_pci_init_pdev(struct pci_dev *pdev)
 {
     pci_to_dev(pdev)->type = DEV_PCI;
+}
+
+/* A device is leaving domain d: drop what d mapped for it in its vITS. */
+void arch_pci_release_device(struct domain *d, struct pci_dev *pdev)
+{
+    vgic_v3_its_release_pci_device(d, pdev);
 }
 
 static int __init dt_pci_init(void)
