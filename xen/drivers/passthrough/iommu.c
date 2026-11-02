@@ -14,6 +14,7 @@
 
 #include <xen/sched.h>
 #include <xen/iommu.h>
+#include <xen/nospec.h>
 #include <xen/paging.h>
 #include <xen/guest_access.h>
 #include <xen/event.h>
@@ -542,7 +543,9 @@ struct iommu_context * cf_check iommu_get_context(struct domain *d, uint16_t ctx
     if (ctx_id == 0)
         ctx = &hd->default_ctx;
     else
-        ctx = &hd->other_contexts.map[ctx_id - 1];
+        /* ctx_id comes from the guest; bounded by iommu_check_context(). */
+        ctx = &hd->other_contexts.map[array_index_nospec(ctx_id - 1,
+                                          hd->other_contexts.count)];
 
     rspin_lock(&ctx->lock);
     /* Check if the context is still valid at this point */
