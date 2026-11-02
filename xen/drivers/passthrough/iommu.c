@@ -1301,8 +1301,18 @@ int cf_check iommu_context_free(struct domain *d, uint16_t ctx_id, u32 flags)
     if ( ctx_id == 0 )
         return -EINVAL;
 
+    /*
+     * Teardown takes pcidevs_lock while holding the context lock, and
+     * device reattach takes them the other way round. Take pcidevs_lock
+     * first here too (it's recursive), so the order is the same everywhere.
+     */
+    pcidevs_lock();
+
     if ( !(ctx = iommu_get_context(d, ctx_id)) )
+    {
+        pcidevs_unlock();
         return -ENOENT;
+    }
 
     ret = iommu_context_teardown(d, ctx, flags);
 
@@ -1310,6 +1320,8 @@ int cf_check iommu_context_free(struct domain *d, uint16_t ctx_id, u32 flags)
         clear_bit(ctx_id - 1, hd->other_contexts.bitmap);
 
     iommu_put_context(ctx);
+    pcidevs_unlock();
+
     return ret;
 }
 
