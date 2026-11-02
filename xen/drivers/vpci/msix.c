@@ -310,36 +310,29 @@ static bool adjacent_read(const struct domain *d, const struct vpci_msix *msix,
     return true;
 }
 
-bool cf_check vpci_msix_read(struct vpci_msix *msix, unsigned long addr,
-    unsigned int len, unsigned long *data)
+/*
+ * The caller holds d->pci_lock for reading across finding msix and this
+ * call, so the device can't be removed meanwhile. msix may be NULL if the
+ * table was gone by the time it looked.
+ */
+bool cf_check vpci_msix_read(struct domain *d, struct vpci_msix *msix,
+    unsigned long addr, unsigned int len, unsigned long *data)
 {
-    struct domain *d = msix->pdev->domain;
     const struct vpci_msix_entry *entry;
     unsigned int offset;
 
     *data = ~0UL;
 
-    read_lock(&d->pci_lock);
+    ASSERT_PDEV_LIST_IS_READ_LOCKED(d);
 
     if ( !msix )
-    {
-        read_unlock(&d->pci_lock);
         return false;
-    }
 
     if ( adjacent_handle(msix, addr) )
-    {
-        int rc = adjacent_read(d, msix, addr, len, data);
-
-        read_unlock(&d->pci_lock);
-        return rc;
-    }
+        return adjacent_read(d, msix, addr, len, data);
 
     if ( !access_allowed(msix->pdev, addr, len) )
-    {
-        read_unlock(&d->pci_lock);
         return true;
-    }
 
     spin_lock(&msix->pdev->vpci->lock);
     entry = get_entry(msix, addr);
@@ -371,7 +364,6 @@ bool cf_check vpci_msix_read(struct vpci_msix *msix, unsigned long addr,
         break;
     }
     spin_unlock(&msix->pdev->vpci->lock);
-    read_unlock(&d->pci_lock);
 
     return true;
 }
@@ -436,34 +428,23 @@ static bool adjacent_write(const struct domain *d, const struct vpci_msix *msix,
     return true;
 }
 
-bool cf_check vpci_msix_write(struct vpci_msix *msix, unsigned long addr,
-    unsigned int len, unsigned long data)
+/* Same locking as vpci_msix_read(). */
+bool cf_check vpci_msix_write(struct domain *d, struct vpci_msix *msix,
+    unsigned long addr, unsigned int len, unsigned long data)
 {
-    struct domain *d = msix->pdev->domain;
     struct vpci_msix_entry *entry;
     unsigned int offset;
 
-    read_lock(&d->pci_lock);
+    ASSERT_PDEV_LIST_IS_READ_LOCKED(d);
 
     if ( !msix )
-    {
-        read_unlock(&d->pci_lock);
         return false;
-    }
 
     if ( adjacent_handle(msix, addr) )
-    {
-        int rc = adjacent_write(d, msix, addr, len, data);
-
-        read_unlock(&d->pci_lock);
-        return rc;
-    }
+        return adjacent_write(d, msix, addr, len, data);
 
     if ( !access_allowed(msix->pdev, addr, len) )
-    {
-        read_unlock(&d->pci_lock);
         return true;
-    }
 
     spin_lock(&msix->pdev->vpci->lock);
     entry = get_entry(msix, addr);
@@ -539,7 +520,6 @@ bool cf_check vpci_msix_write(struct vpci_msix *msix, unsigned long addr,
         break;
     }
     spin_unlock(&msix->pdev->vpci->lock);
-    read_unlock(&d->pci_lock);
 
     return true;
 }

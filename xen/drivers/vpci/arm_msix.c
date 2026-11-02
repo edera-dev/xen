@@ -23,22 +23,30 @@ static int arm_msix_read(struct vcpu *v, mmio_info_t *info,
                          register_t *data, void *priv)
 {
     struct vpci *vpci = (struct vpci *)priv;
-    struct vpci_msix *msix = vpci->msix;
     unsigned int len = 1U << info->dabt.size;
     unsigned long addr = info->gpa;
+    int rc;
 
-    return vpci_msix_read(msix, addr, len, data);
+    read_lock(&v->domain->pci_lock);
+    rc = vpci_msix_read(v->domain, vpci->msix, addr, len, data);
+    read_unlock(&v->domain->pci_lock);
+
+    return rc;
 }
 
 static int arm_msix_write(struct vcpu *v, mmio_info_t *info,
                           register_t data, void *priv)
 {
     struct vpci *vpci = (struct vpci *)priv;
-    struct vpci_msix *msix = vpci->msix;
     unsigned int len = 1U << info->dabt.size;
     unsigned long addr = info->gpa;
+    int rc;
 
-    return vpci_msix_write(msix, addr, len, data);
+    read_lock(&v->domain->pci_lock);
+    rc = vpci_msix_write(v->domain, vpci->msix, addr, len, data);
+    read_unlock(&v->domain->pci_lock);
+
+    return rc;
 }
 
 static const struct mmio_handler_ops vpci_msi_mmio_handler = {
