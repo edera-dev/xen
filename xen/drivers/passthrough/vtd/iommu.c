@@ -1772,6 +1772,12 @@ static int __must_check cf_check intel_iommu_map_page(
     pte = &page[address_level_offset(dfn_to_daddr(dfn), level)];
     old = *pte;
 
+    if ( (flags & IOMMUF_no_replace) && dma_pte_present(old) )
+    {
+        unmap_vtd_domain_page(page);
+        return -EEXIST;
+    }
+
     dma_set_pte_addr(new, mfn_to_maddr(mfn));
     dma_set_pte_prot(new,
                      ((flags & IOMMUF_readable) ? DMA_PTE_READ  : 0) |
