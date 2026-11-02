@@ -1636,6 +1636,15 @@ int vgic_v3_its_init_domain(struct domain *d)
     spin_lock_init(&d->arch.vgic.its_devices_lock);
     d->arch.vgic.its_devices = RB_ROOT;
 
+    /*
+     * Only the hardware domain and domains that can be given PCI devices
+     * through vPCI have anything to use an ITS for, and only they are told
+     * about one: libxl and dom0less describe the ITS to a guest only when
+     * it has vPCI. Don't expose the emulation to anyone else.
+     */
+    if ( !is_hardware_domain(d) && !has_vpci(d) )
+        return 0;
+
     list_for_each_entry(hw_its, &host_its_list, entry)
     {
         /*
