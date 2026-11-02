@@ -985,6 +985,43 @@ static struct pending_irq *get_event_pending_irq(struct domain *d,
 }
 
 /*
+ * Find a device the domain has mapped onto a host DeviceID, on the host ITS
+ * behind host_doorbell (on any host ITS if that is 0). Returns 0 and the
+ * guest's doorbell and DeviceID for it, or -ENOENT.
+ */
+int gicv3_its_find_guest_device(struct domain *d, paddr_t host_doorbell,
+                                uint32_t host_devid, paddr_t *guest_doorbell,
+                                uint32_t *guest_devid)
+{
+    const struct host_its *hw_its = NULL;
+    struct rb_node *node;
+    int ret = -ENOENT;
+
+    if ( host_doorbell )
+        hw_its = gicv3_its_find_by_doorbell(host_doorbell);
+
+    spin_lock(&d->arch.vgic.its_devices_lock);
+    for ( node = rb_first(&d->arch.vgic.its_devices); node;
+          node = rb_next(node) )
+    {
+        const struct its_device *dev = rb_entry(node, struct its_device,
+                                                rbnode);
+
+        if ( dev->host_devid != host_devid ||
+             (hw_its && dev->hw_its != hw_its) )
+            continue;
+
+        *guest_doorbell = dev->guest_doorbell;
+        *guest_devid = dev->guest_devid;
+        ret = 0;
+        break;
+    }
+    spin_unlock(&d->arch.vgic.its_devices_lock);
+
+    return ret;
+}
+
+/*
  * Number of event IDs Xen set up for a guest device at MAPD time, or 0 if
  * the device isn't mapped.
  */
