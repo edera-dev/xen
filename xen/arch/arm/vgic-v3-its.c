@@ -383,6 +383,60 @@ static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
 
     return msi_map_id(host_sbdf.sbdf, host_devid);
 }
+
+static void its_unmap_device(struct virt_its *its, uint32_t devid);
+
+/*
+ * A PCI device is leaving the domain. Undo whatever the domain mapped for
+ * it through its virtual ITS: disconnect the events and send MAPD V=0 for
+ * the DeviceID to the host ITS. Otherwise the device's host DeviceID keeps
+ * pointing at this domain's ITT and LPIs after it has been handed to
+ * someone else, and its new owner's MSIs land here.
+ */
+void vgic_v3_its_release_pci_device(struct domain *d,
+                                    const struct pci_dev *pdev)
+{
+    const struct pci_host_bridge *bridge;
+    paddr_t host_doorbell = 0, guest_doorbell;
+    uint32_t host_devid, guest_devid;
+
+    if ( !d->arch.vgic.has_its )
+        return;
+
+    if ( msi_map_id(pdev->sbdf.sbdf, &host_devid) )
+        return;
+
+    bridge = pci_find_host_bridge(pdev->sbdf.seg, pdev->sbdf.bus);
+    if ( bridge )
+        host_doorbell = bridge->its_msi_base + ITS_DOORBELL_OFFSET;
+
+    /* Each pass removes one mapping, so this ends. */
+    while ( !gicv3_its_find_guest_device(d, host_doorbell, host_devid,
+                                         &guest_doorbell, &guest_devid) )
+    {
+        struct virt_its *its, *found = NULL;
+
+        list_for_each_entry ( its, &d->arch.vgic.vits_list, vits_list )
+            if ( its->doorbell_address == guest_doorbell )
+            {
+                found = its;
+                break;
+            }
+
+        /* Keep the domain's own ITS commands out while this runs. */
+        if ( found )
+        {
+            spin_lock(&found->vcmd_lock);
+            its_unmap_device(found, guest_devid);
+        }
+
+        gicv3_its_map_guest_device(d, 0, 0, guest_doorbell, guest_devid, 0,
+                                   false);
+
+        if ( found )
+            spin_unlock(&found->vcmd_lock);
+    }
+}
 #else
 static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
                               uint32_t *host_devid, paddr_t *host_doorbell,
