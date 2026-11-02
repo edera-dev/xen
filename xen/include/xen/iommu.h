@@ -159,6 +159,8 @@ static inline void iommu_domain_destroy(struct domain *d) {}
 #define _IOMMUF_writable 7
 #define IOMMUF_writable  (1u<<_IOMMUF_writable)
 #define IOMMUF_preempt   (1u << 8)
+/* Fail with -EEXIST rather than replace a present entry (order 0 only). */
+#define IOMMUF_no_replace (1u << 9)
 
 /*
  * flush_flags:

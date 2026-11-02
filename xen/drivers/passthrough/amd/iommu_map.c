@@ -531,6 +531,16 @@ int cf_check amd_iommu_map_page(
         return -EFAULT;
     }
 
+    if ( flags & IOMMUF_no_replace )
+    {
+        const union amd_iommu_pte *table = map_domain_page(_mfn(pt_mfn));
+        bool present = table[pfn_to_pde_idx(dfn_x(dfn), level)].pr;
+
+        unmap_domain_page(table);
+        if ( present )
+            return -EEXIST;
+    }
+
     /* Install mapping */
     old = set_iommu_pte_present(pt_mfn, dfn_x(dfn), mfn_x(mfn), level,
                                 flags & IOMMUF_writable,
