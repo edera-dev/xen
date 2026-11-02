@@ -284,105 +284,92 @@ static uint64_t its_cmd_mask_field(uint64_t *its_cmd, unsigned int word,
  * the two firmware descriptions is in use: the host bridge's "msi-map"
  * property, or the IORT's ID mappings.
  */
-static uint32_t msi_map_id(uint32_t id_in)
+static int msi_map_id(uint32_t id_in, uint32_t *id_out)
 {
-    uint32_t id_out = id_in;
     const struct pci_host_bridge *bridge;
-    int rc;
+
+    *id_out = id_in;
 
     if ( !acpi_disabled )
-    {
-        rc = iort_map_rid(PCI_SEG(id_in), id_in, ACPI_IORT_NODE_ITS_GROUP,
-                          &id_out, NULL);
-
-        return rc ? rc : id_out;
-    }
+        return iort_map_rid(PCI_SEG(id_in), id_in, ACPI_IORT_NODE_ITS_GROUP,
+                            id_out, NULL);
 
     bridge = pci_find_host_bridge(PCI_SEG(id_in), PCI_BUS(id_in));
     if ( unlikely(!bridge) )
         return -ENODEV;
 
-    rc = dt_map_id(bridge->dt_node, id_in, "msi-map", "msi-map-mask",
-                   NULL, &id_out);
-    if ( rc )
-        return rc;
-
-    return id_out;
+    return dt_map_id(bridge->dt_node, id_in, "msi-map", "msi-map-mask",
+                     NULL, id_out);
 }
 
-static uint32_t its_get_host_devid(struct domain *d, uint32_t guest_devid)
+/*
+ * Work out which host DeviceID and host ITS doorbell a guest's DeviceID
+ * stands for.
+ *
+ * The hardware domain, unless it uses vPCI (pci-scan), programs the real
+ * DeviceIDs of the host, as it always has. Any other domain may only name a
+ * PCI device it owns, by the SBDF it sees that device at. Anything else is
+ * refused: passing it through as a host DeviceID would let the domain
+ * remap a device that belongs to someone else.
+ */
+static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
+                              uint32_t *host_devid, paddr_t *host_doorbell)
 {
-    uint32_t host_devid = guest_devid;
-
-    if ( !pci_passthrough_enabled )
-        return guest_devid;
-
-    if ( has_vpci_bridge(d) )
-    {
-        pci_sbdf_t __maybe_unused sbdf = {
-            .sbdf = guest_devid,
-        };
-        const struct pci_dev *pdev;
-
-        read_lock(&d->pci_lock);
-        for_each_pdev( d, pdev )
-        {
-            /* Replace virtual SBDF with the physical one. */
-#ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
-            if ( pdev->vpci->guest_sbdf.sbdf == sbdf.sbdf )
-#endif
-            {
-                host_devid = msi_map_id(pdev->sbdf.sbdf);
-                break;
-            }
-        }
-        read_unlock(&d->pci_lock);
-    }
-
-    return host_devid;
-}
-
-paddr_t its_get_host_doorbell(struct virt_its *its, uint32_t guest_devid)
-{
-    const struct pci_host_bridge *bridge;
+    struct domain *d = its->d;
     const struct pci_dev *pdev;
-    uint32_t host_devid = guest_devid;
-    pci_sbdf_t __maybe_unused sbdf = {
-        .sbdf = guest_devid,
-    };
+    const struct pci_host_bridge *bridge;
+    pci_sbdf_t host_sbdf = { .sbdf = 0 };
+    bool found = false;
+
+    if ( !has_vpci_bridge(d) )
+    {
+        *host_devid = guest_devid;
+        *host_doorbell = its->doorbell_address;
+        return 0;
+    }
 
     if ( !pci_passthrough_enabled )
-        return its->doorbell_address;
+        return -ENODEV;
 
-    read_lock(&its->d->pci_lock);
-    for_each_pdev( its->d, pdev )
+    read_lock(&d->pci_lock);
+    for_each_pdev ( d, pdev )
     {
 #ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
-        if ( pdev->vpci->guest_sbdf.sbdf == sbdf.sbdf )
+        if ( !pdev->vpci || pdev->vpci->guest_sbdf.sbdf != guest_devid )
+            continue;
+#else
+        if ( pdev->sbdf.sbdf != guest_devid )
+            continue;
 #endif
-        {
-            /* Replace virtual SBDF with the physical one. */
-            host_devid = pdev->sbdf.sbdf;
-            break;
-        }
+        host_sbdf = pdev->sbdf;
+        found = true;
+        break;
     }
-    read_unlock(&its->d->pci_lock);
+    read_unlock(&d->pci_lock);
 
-    bridge = pci_find_host_bridge(PCI_SEG(host_devid), PCI_BUS(host_devid));
+    if ( !found )
+        return -ENODEV;
+
+    bridge = pci_find_host_bridge(host_sbdf.seg, host_sbdf.bus);
     if ( unlikely(!bridge) )
         return -ENODEV;
 
-    return bridge->its_msi_base + ITS_DOORBELL_OFFSET;
+    *host_doorbell = bridge->its_msi_base + ITS_DOORBELL_OFFSET;
+
+    return msi_map_id(host_sbdf.sbdf, host_devid);
 }
 #else
-static uint32_t its_get_host_devid(struct domain *d, uint32_t guest_devid)
+static int its_resolve_device(struct virt_its *its, uint32_t guest_devid,
+                              uint32_t *host_devid, paddr_t *host_doorbell)
 {
-    return guest_devid;
-}
+    /* Without PCI, only the hardware domain has devices to name. */
+    if ( !is_hardware_domain(its->d) )
+        return -ENODEV;
 
-paddr_t its_get_host_doorbell(struct virt_its *its, uint32_t host_devid)
-{
-    return its->doorbell_address;
+    *host_devid = guest_devid;
+    *host_doorbell = its->doorbell_address;
+
+    return 0;
 }
 #endif
 
@@ -764,11 +751,11 @@ static int its_handle_mapd(struct virt_its *its, uint64_t *cmdptr)
 {
     /* size and devid get validated by the functions called below. */
     uint32_t guest_devid = its_cmd_get_deviceid(cmdptr);
-    uint32_t host_devid = its_get_host_devid(its->d, guest_devid);
+    uint32_t host_devid = 0;
     unsigned int size = its_cmd_get_size(cmdptr) + 1;
     bool valid = its_cmd_get_validbit(cmdptr);
     paddr_t itt_addr = its_cmd_get_ittaddr(cmdptr);
-    paddr_t host_doorbell_address;
+    paddr_t host_doorbell_address = 0;
     int ret;
 
     /* Sanitize the number of events. */
@@ -780,18 +767,14 @@ static int its_handle_mapd(struct virt_its *its, uint64_t *cmdptr)
         its_unmap_device(its, guest_devid);
 
     /*
-     * There is no easy and clean way for Xen to know the ITS device ID of a
-     * particular (PCI) device, so we have to rely on the guest telling
-     * us about it. For *now* we are just using the device ID *Dom0* uses,
-     * because the driver there has the actual knowledge.
-     * Eventually this will be replaced with a dedicated hypercall to
-     * announce pass-through of devices.
+     * Only a mapping needs to know the host device. Unmapping finds what was
+     * set up from the guest's DeviceID alone, so it still works once the
+     * device has been taken away from the domain.
      */
-
-    if ( has_vpci_bridge(its->d) )
-        host_doorbell_address = its_get_host_doorbell(its, guest_devid);
-    else
-        host_doorbell_address = its->doorbell_address;
+    if ( valid &&
+         its_resolve_device(its, guest_devid, &host_devid,
+                            &host_doorbell_address) )
+        return -1;
 
     ret = gicv3_its_map_guest_device(its->d, host_doorbell_address, host_devid,
                                      its->doorbell_address, guest_devid,
