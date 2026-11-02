@@ -43,6 +43,15 @@ struct hyperv_pt_vcpu {
     uint64_t sint[16];
 
     /*
+     * dom0's SIMP and SIEFP pages, mapped while enabled.  Each holds a
+     * writable type reference, taken when the MSR is written, so Xen never
+     * writes into a page dom0 has since made a page table or descriptor
+     * page.  The pointers are protected by @msgq_lock.
+     */
+    struct page_info *simp_pg, *siefp_pg;
+    void *simp_va, *siefp_va;
+
+    /*
      * L0 SynIC messages are drained into this ring and delivered into the dom0
      * vcpu's SIMP slot one at a time (the SynIC has a single slot per SINT).
      * dom0 signals consumption of a message with an EOM MSR write, which Xen
@@ -81,6 +90,91 @@ int hyperv_pt_domain_init(struct domain *d)
     return 0;
 }
 
+/*
+ * Get a writable type reference on, and map, the dom0 page at @gfn.  Must be
+ * called with interrupts enabled: taking the type may flush TLBs.
+ */
+static void *hyperv_pt_map_writable(struct domain *d, unsigned long gfn,
+                                    struct page_info **ppg)
+{
+    struct page_info *pg;
+    p2m_type_t t;
+    void *va;
+
+    pg = get_page_from_gfn(d, gfn, &t, P2M_ALLOC);
+    if ( !pg )
+        return NULL;
+    if ( !p2m_is_ram(t) || !get_page_type(pg, PGT_writable_page) )
+    {
+        put_page(pg);
+        return NULL;
+    }
+
+    va = __map_domain_page_global(pg);
+    if ( !va )
+    {
+        put_page_and_type(pg);
+        return NULL;
+    }
+
+    *ppg = pg;
+
+    return va;
+}
+
+static void hyperv_pt_unmap_writable(struct page_info *pg, void *va)
+{
+    if ( !pg )
+        return;
+
+    unmap_domain_page_global(va);
+    put_page_and_type(pg);
+}
+
+/*
+ * Replace the page behind one of a vcpu's SynIC MSRs (@ppg/@pva) with the one
+ * at @gfn, or with nothing if the MSR is now disabled.
+ */
+static void hyperv_pt_set_synic_page(struct vcpu *v, unsigned long gfn,
+                                     bool enabled, struct page_info **ppg,
+                                     void **pva)
+{
+    struct hyperv_pt_vcpu *vp = &v->domain->arch.hyperv_pt->vcpu[v->vcpu_id];
+    struct page_info *pg = NULL, *old_pg;
+    void *va = NULL, *old_va;
+    unsigned long flags;
+
+    if ( enabled )
+        va = hyperv_pt_map_writable(v->domain, gfn, &pg);
+
+    spin_lock_irqsave(&vp->msgq_lock, flags);
+    old_pg = *ppg;
+    old_va = *pva;
+    *ppg = pg;
+    *pva = va;
+    spin_unlock_irqrestore(&vp->msgq_lock, flags);
+
+    hyperv_pt_unmap_writable(old_pg, old_va);
+}
+
+/* Drop the references on dom0's SynIC pages, so the domain can be freed. */
+void hyperv_pt_domain_relinquish(struct domain *d)
+{
+    struct hyperv_pt_domain *pt = d->arch.hyperv_pt;
+    struct vcpu *v;
+
+    if ( !pt )
+        return;
+
+    for_each_vcpu ( d, v )
+    {
+        struct hyperv_pt_vcpu *vp = &pt->vcpu[v->vcpu_id];
+
+        hyperv_pt_set_synic_page(v, 0, false, &vp->simp_pg, &vp->simp_va);
+        hyperv_pt_set_synic_page(v, 0, false, &vp->siefp_pg, &vp->siefp_va);
+    }
+}
+
 void hyperv_pt_domain_destroy(struct domain *d)
 {
     XFREE(d->arch.hyperv_pt);
@@ -102,30 +196,20 @@ static void hyperv_pt_try_deliver(struct vcpu *v)
 {
     struct hyperv_pt_domain *pt = v->domain->arch.hyperv_pt;
     struct hyperv_pt_vcpu *vp = &pt->vcpu[v->vcpu_id];
-    union hv_synic_simp simp = { .as_uint64 = vp->simp };
     struct hv_message_page *dom0_simp;
     struct hv_message *slot;
-    struct page_info *pg;
-    p2m_type_t t;
     unsigned long flags;
     bool notify = false;
 
-    if ( !simp.simp_enabled )
-        return;
-
-    pg = get_page_from_gfn(v->domain, simp.base_simp_gpa, &t, P2M_ALLOC);
-    if ( !pg )
-        return;
-    if ( !p2m_is_ram(t) )
+    spin_lock_irqsave(&vp->msgq_lock, flags);
+    dom0_simp = vp->simp_va;
+    if ( !dom0_simp )
     {
-        put_page(pg);
+        spin_unlock_irqrestore(&vp->msgq_lock, flags);
         return;
     }
 
-    dom0_simp = __map_domain_page(pg);
     slot = &dom0_simp->sint_message[VMBUS_MESSAGE_SINT];
-
-    spin_lock_irqsave(&vp->msgq_lock, flags);
     if ( slot->header.message_type == HVMSG_NONE &&
          vp->msgq_head != vp->msgq_tail )
     {
@@ -142,9 +226,6 @@ static void hyperv_pt_try_deliver(struct vcpu *v)
         notify = true;
     }
     spin_unlock_irqrestore(&vp->msgq_lock, flags);
-
-    unmap_domain_page(dom0_simp);
-    put_page(pg);
 
     if ( notify )
     {
@@ -165,11 +246,8 @@ void hyperv_pt_relay_event_flags(struct vcpu *v, const unsigned long *flags,
 {
     struct hyperv_pt_domain *pt = v->domain->arch.hyperv_pt;
     struct hyperv_pt_vcpu *vp;
-    union hv_synic_siefp siefp;
     union hv_synic_event_flags *dom0_ev;
-    struct page_info *pg;
-    p2m_type_t t;
-    void *map;
+    unsigned long irq_flags;
     unsigned int i;
     bool any = false;
 
@@ -177,21 +255,15 @@ void hyperv_pt_relay_event_flags(struct vcpu *v, const unsigned long *flags,
         return;
 
     vp = &pt->vcpu[v->vcpu_id];
-    siefp.as_uint64 = vp->siefp;
-    if ( !siefp.siefp_enabled )
-        return;
 
-    pg = get_page_from_gfn(v->domain, siefp.base_siefp_gpa, &t, P2M_ALLOC);
-    if ( !pg )
-        return;
-    if ( !p2m_is_ram(t) )
+    spin_lock_irqsave(&vp->msgq_lock, irq_flags);
+    if ( !vp->siefp_va )
     {
-        put_page(pg);
+        spin_unlock_irqrestore(&vp->msgq_lock, irq_flags);
         return;
     }
 
-    map = __map_domain_page(pg);
-    dom0_ev = &((union hv_synic_event_flags *)map)[VMBUS_MESSAGE_SINT];
+    dom0_ev = &((union hv_synic_event_flags *)vp->siefp_va)[VMBUS_MESSAGE_SINT];
 
     for ( i = 0; i < nlongs; i++ )
     {
@@ -207,8 +279,7 @@ void hyperv_pt_relay_event_flags(struct vcpu *v, const unsigned long *flags,
         }
     }
 
-    unmap_domain_page(map);
-    put_page(pg);
+    spin_unlock_irqrestore(&vp->msgq_lock, irq_flags);
 
     if ( any )
     {
@@ -261,26 +332,18 @@ static void hyperv_pt_fill_hypercall_page(struct domain *d, uint64_t gpa)
     static const uint8_t stub[] = { 0x0f, 0x0b, 'h', 'v', 'c', 0xc3 };
     unsigned int off = gpa & ~PAGE_MASK;
     struct page_info *pg;
-    p2m_type_t t;
     void *map;
 
     /* The stub must not straddle a page boundary. */
     if ( off + sizeof(stub) > PAGE_SIZE )
         return;
 
-    pg = get_page_from_gfn(d, PFN_DOWN(gpa), &t, P2M_ALLOC);
-    if ( !pg )
+    map = hyperv_pt_map_writable(d, PFN_DOWN(gpa), &pg);
+    if ( !map )
         return;
-    if ( !p2m_is_ram(t) )
-    {
-        put_page(pg);
-        return;
-    }
 
-    map = __map_domain_page(pg);
     memcpy(map + off, stub, sizeof(stub));
-    unmap_domain_page(map);
-    put_page(pg);
+    hyperv_pt_unmap_writable(pg, map);
 }
 
 /*
@@ -502,12 +565,24 @@ int guest_wrmsr_hyperv_pt(struct vcpu *v, uint32_t idx, uint64_t val)
         break;
 
     case HV_X64_MSR_SIEFP:
+    {
+        union hv_synic_siefp siefp = { .as_uint64 = val };
+
         vp->siefp = val;
+        hyperv_pt_set_synic_page(v, siefp.base_siefp_gpa, siefp.siefp_enabled,
+                                 &vp->siefp_pg, &vp->siefp_va);
         break;
+    }
 
     case HV_X64_MSR_SIMP:
+    {
+        union hv_synic_simp simp = { .as_uint64 = val };
+
         vp->simp = val;
+        hyperv_pt_set_synic_page(v, simp.base_simp_gpa, simp.simp_enabled,
+                                 &vp->simp_pg, &vp->simp_va);
         break;
+    }
 
     case HV_X64_MSR_EOM:
         /* dom0 consumed its SIMP slot: push the next queued message, if any. */
