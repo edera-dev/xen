@@ -2538,13 +2538,7 @@ int domain_relinquish_resources(struct domain *d)
              * and release the domain.
              */
             if ( mem_sharing_is_fork(d) )
-            {
-                struct domain *parent = d->parent;
-
-                d->parent = NULL;
-                domain_unpause(parent);
-                put_domain(parent);
-            }
+                mem_sharing_fork_release_parent(d);
         }
 #endif
 
