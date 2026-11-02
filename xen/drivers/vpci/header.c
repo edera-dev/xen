@@ -350,7 +350,37 @@ void vpci_release_bars(struct pci_dev *pdev, bool had_tasks)
 {
     struct domain *d = pdev->domain;
     struct vpci_header *header = &pdev->vpci->header;
-    bool pending = had_tasks;
+    unsigned int i;
+
+    ASSERT(rw_is_write_locked(&d->pci_lock));
+
+    vpci_unmap_bars_now(pdev, had_tasks);
+
+    for ( i = 0; i < ARRAY_SIZE(header->bars); i++ )
+    {
+        const struct vpci_bar *bar = &header->bars[i];
+
+        if ( !MAPPABLE_BAR(bar) || !bar->size )
+            continue;
+
+        if ( iomem_deny_access(d, PFN_DOWN(bar->addr),
+                               PFN_DOWN(bar->addr + bar->size - 1)) )
+            printk(XENLOG_WARNING
+                   "%pp: failed to revoke BAR%u MMIO access from %pd\n",
+                   &pdev->sbdf, i, d);
+    }
+}
+
+/*
+ * Unmap a device's BARs from its owner right away, rather than through a
+ * deferred task, and mark them unmapped. had_tasks says map tasks for the
+ * device were just dropped by vpci_cancel_map_tasks(), so a mapping may be
+ * half done.
+ */
+void vpci_unmap_bars_now(struct pci_dev *pdev, bool had_tasks)
+{
+    struct domain *d = pdev->domain;
+    struct vpci_header *header = &pdev->vpci->header;
     unsigned int i;
 
     ASSERT(rw_is_write_locked(&d->pci_lock));
@@ -363,16 +393,10 @@ void vpci_release_bars(struct pci_dev *pdev, bool had_tasks)
             continue;
 
         /* A map may have been abandoned part way, so don't trust enabled. */
-        if ( header->bars_mapped || bar->enabled || pending )
+        if ( header->bars_mapped || bar->enabled || had_tasks )
             vpci_unmap_range(d, PFN_DOWN(bar->guest_addr),
                              PFN_DOWN(bar->addr), PFN_UP(bar->size));
         bar->enabled = false;
-
-        if ( iomem_deny_access(d, PFN_DOWN(bar->addr),
-                               PFN_DOWN(bar->addr + bar->size - 1)) )
-            printk(XENLOG_WARNING
-                   "%pp: failed to revoke BAR%u MMIO access from %pd\n",
-                   &pdev->sbdf, i, d);
     }
 
     header->bars_mapped = false;
