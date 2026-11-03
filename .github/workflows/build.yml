@@ -1,11 +1,11 @@
-name: Build (arm64)
+name: Build
 
-# Builds the hypervisor for arm64 on every pull request and push to an
-# edera/** branch. x86 always has PCI support, so code that compiles only
-# with CONFIG_HAS_PCI breaks the arm64 build alone.
+# Builds the hypervisor on every pull request and push to an edera/** branch,
+# with the config Edera ships from edera-dev/xen-oci:
 #
-#   - arm64: the config Edera ships, from edera-dev/xen-oci, which leaves
-#     PCI support out;
+#   - arm64: the arm64 config, which leaves PCI support out. x86 always has
+#     PCI support, so code that compiles only with CONFIG_HAS_PCI breaks
+#     this build alone;
 #   - arm64-vpci: the same config with PCI passthrough, which brings in the
 #     downstream vPCI stack.
 #
@@ -25,7 +25,7 @@ permissions:
 # pushed to a branch gets its own: sharing a group would let a third merge
 # cancel the second one's pending build.
 concurrency:
-  group: build-arm64-${{ github.event.pull_request.number || github.sha }}
+  group: build-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -35,12 +35,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # arch is Xen's name for the architecture and config is xen-oci's,
+        # which follows Docker's.
         include:
           - name: arm64
-            pci: false
+            arch: arm64
+            config: arm64
+            cross: aarch64-linux-gnu-
           - name: arm64-vpci
+            arch: arm64
+            config: arm64
+            cross: aarch64-linux-gnu-
             pci: true
     name: build (${{ matrix.name }})
+    # make reads both from the environment.
+    env:
+      XEN_TARGET_ARCH: ${{ matrix.arch }}
+      CROSS_COMPILE: ${{ matrix.cross }}
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -63,21 +74,25 @@ jobs:
       - name: Install toolchain
         run: |
           set -euo pipefail
+          packages=(build-essential bison flex python3)
+          # Debian names a cross compiler package after its target triplet.
+          if [ -n "$CROSS_COMPILE" ]; then
+            packages+=("gcc-${CROSS_COMPILE%-}")
+          fi
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential bison flex python3 gcc-aarch64-linux-gnu
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Configure
         env:
+          CONFIG: ${{ matrix.config }}
           PCI: ${{ matrix.pci }}
         run: |
           set -euo pipefail
-          mk() { make -C xen XEN_TARGET_ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- "$@"; }
           # xen-oci keeps one config per major.minor release.
           XEN_VER="$(make -s -C xen xenversion | cut -d. -f1,2)"
-          SHIPPED_CONFIG=".xen-oci/configs/$XEN_VER/arm64.defconfig"
+          SHIPPED_CONFIG=".xen-oci/configs/$XEN_VER/$CONFIG.defconfig"
           cp "$SHIPPED_CONFIG" xen/.config
-          mk olddefconfig
+          make -C xen olddefconfig
           # The same check xen-oci makes before it ships, so this builds what ships.
           missing="$(grep -vxFf xen/.config "$SHIPPED_CONFIG" || true)"
           if [ -n "$missing" ]; then
@@ -87,8 +102,8 @@ jobs:
           fi
           if [ "$PCI" = "true" ]; then
             xen/scripts/config --file xen/.config --enable EXPERT --enable PCI_PASSTHROUGH
-            mk olddefconfig
+            make -C xen olddefconfig
           fi
 
       - name: Build
-        run: make -C xen XEN_TARGET_ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)"
+        run: make -C xen -j"$(nproc)"
