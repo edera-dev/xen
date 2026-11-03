@@ -1,0 +1,13 @@
+# Trust policy for Octo STS (https://github.com/octo-sts/app).
+#
+# Lets the QA runner in edera-dev/xen-qa post the `xen-qa` commit status on
+# pull requests here. Only the pr.yml workflow on xen-qa's main branch can
+# exchange its Actions identity for this token, and the token can do nothing
+# but write commit statuses.
+issuer: https://token.actions.githubusercontent.com
+subject: repo:edera-dev@153982650/xen-qa@1440326774:ref:refs/heads/main
+claim_pattern:
+  job_workflow_ref: edera-dev/xen-qa/\.github/workflows/pr\.yml@refs/heads/main
+
+permissions:
+  statuses: write

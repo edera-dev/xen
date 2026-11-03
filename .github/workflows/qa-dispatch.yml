@@ -5,9 +5,9 @@ name: QA dispatch
 # status. Advisory, and not a required check.
 #
 # Only pull requests from branches in this repository are handed over, since
-# fork pull requests get no secrets. Without the XENQA_DISPATCH_TOKEN secret
-# (a token that may send repository_dispatch to edera-dev/xen-qa) this does
-# nothing.
+# fork pull requests get no id-token. The token that sends the
+# repository_dispatch comes from Octo STS, under the xen-qa-dispatch trust
+# policy in edera-dev/xen-qa, and lives only for this job.
 
 on:
   pull_request:
@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: qa-dispatch-${{ github.event.pull_request.number }}
@@ -32,18 +33,21 @@ jobs:
         with:
           egress-policy: audit
 
+      - name: Get a token for edera-dev/xen-qa
+        id: sts
+        uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        with:
+          scope: edera-dev/xen-qa
+          identity: xen-qa-dispatch
+
       - name: Dispatch
         env:
-          GH_TOKEN: ${{ secrets.XENQA_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ steps.sts.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          if [ -z "$GH_TOKEN" ]; then
-            echo "XENQA_DISPATCH_TOKEN is not set; nothing dispatched."
-            exit 0
-          fi
           gh api repos/edera-dev/xen-qa/dispatches \
             -f event_type=xen-pr \
             -f "client_payload[pr]=$PR" \
