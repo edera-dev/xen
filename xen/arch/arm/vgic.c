@@ -945,7 +945,8 @@ unsigned int vgic_max_vcpus(unsigned int domctl_vgic_version)
     }
 }
 
-void vgic_check_inflight_irqs_pending(struct vcpu *v, unsigned int rank, uint32_t r)
+void vgic_check_inflight_irqs(struct vcpu *v, unsigned int rank, uint32_t r,
+                              const char *action)
 {
     for_each_set_bit ( i, r )
     {
@@ -962,8 +963,8 @@ void vgic_check_inflight_irqs_pending(struct vcpu *v, unsigned int rank, uint32_
 
         if ( p && !list_empty(&p->inflight) )
             printk(XENLOG_G_WARNING
-                   "%pv trying to clear pending interrupt %u.\n",
-                   v, irq);
+                   "%pv trying to %s interrupt %u.\n",
+                   v, action, irq);
 
         spin_unlock_irqrestore(&v_target->arch.vgic.lock, flags);
     }
