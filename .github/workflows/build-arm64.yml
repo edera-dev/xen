@@ -1,0 +1,94 @@
+name: Build (arm64)
+
+# Builds the hypervisor for arm64 on every pull request and push to an
+# edera/** branch. x86 always has PCI support, so code that compiles only
+# with CONFIG_HAS_PCI breaks the arm64 build alone.
+#
+#   - arm64: the config Edera ships, from edera-dev/xen-oci, which leaves
+#     PCI support out;
+#   - arm64-vpci: the same config with PCI passthrough, which brings in the
+#     downstream vPCI stack.
+#
+# It has no path filter, so it can be made a required check.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: ['edera/**']
+  push:
+    branches: ['edera/**']
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its older build, but every commit
+# pushed to a branch gets its own: sharing a group would let a third merge
+# cancel the second one's pending build.
+concurrency:
+  group: build-arm64-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: arm64
+            pci: false
+          - name: arm64-vpci
+            pci: true
+    name: build (${{ matrix.name }})
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout the shipped config
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: edera-dev/xen-oci
+          path: .xen-oci
+          sparse-checkout: configs
+          persist-credentials: false
+
+      - name: Install toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bison flex python3 gcc-aarch64-linux-gnu
+
+      - name: Configure
+        env:
+          PCI: ${{ matrix.pci }}
+        run: |
+          set -euo pipefail
+          mk() { make -C xen XEN_TARGET_ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- "$@"; }
+          # xen-oci keeps one config per major.minor release.
+          XEN_VER="$(make -s -C xen xenversion | cut -d. -f1,2)"
+          SHIPPED_CONFIG=".xen-oci/configs/$XEN_VER/arm64.defconfig"
+          cp "$SHIPPED_CONFIG" xen/.config
+          mk olddefconfig
+          # The same check xen-oci makes before it ships, so this builds what ships.
+          missing="$(grep -vxFf xen/.config "$SHIPPED_CONFIG" || true)"
+          if [ -n "$missing" ]; then
+            echo "::error::olddefconfig dropped or changed these settings:"
+            echo "$missing"
+            exit 1
+          fi
+          if [ "$PCI" = "true" ]; then
+            xen/scripts/config --file xen/.config --enable EXPERT --enable PCI_PASSTHROUGH
+            mk olddefconfig
+          fi
+
+      - name: Build
+        run: make -C xen XEN_TARGET_ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)"
