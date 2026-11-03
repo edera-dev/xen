@@ -1240,6 +1240,7 @@ static void p9_stat(struct ring *ring, struct p9_header *hdr)
     struct p9_fid *fidp;
     struct p9_stat p9s;
     struct stat st;
+    const char *name;
     int ret;
 
     ret = fill_data(ring, "U", &fid);
@@ -1261,7 +1262,8 @@ static void p9_stat(struct ring *ring, struct p9_header *hdr)
         p9_error(ring, hdr->tag, errno);
         goto out;
     }
-    fill_p9_stat(device, &p9s, &st, strrchr(fidp->path, '/') + 1);
+    name = strrchr(fidp->path, '/');
+    fill_p9_stat(device, &p9s, &st, name ? name + 1 : fidp->path);
 
     fill_buffer(ring, hdr->cmd + 1, hdr->tag, "s", &p9s);
 
