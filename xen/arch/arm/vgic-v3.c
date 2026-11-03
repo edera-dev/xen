@@ -901,15 +901,14 @@ static int __vgic_v3_distr_common_mmio_write(const char *name, struct vcpu *v,
 
     case VRANGE32(GICD_ICACTIVER, GICD_ICACTIVERN):
     case VRANGE32(GICD_ICACTIVERnE, GICD_ICACTIVERnEN):
-        if ( reg < GICD_ICACTIVERnE )
-            printk(XENLOG_G_ERR
-                   "%pv: %s: unhandled word write %#"PRIregister" to ICACTIVER%d\n",
-                   v, name, r, reg - GICD_ICACTIVER);
-        else
-            printk(XENLOG_G_ERR
-                   "%pv: %s: unhandled word write %#"PRIregister" to ICACTIVER%dE\n",
-                   v, name, r, reg - GICD_ICACTIVERnE);
-        goto write_ignore_32;
+        if ( dabt.size != DABT_WORD ) goto bad_width;
+        rank = vgic_common_rank_offset(v, 1, reg, DABT_WORD, GICD_ICACTIVER,
+                                       GICD_ICACTIVERnE);
+        if ( rank == NULL ) goto write_ignore;
+
+        vgic_check_inflight_irqs(v, rank->index, r, "deactivate");
+
+        goto write_ignore;
 
     case VRANGE32(GICD_IPRIORITYR, GICD_IPRIORITYRN):
     case VRANGE32(GICD_IPRIORITYRnE, GICD_IPRIORITYRnEN):
