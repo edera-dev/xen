@@ -1316,21 +1316,25 @@ int cf_check iommu_context_free(struct domain *d, uint16_t ctx_id, u32 flags)
      * device reattach takes them the other way round. Take pcidevs_lock
      * first here too (it's recursive), so the order is the same everywhere.
      */
+#ifdef CONFIG_HAS_PCI
     pcidevs_lock();
+#endif
 
-    if ( !(ctx = iommu_get_context(d, ctx_id)) )
+    if ( (ctx = iommu_get_context(d, ctx_id)) )
     {
-        pcidevs_unlock();
-        return -ENOENT;
+        ret = iommu_context_teardown(d, ctx, flags);
+
+        if ( !ret )
+            clear_bit(ctx_id - 1, hd->other_contexts.bitmap);
+
+        iommu_put_context(ctx);
     }
+    else
+        ret = -ENOENT;
 
-    ret = iommu_context_teardown(d, ctx, flags);
-
-    if ( !ret )
-        clear_bit(ctx_id - 1, hd->other_contexts.bitmap);
-
-    iommu_put_context(ctx);
+#ifdef CONFIG_HAS_PCI
     pcidevs_unlock();
+#endif
 
     return ret;
 }
