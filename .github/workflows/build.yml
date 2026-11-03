@@ -1,12 +1,13 @@
 name: Build
 
 # Builds the hypervisor on every pull request and push to an edera/** branch,
-# with the config Edera ships from edera-dev/xen-oci:
+# with the configs Edera ships from edera-dev/xen-oci:
 #
+#   - x86_64: the amd64 config;
 #   - arm64: the arm64 config, which leaves PCI support out. x86 always has
 #     PCI support, so code that compiles only with CONFIG_HAS_PCI breaks
 #     this build alone;
-#   - arm64-vpci: the same config with PCI passthrough, which brings in the
+#   - arm64-vpci: the arm64 config with PCI passthrough, which brings in the
 #     downstream vPCI stack.
 #
 # It has no path filter, so it can be made a required check.
@@ -38,6 +39,9 @@ jobs:
         # arch is Xen's name for the architecture and config is xen-oci's,
         # which follows Docker's.
         include:
+          - name: x86_64
+            arch: x86_64
+            config: amd64
           - name: arm64
             arch: arm64
             config: arm64
