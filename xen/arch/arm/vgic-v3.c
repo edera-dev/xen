@@ -873,7 +873,7 @@ static int __vgic_v3_distr_common_mmio_write(const char *name, struct vcpu *v,
                                        GICD_ICPENDRnE);
         if ( rank == NULL ) goto write_ignore;
 
-        vgic_check_inflight_irqs_pending(v, rank->index, r);
+        vgic_check_inflight_irqs(v, rank->index, r, "clear pending");
 
         goto write_ignore;
 
