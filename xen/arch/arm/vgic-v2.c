@@ -484,7 +484,7 @@ static int vgic_v2_distr_mmio_write(struct vcpu *v, mmio_info_t *info,
         rank = vgic_rank_offset(v, 1, gicd_reg - GICD_ICPENDR, DABT_WORD);
         if ( rank == NULL ) goto write_ignore;
 
-        vgic_check_inflight_irqs_pending(v, rank->index, r);
+        vgic_check_inflight_irqs(v, rank->index, r, "clear pending");
 
         goto write_ignore;
 
