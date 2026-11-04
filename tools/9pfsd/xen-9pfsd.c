@@ -596,6 +596,9 @@ static void scan_backend(void)
 
         snprintf(dom_path, sizeof(dom_path), "backend/xen_9pfs/%lu", domid);
         devices = xs_directory(xs, XBT_NULL, dom_path, &n_devs);
+        /* The domain can be destroyed between the two directory reads. */
+        if ( devices == NULL )
+            continue;
 
         for ( dev = 0; dev < n_devs; dev++ )
         {
