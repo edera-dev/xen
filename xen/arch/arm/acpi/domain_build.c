@@ -20,11 +20,15 @@
 #include <xen/iocap.h>
 #include <xen/device_tree.h>
 #include <xen/libfdt/libfdt.h>
+#include <xen/pci.h>
 #include <xen/sizes.h>
+#include <xen/vmap.h>
 #include <acpi/actables.h>
 
 #include <asm/iort.h>
 #include <asm/domain_build.h>
+#include <asm/io.h>
+#include <asm/mmio.h>
 
 /* Override macros from asm/page.h to make them work with mfn_t */
 #undef virt_to_mfn
@@ -54,6 +58,345 @@ static int __init acpi_deny_smmu_v3(const struct acpi_iort_node *node,
     return rc;
 }
 
+/* The ECAM page of @bus/@devfn; a window's base is where bus 0 would be. */
+static paddr_t __init ecam_page(paddr_t base, unsigned int bus,
+                                unsigned int devfn)
+{
+    return base + ((paddr_t)PCI_BDF(bus, devfn) << 12);
+}
+
+/* The MCFG window that covers @seg/@bus: its base, and its first bus. */
+static bool __init mcfg_window(unsigned int seg, unsigned int bus,
+                               paddr_t *base, unsigned int *root)
+{
+    struct acpi_table_header *table;
+    const struct acpi_table_mcfg *mcfg;
+    const struct acpi_mcfg_allocation *alloc;
+    unsigned int i, count;
+
+    if ( ACPI_FAILURE(acpi_get_table(ACPI_SIG_MCFG, 0, &table)) ||
+         table->length < sizeof(*mcfg) )
+        return false;
+
+    mcfg = container_of(table, const struct acpi_table_mcfg, header);
+    count = (table->length - sizeof(*mcfg)) / sizeof(*alloc);
+    alloc = (const struct acpi_mcfg_allocation *)(mcfg + 1);
+
+    for ( i = 0; i < count; i++, alloc++ )
+    {
+        if ( alloc->pci_segment == seg && alloc->start_bus_number <= bus &&
+             bus <= alloc->end_bus_number )
+        {
+            *base = alloc->address;
+            *root = alloc->start_bus_number;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* pci_find_cap_offset() for a mapped ECAM page, without CONFIG_HAS_PCI. */
+static unsigned int __init ecam_find_pcie_cap(const void __iomem *cfg)
+{
+    unsigned int ttl = 48, pos = PCI_CAPABILITY_LIST;
+
+    if ( !(readw(cfg + PCI_STATUS) & PCI_STATUS_CAP_LIST) )
+        return 0;
+
+    while ( ttl-- )
+    {
+        unsigned int id;
+
+        pos = readb(cfg + pos);
+        if ( pos < 0x40 )
+            break;
+
+        pos &= ~3;
+        id = readb(cfg + pos + PCI_CAP_LIST_ID);
+        if ( id == 0xff )
+            break;
+
+        if ( id == PCI_CAP_ID_EXP )
+            return pos;
+
+        pos += PCI_CAP_LIST_NEXT;
+    }
+
+    return 0;
+}
+
+/*
+ * Find the one bridge whose secondary bus is @bus.  Bridges number their
+ * secondary bus above their own, so it sits on a bus from @root up to @bus.
+ * Scan those the way Linux does, skipping functions 1-7 of a device whose
+ * function 0 is absent or single-function.
+ */
+static int __init find_parent_bridge(paddr_t base, unsigned int root,
+                                     unsigned int bus, unsigned int *pbus,
+                                     unsigned int *pdevfn)
+{
+    unsigned int b, devfn, found = 0;
+
+    for ( b = root; b < bus; b++ )
+    {
+        void __iomem *ecam = ioremap_nocache(ecam_page(base, b, 0), SZ_1M);
+
+        if ( !ecam )
+            return -ENOMEM;
+
+        for ( devfn = 0; devfn < 256; devfn++ )
+        {
+            const void __iomem *cfg = ecam + (devfn << 12);
+            unsigned int header;
+
+            if ( readw(cfg + PCI_VENDOR_ID) == 0xffff )
+            {
+                if ( !PCI_FUNC(devfn) )
+                    devfn += 7;
+                continue;
+            }
+
+            header = readb(cfg + PCI_HEADER_TYPE);
+            if ( (header & 0x7f) == PCI_HEADER_TYPE_BRIDGE &&
+                 readb(cfg + PCI_SECONDARY_BUS) == bus )
+            {
+                *pbus = b;
+                *pdevfn = devfn;
+                found++;
+            }
+
+            if ( !PCI_FUNC(devfn) && !(header & 0x80) )
+                devfn += 7;
+        }
+
+        iounmap(ecam);
+    }
+
+    return found == 1 ? 0 : -ENODEV;
+}
+
+static void __init spcr_keep(const pci_sbdf_t *sbdf, const char *why)
+{
+    printk(XENLOG_WARNING
+           "SPCR: console %pp stays visible to the hardware domain: %s\n",
+           sbdf, why);
+}
+
+/* The port above the SPCR's UART, and the windows that lead through it. */
+struct spcr_port {
+    pci_sbdf_t sbdf;
+    paddr_t cfg;
+    unsigned int pcie;
+    paddr_t windows[2][2];
+};
+
+/*
+ * Find the port above the UART at @uart, and check that the port leads to the
+ * UART alone: a PCI Express root or downstream port, whose link holds a single
+ * device, with no bus beneath it but the UART's.
+ */
+static int __init spcr_find_port(paddr_t base, unsigned int root,
+                                 const pci_sbdf_t *uart, struct spcr_port *port)
+{
+    unsigned int bus, devfn, type;
+    void __iomem *va;
+    uint32_t lo, hi;
+    int rc;
+
+    rc = find_parent_bridge(base, root, uart->bus, &bus, &devfn);
+    if ( rc == -ENOMEM )
+        return rc;
+    if ( rc )
+    {
+        spcr_keep(uart, "no single bridge leads to it");
+        return rc;
+    }
+
+    port->sbdf = PCI_SBDF(uart->seg, bus, devfn);
+    port->cfg = ecam_page(base, bus, devfn);
+    va = ioremap_nocache(port->cfg, PAGE_SIZE);
+    if ( !va )
+        return -ENOMEM;
+
+    port->pcie = ecam_find_pcie_cap(va);
+    type = port->pcie ? MASK_EXTR(readw(va + port->pcie + PCI_EXP_FLAGS),
+                                  PCI_EXP_FLAGS_TYPE)
+                      : 0;
+
+    if ( (type != PCI_EXP_TYPE_ROOT_PORT && type != PCI_EXP_TYPE_DOWNSTREAM) ||
+         readb(va + PCI_SUBORDINATE_BUS) != uart->bus )
+    {
+        iounmap(va);
+        spcr_keep(uart, "its parent port leads to other devices too");
+        return -ENODEV;
+    }
+
+    lo = readw(va + PCI_MEMORY_BASE) & PCI_MEMORY_RANGE_MASK;
+    hi = readw(va + PCI_MEMORY_LIMIT) & PCI_MEMORY_RANGE_MASK;
+    port->windows[0][0] = (paddr_t)lo << 16;
+    port->windows[0][1] = ((paddr_t)hi << 16) | 0xfffff;
+
+    lo = readw(va + PCI_PREF_MEMORY_BASE);
+    hi = readw(va + PCI_PREF_MEMORY_LIMIT);
+    port->windows[1][0] = (paddr_t)(lo & PCI_PREF_RANGE_MASK) << 16;
+    port->windows[1][1] = ((paddr_t)(hi & PCI_PREF_RANGE_MASK) << 16) | 0xfffff;
+    if ( (lo & PCI_PREF_RANGE_TYPE_MASK) == PCI_PREF_RANGE_TYPE_64 )
+    {
+        lo = readl(va + PCI_PREF_BASE_UPPER32);
+        hi = readl(va + PCI_PREF_LIMIT_UPPER32);
+        port->windows[1][0] |= (paddr_t)lo << 32;
+        port->windows[1][1] |= (paddr_t)hi << 32;
+    }
+
+    iounmap(va);
+
+    return 0;
+}
+
+/*
+ * Show the hardware domain the port read-only and without its hotplug
+ * capability, and keep it off the port's windows, which lead only to the UART.
+ */
+static int __init spcr_restrict_port(struct domain *d,
+                                     const struct spcr_port *port)
+{
+    unsigned long pfn = PFN_DOWN(port->cfg);
+    unsigned int i;
+    int rc;
+
+    rc = unmap_mmio_regions(d, _gfn(pfn), 1, _mfn(pfn));
+    if ( rc )
+        return rc;
+
+    rc = iomem_deny_access(d, pfn, pfn);
+    if ( rc )
+        return rc;
+
+    rc = register_ro_pci_config_handler(d, port->cfg,
+                                        port->pcie + PCI_EXP_SLTCAP,
+                                        PCI_EXP_SLTCAP_HPC);
+    if ( rc )
+        return rc;
+
+    for ( i = 0; i < ARRAY_SIZE(port->windows); i++ )
+    {
+        paddr_t start = port->windows[i][0], end = port->windows[i][1];
+
+        /* A window whose base is above its limit is closed. */
+        if ( start > end )
+            continue;
+
+        rc = unmap_mmio_regions(d, _gfn(PFN_DOWN(start)),
+                                PFN_DOWN(end) - PFN_DOWN(start) + 1,
+                                _mfn(PFN_DOWN(start)));
+        if ( rc )
+            return rc;
+
+        rc = iomem_deny_access(d, PFN_DOWN(start), PFN_DOWN(end));
+        if ( rc )
+            return rc;
+    }
+
+    return 0;
+}
+
+/*
+ * When the SPCR's UART is a PCI function, take it away from the hardware
+ * domain.  Denying its registers is not enough: the domain still enumerates
+ * the function, binds a serial driver to it, and takes a data abort on the
+ * first register access.  So hide the function's configuration space, and
+ * restrict the port above it: pciehp would otherwise find the slot empty and
+ * power it off, console and all.  Any check that fails leaves the domain's
+ * view as it was.
+ */
+static int __init acpi_hide_spcr_pci_uart(struct domain *d,
+                                          const struct acpi_table_spcr *spcr)
+{
+    unsigned int devfn = PCI_DEVFN(spcr->pci_device, spcr->pci_function);
+    pci_sbdf_t sbdf = PCI_SBDF(spcr->pci_segment, spcr->pci_bus, devfn);
+    struct spcr_port port;
+    unsigned int root, header;
+    paddr_t base, cfg;
+    void __iomem *va;
+    uint32_t id;
+    int rc;
+
+    /* The SPCR's way of saying the UART is not a PCI function. */
+    if ( spcr->pci_vendor_id == 0xffff )
+        return 0;
+
+    if ( spcr->pci_flags & ACPI_SPCR_DO_NOT_DISABLE )
+    {
+        spcr_keep(&sbdf, "the firmware asks for it to stay enumerated");
+        return 0;
+    }
+
+    /* vPCI traps the whole configuration space, and would overlap. */
+    if ( has_vpci(d) )
+    {
+        spcr_keep(&sbdf, "vPCI emulates the configuration space");
+        return 0;
+    }
+
+    if ( !mcfg_window(sbdf.seg, sbdf.bus, &base, &root) )
+    {
+        spcr_keep(&sbdf, "no MCFG window covers it");
+        return 0;
+    }
+
+    cfg = ecam_page(base, sbdf.bus, devfn);
+    va = ioremap_nocache(cfg, PAGE_SIZE);
+    if ( !va )
+        return -ENOMEM;
+    id = readl(va + PCI_VENDOR_ID);
+    header = readb(va + PCI_HEADER_TYPE);
+    iounmap(va);
+
+    /* A page that holds some other device would hide that device instead. */
+    if ( id != (((uint32_t)spcr->pci_device_id << 16) | spcr->pci_vendor_id) )
+    {
+        spcr_keep(&sbdf, "the function there has another ID");
+        return 0;
+    }
+
+    if ( (header & 0x7f) != PCI_HEADER_TYPE_NORMAL )
+    {
+        spcr_keep(&sbdf, "it is not an endpoint");
+        return 0;
+    }
+
+    /* Linux skips functions 1-7 of a device whose function 0 is missing. */
+    if ( !PCI_FUNC(devfn) && (header & 0x80) )
+    {
+        spcr_keep(&sbdf, "hiding it would hide its sibling functions");
+        return 0;
+    }
+
+    /* A function on the root bus has no port, and no slot, above it. */
+    if ( sbdf.bus != root )
+    {
+        rc = spcr_find_port(base, root, &sbdf, &port);
+        if ( rc )
+            return rc == -ENOMEM ? rc : 0;
+
+        rc = spcr_restrict_port(d, &port);
+        if ( rc )
+            return rc;
+
+        printk("SPCR: port %pp above console %pp is read-only to %pd\n",
+               &port.sbdf, &sbdf, d);
+    }
+
+    rc = hide_pci_function_from_hwdom(d, cfg);
+    if ( rc )
+        return rc;
+
+    printk("SPCR: console %pp hidden from %pd\n", &sbdf, d);
+
+    return 0;
+}
+
 static int __init acpi_iomem_deny_access(struct domain *d)
 {
     acpi_status status;
@@ -79,6 +422,10 @@ static int __init acpi_iomem_deny_access(struct domain *d)
         mfn = spcr->serial_port.address >> PAGE_SHIFT;
         /* Deny MMIO access for UART */
         rc = iomem_deny_access(d, mfn, mfn);
+        if ( rc )
+            return rc;
+
+        rc = acpi_hide_spcr_pci_uart(d, spcr);
         if ( rc )
             return rc;
     }
