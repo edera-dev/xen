@@ -15,6 +15,7 @@
 #include <xen/sort.h>
 #include <asm/cpuerrata.h>
 #include <asm/current.h>
+#include <asm/io.h>
 #include <asm/ioreq.h>
 #include <asm/mmio.h>
 #include <asm/traps.h>
@@ -57,6 +58,107 @@ void register_unmapped_mmio_handler(struct domain *d, paddr_t addr,
                                     paddr_t size)
 {
     register_mmio_handler(d, &unmapped_ops, addr, size, NULL);
+}
+
+/*
+ * A PCI function's configuration space page, shown read-only: reads come
+ * from the device, less the bits of one register that are cleared, and writes
+ * are dropped.
+ */
+struct ro_pci_config {
+    void __iomem *va;
+    unsigned int clear_reg;
+    uint32_t clear_bits;
+};
+
+static int ro_pci_config_read(struct vcpu *v, mmio_info_t *info,
+                              register_t *r, void *priv)
+{
+    const struct ro_pci_config *ro = priv;
+    unsigned int len = 1U << info->dabt.size;
+    unsigned int off = info->gpa & ~PAGE_MASK;
+    uint64_t mask = GENMASK(len * 8 - 1, 0);
+    uint64_t val;
+
+    /*
+     * ECAM accesses are naturally aligned, and a misaligned one would fault
+     * in Xen on the device mapping.  Answer it as a missing register would.
+     */
+    if ( off & (len - 1) )
+    {
+        *r = UINT64_MAX & mask;
+        return 1;
+    }
+
+    switch ( len )
+    {
+    case 1:
+        val = readb(ro->va + off);
+        break;
+
+    case 2:
+        val = readw(ro->va + off);
+        break;
+
+    case 4:
+        val = readl(ro->va + off);
+        break;
+
+    default:
+        /* Not every ECAM implementation takes 64-bit accesses. */
+        val = readl(ro->va + off) |
+              ((uint64_t)readl(ro->va + off + 4) << 32);
+        break;
+    }
+
+    if ( off < ro->clear_reg + 4 && ro->clear_reg < off + len )
+    {
+        uint64_t clear = ro->clear_bits;
+
+        if ( ro->clear_reg >= off )
+            clear <<= (ro->clear_reg - off) * 8;
+        else
+            clear >>= (off - ro->clear_reg) * 8;
+
+        val &= ~clear;
+    }
+
+    *r = val & mask;
+    return 1;
+}
+
+static const struct mmio_handler_ops ro_pci_config_ops = {
+    .read = ro_pci_config_read,
+    .write = unmapped_write,
+};
+
+/*
+ * Show a domain the configuration space page at @cfg read-only, with
+ * @clear_bits of the 32-bit register at @clear_reg reading as zero.  Taking
+ * the page itself away from the domain is the caller's job.
+ */
+int __init register_ro_pci_config_handler(struct domain *d, paddr_t cfg,
+                                          unsigned int clear_reg,
+                                          uint32_t clear_bits)
+{
+    struct ro_pci_config *ro = xmalloc(struct ro_pci_config);
+
+    if ( !ro )
+        return -ENOMEM;
+
+    ro->va = ioremap_nocache(cfg, PAGE_SIZE);
+    if ( !ro->va )
+    {
+        xfree(ro);
+        return -ENOMEM;
+    }
+
+    ro->clear_reg = clear_reg;
+    ro->clear_bits = clear_bits;
+
+    register_mmio_handler(d, &ro_pci_config_ops, cfg, PAGE_SIZE, ro);
+
+    return 0;
 }
 
 static enum io_state handle_read(const struct mmio_handler *handler,
