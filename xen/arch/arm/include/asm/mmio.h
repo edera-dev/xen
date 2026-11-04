@@ -88,6 +88,9 @@ void register_mmio_handler(struct domain *d,
                            paddr_t addr, paddr_t size, void *priv);
 void register_unmapped_mmio_handler(struct domain *d, paddr_t addr,
                                     paddr_t size);
+int register_ro_pci_config_handler(struct domain *d, paddr_t cfg,
+                                   unsigned int clear_reg,
+                                   uint32_t clear_bits);
 int domain_io_init(struct domain *d, unsigned int max_count);
 void domain_io_free(struct domain *d);
 
