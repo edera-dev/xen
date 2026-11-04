@@ -39,6 +39,7 @@
 #define P9_CMD_READ       116
 #define P9_CMD_WRITE      118
 #define P9_CMD_CLUNK      120
+#define P9_CMD_REMOVE     122
 #define P9_CMD_STAT       124
 
 /* P9 protocol open flags. */
@@ -1206,6 +1207,46 @@ static void p9_clunk(struct ring *ring, struct p9_header *hdr)
     fill_buffer(ring, hdr->cmd + 1, hdr->tag, "");
 }
 
+/*
+ * Removing files is not supported, but remove(5) clunks the fid even when
+ * the remove fails, and clients free the fid on any reply. Leaving it in the
+ * table would make the client's next use of that fid number fail.
+ */
+static void p9_remove(struct ring *ring, struct p9_header *hdr)
+{
+    device *device = ring->device;
+    uint32_t fid;
+    struct p9_fid *fidp;
+    int ret;
+
+    ret = fill_data(ring, "U", &fid);
+    if ( ret != 1 )
+    {
+        p9_error(ring, hdr->tag, EINVAL);
+        return;
+    }
+
+    fidp = get_fid_ref(device, fid);
+    if ( !fidp )
+    {
+        p9_error(ring, hdr->tag, ENOENT);
+        return;
+    }
+
+    if ( fidp->opened )
+    {
+        fidp->opened = false;
+        free_fid(device, fidp);
+        close(fidp->fd);
+    }
+
+    /* 2 calls of free_fid(): one for our reference, and one to free it. */
+    free_fid(device, fidp);
+    free_fid(device, fidp);
+
+    p9_error(ring, hdr->tag, EOPNOTSUPP);
+}
+
 static void fill_p9_stat(device *device, struct p9_stat *p9s, struct stat *st,
                          const char *name)
 {
@@ -1493,6 +1534,10 @@ void *io_thread(void *arg)
 
             case P9_CMD_CLUNK:
                 p9_clunk(ring, &hdr);
+                break;
+
+            case P9_CMD_REMOVE:
+                p9_remove(ring, &hdr);
                 break;
 
             case P9_CMD_STAT:
