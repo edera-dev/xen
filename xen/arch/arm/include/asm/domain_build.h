@@ -18,6 +18,8 @@ void set_interrupt(gic_interrupt_t interrupt, unsigned int irq,
 
 int prepare_acpi(struct domain *d, struct kernel_info *kinfo);
 
+int hide_pci_function_from_hwdom(struct domain *d, paddr_t cfg);
+
 int add_ext_regions(unsigned long s_gfn, unsigned long e_gfn, void *data);
 
 #define ACPI_DOM0_FDT_MIN_SIZE 4096
