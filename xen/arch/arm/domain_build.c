@@ -2158,27 +2158,15 @@ static int __init construct_dom0(struct domain *d)
 }
 
 /*
- * Take the console's PCI function away from the hardware domain: unmap the one
- * page of configuration space that describes it, refuse to map it again, and
- * answer what is left with an empty slot.  The device is then never
- * enumerated, never claimed and never reset.
- *
- * Hiding only the BARs would not do, and neither does stopping the domain
- * moving them: it is not a console driver that takes the device away.
- * virtio_pci_probe() resets it before any console driver is consulted.
+ * Take a PCI function away from the hardware domain: unmap the one page of
+ * configuration space that describes it, refuse to map it again, and answer
+ * what is left with an empty slot.  The device is then never enumerated, never
+ * claimed and never reset.
  */
-static int __init hide_vtcon_from_hwdom(struct domain *d)
+int __init hide_pci_function_from_hwdom(struct domain *d, paddr_t cfg)
 {
-    paddr_t cfg = vtcon_config_space() & PAGE_MASK;
-    struct vtcon_region regs[2];
-    unsigned int i, n;
-    unsigned long pfn;
+    unsigned long pfn = PFN_DOWN(cfg);
     int rc;
-
-    if ( !cfg )
-        return 0;
-
-    pfn = PFN_DOWN(cfg);
 
     rc = unmap_mmio_regions(d, _gfn(pfn), 1, _mfn(pfn));
     if ( rc )
@@ -2198,6 +2186,29 @@ static int __init hide_vtcon_from_hwdom(struct domain *d)
      * in pci_generic_config_read() with interrupts off.
      */
     register_unmapped_mmio_handler(d, cfg, PAGE_SIZE);
+
+    return 0;
+}
+
+/*
+ * Take the console's PCI function away from the hardware domain.  Hiding only
+ * the BARs would not do, and neither does stopping the domain moving them: it
+ * is not a console driver that takes the device away.  virtio_pci_probe()
+ * resets it before any console driver is consulted.
+ */
+static int __init hide_vtcon_from_hwdom(struct domain *d)
+{
+    paddr_t cfg = vtcon_config_space() & PAGE_MASK;
+    struct vtcon_region regs[2];
+    unsigned int i, n;
+    int rc;
+
+    if ( !cfg )
+        return 0;
+
+    rc = hide_pci_function_from_hwdom(d, cfg);
+    if ( rc )
+        return rc;
 
     printk("vtcon: configuration space at %#"PRIpaddr" hidden from %pd\n",
            cfg, d);
