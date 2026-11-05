@@ -269,13 +269,22 @@ static int __init acpi_hide_spcr_pci_uart(struct domain *d,
 {
     unsigned int devfn = PCI_DEVFN(spcr->pci_device, spcr->pci_function);
     pci_sbdf_t sbdf = PCI_SBDF(spcr->pci_segment, spcr->pci_bus, devfn);
-    unsigned int root;
-    paddr_t base;
+    unsigned int root, header;
+    paddr_t base, cfg;
+    void __iomem *va;
+    uint32_t id;
     int rc;
 
     /* The SPCR's way of saying the UART is not a PCI function. */
     if ( spcr->pci_vendor_id == 0xffff )
         return 0;
+
+    if ( spcr->pci_flags & ACPI_SPCR_DO_NOT_DISABLE )
+    {
+        spcr_keep(&sbdf,
+                  "the SPCR asks for the OS not to suppress it");
+        return 0;
+    }
 
     /* vPCI traps the whole configuration space, and would overlap. */
     if ( has_vpci(d) )
@@ -292,6 +301,30 @@ static int __init acpi_hide_spcr_pci_uart(struct domain *d,
         return 0;
     }
 
+    cfg = ecam_page(base, sbdf.bus, devfn);
+    va = ioremap_nocache(cfg, PAGE_SIZE);
+    if ( !va )
+        return -ENOMEM;
+    id = readl(va + PCI_VENDOR_ID);
+    header = readb(va + PCI_HEADER_TYPE);
+    iounmap(va);
+
+    /* A page that holds some other device would hide that device instead. */
+    if ( id != (((uint32_t)spcr->pci_device_id << 16) | spcr->pci_vendor_id) )
+    {
+        spcr_keep(&sbdf,
+                  "the function at its configuration space has other IDs, so hiding it could hide some other device");
+        return 0;
+    }
+
+    /* Linux skips functions 1-7 of a device whose function 0 is missing. */
+    if ( !PCI_FUNC(devfn) && (header & 0x80) )
+    {
+        spcr_keep(&sbdf,
+                  "it is function 0 of a multi-function device, and hiding it would hide the other functions too");
+        return 0;
+    }
+
     /* A function on the root bus has no port, and no slot, above it. */
     if ( sbdf.bus != root )
     {
@@ -300,7 +333,7 @@ static int __init acpi_hide_spcr_pci_uart(struct domain *d,
             return rc == -ENODEV ? 0 : rc;
     }
 
-    rc = hide_pci_function_from_hwdom(d, ecam_page(base, sbdf.bus, devfn));
+    rc = hide_pci_function_from_hwdom(d, cfg);
     if ( rc )
         return rc;
 
