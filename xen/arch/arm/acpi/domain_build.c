@@ -127,16 +127,17 @@ static unsigned int __init ecam_find_pcie_cap(const void __iomem *cfg)
 }
 
 /*
- * Find the bridge whose secondary bus is @bus.  Bridges number their
+ * Find the one bridge whose secondary bus is @bus.  Bridges number their
  * secondary bus above their own, so it sits on a bus from @root up to @bus.
  * Scan those the way Linux does, skipping functions 1-7 of a device whose
- * function 0 is absent or single-function.
+ * function 0 is absent or single-function.  More than one claimant means
+ * aliased devices or broken numbering, and none of them can be trusted.
  */
 static int __init find_parent_bridge(paddr_t base, unsigned int root,
                                      unsigned int bus, unsigned int *pbus,
                                      unsigned int *pdevfn)
 {
-    unsigned int b, devfn;
+    unsigned int b, devfn, found = 0;
 
     for ( b = root; b < bus; b++ )
     {
@@ -163,8 +164,7 @@ static int __init find_parent_bridge(paddr_t base, unsigned int root,
             {
                 *pbus = b;
                 *pdevfn = devfn;
-                iounmap(ecam);
-                return 0;
+                found++;
             }
 
             if ( !PCI_FUNC(devfn) && !(header & 0x80) )
@@ -174,7 +174,7 @@ static int __init find_parent_bridge(paddr_t base, unsigned int root,
         iounmap(ecam);
     }
 
-    return -ENODEV;
+    return found == 1 ? 0 : -ENODEV;
 }
 
 /*
@@ -197,7 +197,7 @@ static void __init spcr_keep(const pci_sbdf_t *sbdf, const char *why)
 static int __init spcr_restrict_port(struct domain *d, paddr_t base,
                                      unsigned int root, const pci_sbdf_t *uart)
 {
-    unsigned int bus, devfn, pcie;
+    unsigned int bus, devfn, pcie, type;
     pci_sbdf_t port;
     void __iomem *va;
     paddr_t cfg;
@@ -206,7 +206,7 @@ static int __init spcr_restrict_port(struct domain *d, paddr_t base,
     rc = find_parent_bridge(base, root, uart->bus, &bus, &devfn);
     if ( rc == -ENODEV )
         spcr_keep(uart,
-                  "no bridge leads to it, and hiding it with its slot unlocked could power the console off");
+                  "no single bridge leads to it, and hiding it with its slot unlocked could power the console off");
     if ( rc )
         return rc;
 
@@ -216,7 +216,6 @@ static int __init spcr_restrict_port(struct domain *d, paddr_t base,
     if ( !va )
         return -ENOMEM;
     pcie = ecam_find_pcie_cap(va);
-    iounmap(va);
 
     /*
      * Every PCI Express port has the capability.  A port without it is a
@@ -224,10 +223,29 @@ static int __init spcr_restrict_port(struct domain *d, paddr_t base,
      */
     if ( !pcie )
     {
+        iounmap(va);
         spcr_keep(uart,
                   "its port is not a PCI Express port, and hiding it with its slot unlocked could power the console off");
         return -ENODEV;
     }
+
+    /*
+     * Dropping the port's writes and hotplug affects everything beneath it,
+     * so the port must lead to the UART alone: a PCI Express root or
+     * downstream port, whose link holds a single device, with no bus beneath
+     * it but the UART's.
+     */
+    type = MASK_EXTR(readw(va + pcie + PCI_EXP_FLAGS), PCI_EXP_FLAGS_TYPE);
+    if ( (type != PCI_EXP_TYPE_ROOT_PORT && type != PCI_EXP_TYPE_DOWNSTREAM) ||
+         readb(va + PCI_SUBORDINATE_BUS) != uart->bus )
+    {
+        iounmap(va);
+        spcr_keep(uart,
+                  "its port also leads to other devices, and locking the port would take their hotplug and configuration away");
+        return -ENODEV;
+    }
+
+    iounmap(va);
 
     /*
      * The view holds only while every access the domain makes to the page
