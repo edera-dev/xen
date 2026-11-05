@@ -190,6 +190,60 @@ static void __init spcr_keep(const pci_sbdf_t *sbdf, const char *why)
 }
 
 /*
+ * Keep the hardware domain off the memory windows of the port at @cfg.  The
+ * port leads to the UART alone, so its windows hold nothing but the UART's
+ * BARs, of which the domain is otherwise denied only the page the SPCR names.
+ */
+static int __init spcr_deny_port_windows(struct domain *d, paddr_t cfg)
+{
+    void __iomem *va = ioremap_nocache(cfg, PAGE_SIZE);
+    paddr_t windows[2][2];
+    uint32_t lo, hi;
+    unsigned int i;
+    int rc;
+
+    if ( !va )
+        return -ENOMEM;
+
+    lo = readw(va + PCI_MEMORY_BASE) & PCI_MEMORY_RANGE_MASK;
+    hi = readw(va + PCI_MEMORY_LIMIT) & PCI_MEMORY_RANGE_MASK;
+    windows[0][0] = (paddr_t)lo << 16;
+    windows[0][1] = ((paddr_t)hi << 16) | 0xfffff;
+
+    lo = readw(va + PCI_PREF_MEMORY_BASE);
+    hi = readw(va + PCI_PREF_MEMORY_LIMIT);
+    windows[1][0] = (paddr_t)(lo & PCI_PREF_RANGE_MASK) << 16;
+    windows[1][1] = ((paddr_t)(hi & PCI_PREF_RANGE_MASK) << 16) | 0xfffff;
+    if ( (lo & PCI_PREF_RANGE_TYPE_MASK) == PCI_PREF_RANGE_TYPE_64 )
+    {
+        windows[1][0] |= (paddr_t)readl(va + PCI_PREF_BASE_UPPER32) << 32;
+        windows[1][1] |= (paddr_t)readl(va + PCI_PREF_LIMIT_UPPER32) << 32;
+    }
+
+    iounmap(va);
+
+    for ( i = 0; i < ARRAY_SIZE(windows); i++ )
+    {
+        unsigned long s = PFN_DOWN(windows[i][0]);
+        unsigned long e = PFN_DOWN(windows[i][1]);
+
+        /* A window whose base is above its limit is closed. */
+        if ( windows[i][0] > windows[i][1] )
+            continue;
+
+        rc = unmap_mmio_regions(d, _gfn(s), e - s + 1, _mfn(s));
+        if ( rc )
+            return rc;
+
+        rc = iomem_deny_access(d, s, e);
+        if ( rc )
+            return rc;
+    }
+
+    return 0;
+}
+
+/*
  * Show the hardware domain the port above the UART at @uart read-only, and
  * without its hotplug capability.  Return -ENODEV, having said why, when that
  * cannot be done and the UART has to stay visible.
@@ -264,6 +318,10 @@ static int __init spcr_restrict_port(struct domain *d, paddr_t base,
 
     rc = register_ro_pci_config_handler(d, cfg, pcie + PCI_EXP_SLTCAP,
                                         PCI_EXP_SLTCAP_HPC);
+    if ( rc )
+        return rc;
+
+    rc = spcr_deny_port_windows(d, cfg);
     if ( rc )
         return rc;
 
