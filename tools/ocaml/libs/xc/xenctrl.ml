@@ -70,11 +70,8 @@ type domain_create_flag =
   | CDF_NESTED_VIRT
   | CDF_VPMU
   | CDF_TRAP_UNMAPPED_ACCESSES
-<<<<<<< HEAD
-  | CDF_VNUMA_APIC_TOPOLOGY
-=======
   | CDF_VPCI
->>>>>>> b1b4ff209c (xen/vpci: move xen_domctl_createdomain vPCI flag to common)
+  | CDF_VNUMA_APIC_TOPOLOGY
 
 type domain_create_iommu_opts =
   | IOMMU_NO_SHAREPT
