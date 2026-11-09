@@ -178,15 +178,40 @@ static int __init find_parent_bridge(paddr_t base, unsigned int root,
 }
 
 /*
- * Say why the UART stays visible, and what that leaves open: a serial driver in
- * the domain that claims it will fault on the registers Xen keeps for its
- * console, as before this code existed.
+ * Say why the UART stays visible, and what that leaves open: a driver in the
+ * domain finds its registers empty, but the domain can still reset or
+ * reconfigure the function under Xen's console.
  */
 static void __init spcr_keep(const pci_sbdf_t *sbdf, const char *why)
 {
     printk(XENLOG_WARNING
-           "SPCR: console %pp stays visible to the hardware domain, where a driver that claims it will fault: %s\n",
+           "SPCR: console %pp stays visible to the hardware domain: %s\n",
            sbdf, why);
+}
+
+/*
+ * Make the page holding the console's registers at @addr read as all ones,
+ * and drop writes to it, except for the bytes that the hardware domain's vuart
+ * answers.  The vuart sits on the console's first register, and two handlers
+ * must not overlap: find_mmio_handler() could then miss both.
+ */
+static void __init spcr_empty_page(struct domain *d, paddr_t addr)
+{
+    paddr_t start = addr & PAGE_MASK, end = start + PAGE_SIZE;
+
+#ifdef CONFIG_HWDOM_VUART
+    const struct vuart_info *vuart = d->arch.vuart.info;
+
+    if ( vuart && vuart->base_addr >= start && vuart->base_addr < end )
+    {
+        if ( vuart->base_addr > start )
+            register_unmapped_mmio_handler(d, start, vuart->base_addr - start);
+        start = vuart->base_addr + vuart->size;
+    }
+#endif
+
+    if ( start < end )
+        register_unmapped_mmio_handler(d, start, end - start);
 }
 
 /*
@@ -258,11 +283,10 @@ static int __init spcr_restrict_port(struct domain *d, paddr_t base,
 /*
  * When the SPCR's UART is a PCI function, take it away from the hardware
  * domain.  Denying its registers is not enough: the domain still enumerates
- * the function, binds a serial driver to it, and takes a data abort on the
- * first register access.  So hide the function's configuration space, and
- * restrict the port above it: pciehp would otherwise find the slot empty and
- * power it off, console and all.  Any check that fails leaves the domain's
- * view as it was.
+ * the function, and can reset or reconfigure it under Xen's console.  So hide
+ * the function's configuration space, and restrict the port above it: pciehp
+ * would otherwise find the slot empty and power it off, console and all.  Any
+ * check that fails leaves the function visible.
  */
 static int __init acpi_hide_spcr_pci_uart(struct domain *d,
                                           const struct acpi_table_spcr *spcr)
@@ -276,6 +300,13 @@ static int __init acpi_hide_spcr_pci_uart(struct domain *d,
     /* The SPCR's way of saying the UART is not a PCI function. */
     if ( spcr->pci_vendor_id == 0xffff )
         return 0;
+
+    /*
+     * A driver that claims the UART while it stays visible would otherwise
+     * take a data abort on the denied page, as the domain traps unmapped
+     * accesses.  All ones reads as a missing UART instead.
+     */
+    spcr_empty_page(d, spcr->serial_port.address);
 
     /* vPCI traps the whole configuration space, and would overlap. */
     if ( has_vpci(d) )
