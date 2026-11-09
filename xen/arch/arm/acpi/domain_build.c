@@ -217,7 +217,9 @@ static void __init spcr_empty_page(struct domain *d, paddr_t addr)
 /*
  * Show the hardware domain the port above the UART at @uart read-only, and
  * without its hotplug capability.  Return -ENODEV, having said why, when that
- * cannot be done and the UART has to stay visible.
+ * cannot be done and the UART has to stay visible.  Everything beneath the
+ * port is locked with it, so this assumes that the port leads to the UART
+ * alone.
  */
 static int __init spcr_restrict_port(struct domain *d, paddr_t base,
                                      unsigned int root, const pci_sbdf_t *uart)
