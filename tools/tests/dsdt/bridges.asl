@@ -63,6 +63,19 @@ DefinitionBlock ("", "DSDT", 2, "XEN", "BRIDGES", 1)
             }
         }
 
+        /* _HID as a compressed EisaId. */
+        Device (PCI5)
+        {
+            Name (_HID, EisaId ("PNP0A08"))
+            Name (_SEG, 5)
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0x50000000, 0x5FFFFFFF, 0x0, 0x10000000)
+            })
+        }
+
         /* _SEG in a WordPrefix integer. */
         Device (PCIW)
         {
