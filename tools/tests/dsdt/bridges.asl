@@ -8,6 +8,19 @@ DefinitionBlock ("", "DSDT", 2, "XEN", "BRIDGES", 1)
 {
     Scope (\_SB)
     {
+        /* _SEG of One, ahead of segment 0's bridge. */
+        Device (PCI1)
+        {
+            Name (_HID, "PNP0A08")
+            Name (_SEG, One)
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0x60000000, 0x6FFFFFFF, 0x0, 0x10000000)
+            })
+        }
+
         /* No _SEG, so segment 0. */
         Device (PCI0)
         {
