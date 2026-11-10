@@ -68,6 +68,10 @@ static const struct test {
         bridges, sizeof(bridges), 3, 0, { { 0x30000000, 0x3fffffff } },
     },
     {
+        "EisaId _HID",
+        bridges, sizeof(bridges), 5, 0, { { 0x50000000, 0x5fffffff } },
+    },
+    {
         "_CRS from a Method",
         bridges, sizeof(bridges), 4, -ENODEV,
     },
