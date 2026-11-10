@@ -56,6 +56,10 @@ static const struct test {
         bridges, sizeof(bridges), 0, 0, { { 0x10000000, 0x1fffffff } },
     },
     {
+        "_SEG of One",
+        bridges, sizeof(bridges), 1, 0, { { 0x60000000, 0x6fffffff } },
+    },
+    {
         "_SEG in a byte",
         bridges, sizeof(bridges), 2, 0, { { 0x20000000, 0x2fffffff } },
     },
