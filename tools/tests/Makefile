@@ -13,6 +13,14 @@ SUBDIRS-y += resource
 SUBDIRS-y += vpci
 SUBDIRS-y += xenstore
 
+# The walker runs only in a 64-bit hypervisor, and its windows need a 64-bit
+# unsigned long.  Its tables are compiled by iasl, which configure requires
+# only on the hosts that build ACPI tables.
+ifneq ($(IASL),)
+SUBDIRS-$(CONFIG_X86_64) += dsdt
+SUBDIRS-$(CONFIG_ARM_64) += dsdt
+endif
+
 SUBDIRS-$(CONFIG_X86) += cpu-policy
 SUBDIRS-$(CONFIG_X86) += tsx
 ifneq ($(clang),y)
