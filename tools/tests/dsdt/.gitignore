@@ -1,0 +1,7 @@
+*.aml
+*.hex
+*.tmp
+/bridges.h
+/dsdt.c
+/test-dsdt
+/virt.h
