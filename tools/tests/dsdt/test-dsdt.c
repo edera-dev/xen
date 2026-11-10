@@ -34,6 +34,22 @@ static const struct __attribute__((__packed__)) {
     },
 };
 
+/*
+ * A Device that ends, with the table, three bytes into an EisaId _HID:
+ *     Device (PCI0) { Name (_HID, EisaId ("PNP0A08") without its last byte
+ */
+static const struct __attribute__((__packed__)) {
+    struct acpi_table_header header;
+    uint8_t aml[16];
+} cut_eisaid = {
+    .header.length = sizeof(cut_eisaid),
+    .aml = {
+        0x5b, 0x82, 0x0e, 'P', 'C', 'I', '0',   /* Device, 14 bytes */
+        0x08, '_', 'H', 'I', 'D',               /* Name (_HID, */
+        0x0c, 0x41, 0xd0, 0x0a,                 /* DWord, 3 of its 4 bytes */
+    },
+};
+
 static const struct test {
     const char *name;
     const void *table;
@@ -73,12 +89,20 @@ static const struct test {
         bridges, sizeof(bridges), 5, 0, { 1, { { 0x50000000, 0x5fffffff } } },
     },
     {
+        "EisaId _CID",
+        bridges, sizeof(bridges), 6, 0, { 1, { { 0x70000000, 0x7fffffff } } },
+    },
+    {
         "_CRS from a Method",
         bridges, sizeof(bridges), 4, -ENODEV, { 0 },
     },
     {
         "string _HID cut by the end of the table",
         &cut_hid, sizeof(cut_hid), 0, -ENODEV, { 0 },
+    },
+    {
+        "EisaId _HID cut by the end of the table",
+        &cut_eisaid, sizeof(cut_eisaid), 0, -ENODEV, { 0 },
     },
 };
 
