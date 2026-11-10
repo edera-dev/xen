@@ -18,10 +18,6 @@
 #include "bridges.h"
 #include "virt.h"
 
-struct window {
-    unsigned long start, end;
-};
-
 /*
  * A Device that ends, with the table, one byte into a string _HID:
  *     Device (PCI0) { Name (_HID, "P
@@ -44,44 +40,45 @@ static const struct test {
     size_t size;
     uint16_t segment;
     int rc;
-    struct window windows[2];
+    struct rangeset windows;
 } tests[] = {
     {
         "QEMU virt: the bridge's two memory windows",
         virt, sizeof(virt), 0, 0,
-        { { 0x10000000, 0x3efeffff }, { 0x8000000000, 0xffffffffff } },
+        { 2, { { 0x10000000, 0x3efeffff }, { 0x8000000000, 0xffffffffff } } },
     },
     {
         "no _SEG is segment 0",
-        bridges, sizeof(bridges), 0, 0, { { 0x10000000, 0x1fffffff } },
+        bridges, sizeof(bridges), 0, 0, { 1, { { 0x10000000, 0x1fffffff } } },
     },
     {
         "_SEG of One",
-        bridges, sizeof(bridges), 1, 0, { { 0x60000000, 0x6fffffff } },
+        bridges, sizeof(bridges), 1, 0, { 1, { { 0x60000000, 0x6fffffff } } },
     },
     {
         "_SEG in a byte",
-        bridges, sizeof(bridges), 2, 0, { { 0x20000000, 0x2fffffff } },
+        bridges, sizeof(bridges), 2, 0, { 1, { { 0x20000000, 0x2fffffff } } },
     },
     {
         "_SEG in a word",
-        bridges, sizeof(bridges), 0x100, 0, { { 0x80000000, 0x8fffffff } },
+        bridges, sizeof(bridges), 0x100, 0,
+        { 1, { { 0x80000000, 0x8fffffff } } },
     },
     {
         "host bridge by _CID",
-        bridges, sizeof(bridges), 3, 0, { { 0x30000000, 0x3fffffff } },
+        bridges, sizeof(bridges), 3, 0, { 1, { { 0x30000000, 0x3fffffff } } },
     },
     {
         "EisaId _HID",
-        bridges, sizeof(bridges), 5, 0, { { 0x50000000, 0x5fffffff } },
+        bridges, sizeof(bridges), 5, 0, { 1, { { 0x50000000, 0x5fffffff } } },
     },
     {
         "_CRS from a Method",
-        bridges, sizeof(bridges), 4, -ENODEV,
+        bridges, sizeof(bridges), 4, -ENODEV, { 0 },
     },
     {
         "string _HID cut by the end of the table",
-        &cut_hid, sizeof(cut_hid), 0, -ENODEV,
+        &cut_hid, sizeof(cut_hid), 0, -ENODEV, { 0 },
     },
 };
 
@@ -142,8 +139,9 @@ static unsigned int failures;
 
 static void check(const struct test *t)
 {
-    struct rangeset windows = { 0 };
-    unsigned int i, nr = 0;
+    const struct rangeset *want = &t->windows;
+    struct rangeset got = { 0 };
+    unsigned int i;
     int rc;
 
     /* Named first, so that a read past the table's end shows which test. */
@@ -151,26 +149,23 @@ static void check(const struct test *t)
     fflush(stdout);
 
     load_dsdt(t->table, t->size);
-    rc = acpi_pci_get_host_bridge_windows(t->segment, &windows);
-
-    while ( nr < ARRAY_SIZE(t->windows) && t->windows[nr].end )
-        nr++;
+    rc = acpi_pci_get_host_bridge_windows(t->segment, &got);
 
     if ( rc != t->rc )
         report("%s: returned %d, want %d\n", t->name, rc, t->rc);
 
-    if ( windows.nr != nr )
+    if ( got.nr != want->nr )
     {
-        report("%s: %u windows, want %u\n", t->name, windows.nr, nr);
+        report("%s: %u windows, want %u\n", t->name, got.nr, want->nr);
         return;
     }
 
-    for ( i = 0; i < nr; i++ )
-        if ( windows.ranges[i].start != t->windows[i].start ||
-             windows.ranges[i].end != t->windows[i].end )
+    for ( i = 0; i < want->nr; i++ )
+        if ( got.ranges[i].start != want->ranges[i].start ||
+             got.ranges[i].end != want->ranges[i].end )
             report("%s: window %u is [%#lx, %#lx], want [%#lx, %#lx]\n",
-                   t->name, i, windows.ranges[i].start, windows.ranges[i].end,
-                   t->windows[i].start, t->windows[i].end);
+                   t->name, i, got.ranges[i].start, got.ranges[i].end,
+                   want->ranges[i].start, want->ranges[i].end);
 }
 
 int main(void)
