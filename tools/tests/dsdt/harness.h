@@ -14,6 +14,13 @@
 
 #define __init
 
+static inline uint32_t get_unaligned_le32(const void *p)
+{
+    const uint8_t *b = p;
+
+    return b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
 /* ACPICA packs its table structures, so a table needs no alignment. */
 struct __attribute__((__packed__)) acpi_table_header {
     char     signature[4];
