@@ -206,6 +206,53 @@ static bool __init aml_skip_data(struct aml_span *s)
 }
 
 /*
+ * Read an integer data object: Zero, One, or an integer after a Byte, Word,
+ * DWord or QWord prefix.  Anything else is not read, so the caller can tell a
+ * value it cannot know from 0.
+ */
+static bool __init aml_integer(struct aml_span s, uint64_t *val)
+{
+    unsigned int i, width;
+
+    if ( s.p >= s.end )
+        return false;
+
+    switch ( *s.p )
+    {
+    case AML_ZERO_OP:      *val = 0; return true;
+    case AML_ONE_OP:       *val = 1; return true;
+    case AML_BYTE_PREFIX:  width = 1; break;
+    case AML_WORD_PREFIX:  width = 2; break;
+    case AML_DWORD_PREFIX: width = 4; break;
+    case AML_QWORD_PREFIX: width = 8; break;
+    default:               return false;
+    }
+
+    if ( s.p + 1 + width > s.end )
+        return false;
+
+    for ( *val = 0, i = 0; i < width; i++ )
+        *val |= (uint64_t)s.p[1 + i] << (i * 8);
+
+    return true;
+}
+
+/* Whether @s starts with a Method called @name, which is never run here. */
+static bool __init aml_is_method(struct aml_span s, const char *name)
+{
+    const uint8_t *seg;
+    uint32_t len;
+
+    if ( s.p >= s.end || *s.p != AML_METHOD_OP )
+        return false;
+
+    s.p++;
+
+    return aml_pkglength(&s, &len) && aml_namestring(&s, &seg) && seg &&
+           !memcmp(seg, name, 4);
+}
+
+/*
  * Step over one term that is not a Name: a Method, a nested Device, or another
  * construct introduced by a PkgLength.  Returns false for anything else, which
  * stops the caller rather than letting it resynchronise on misread bytes.
@@ -345,11 +392,16 @@ struct crs_search {
 /*
  * Scan one Device's term list for the three Names that matter, and if it is
  * the host bridge being looked for, decode its windows.
+ *
+ * Only a bridge whose segment is known can match: one whose _SEG was read, or
+ * one walked to its end with no _SEG, which is segment 0.  A _SEG that is
+ * computed, or that may come after the term the walk stopped at, costs the
+ * bridge its windows, rather than giving them to segment 0.
  */
 static int __init scan_device(struct aml_span body, struct crs_search *search)
 {
     const uint8_t *crs = NULL, *crs_end = NULL;
-    bool is_host_bridge = false;
+    bool is_host_bridge = false, seg_read = false, seg_unknown = false;
     uint16_t segment = 0;
 
     while ( body.p < body.end )
@@ -365,6 +417,8 @@ static int __init scan_device(struct aml_span body, struct crs_search *search)
              * _HID and its _CRS, so these have to be stepped over rather than
              * treated as the end of the device.
              */
+            if ( aml_is_method(body, "_SEG") )
+                seg_unknown = true;
             if ( !aml_skip_term(&body) )
                 break;
             continue;
@@ -391,16 +445,17 @@ static int __init scan_device(struct aml_span body, struct crs_search *search)
                        get_unaligned_le32(data.p + 1) == EISAID_PNP0A03) )
                 is_host_bridge = true;
         }
-        else if ( !memcmp(seg, "_SEG", 4) && data.p < data.end )
+        else if ( !memcmp(seg, "_SEG", 4) )
         {
-            if ( *data.p == AML_ZERO_OP )
-                segment = 0;
-            else if ( *data.p == AML_ONE_OP )
-                segment = 1;
-            else if ( *data.p == AML_BYTE_PREFIX && data.p + 2 <= data.end )
-                segment = data.p[1];
-            else if ( *data.p == AML_WORD_PREFIX && data.p + 3 <= data.end )
-                segment = data.p[1] | ((uint16_t)data.p[2] << 8);
+            uint64_t val;
+
+            if ( aml_integer(data, &val) && val <= 0xffff )
+            {
+                segment = val;
+                seg_read = true;
+            }
+            else
+                seg_unknown = true;
         }
         else if ( !memcmp(seg, "_CRS", 4) && data.p < data.end &&
                   *data.p == AML_BUFFER_OP )
@@ -425,7 +480,11 @@ static int __init scan_device(struct aml_span body, struct crs_search *search)
             return -EINVAL;
     }
 
-    if ( !is_host_bridge || !crs || segment != search->segment )
+    /* The walk stopped early, so a _SEG may follow where it stopped. */
+    if ( body.p < body.end && !seg_read )
+        seg_unknown = true;
+
+    if ( !is_host_bridge || !crs || seg_unknown || segment != search->segment )
         return 0;
 
     if ( crs_add_windows(crs, crs_end, search->windows) > 0 )
