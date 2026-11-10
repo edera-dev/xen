@@ -395,6 +395,8 @@ static int __init scan_device(struct aml_span body, struct crs_search *search)
         {
             if ( *data.p == AML_ZERO_OP )
                 segment = 0;
+            else if ( *data.p == AML_ONE_OP )
+                segment = 1;
             else if ( *data.p == AML_BYTE_PREFIX && data.p + 2 <= data.end )
                 segment = data.p[1];
             else if ( *data.p == AML_WORD_PREFIX && data.p + 3 <= data.end )
