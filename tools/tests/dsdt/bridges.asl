@@ -21,6 +21,68 @@ DefinitionBlock ("", "DSDT", 2, "XEN", "BRIDGES", 1)
             })
         }
 
+        /* _SEG from a Method, which is never run, ahead of segment 0's bridge. */
+        Device (PCIM)
+        {
+            Name (_HID, "PNP0A08")
+            Method (_SEG, 0, NotSerialized)
+            {
+                Return (7)
+            }
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0xA0000000, 0xAFFFFFFF, 0x0, 0x10000000)
+            })
+        }
+
+        /*
+         * _SEG after a term the walk stops at (OperationRegion), ahead of
+         * segment 0's bridge.
+         */
+        Device (PCIR)
+        {
+            Name (_HID, "PNP0A08")
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0xB0000000, 0xBFFFFFFF, 0x0, 0x10000000)
+            })
+            OperationRegion (OPR0, SystemMemory, 0x1000, 0x10)
+            Name (_SEG, 9)
+        }
+
+        /*
+         * _SEG values too large for a segment, ahead of segment 0's bridge:
+         * iasl stores the first in a DWord and the second in a QWord, the
+         * widths no other bridge here has.
+         */
+        Device (PCID)
+        {
+            Name (_HID, "PNP0A08")
+            Name (_SEG, 0x10000)
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0xD0000000, 0xDFFFFFFF, 0x0, 0x10000000)
+            })
+        }
+
+        Device (PCIQ)
+        {
+            Name (_HID, "PNP0A08")
+            Name (_SEG, 0x100000000)
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0xE0000000, 0xEFFFFFFF, 0x0, 0x10000000)
+            })
+        }
+
         /* No _SEG, so segment 0. */
         Device (PCI0)
         {
@@ -114,6 +176,23 @@ DefinitionBlock ("", "DSDT", 2, "XEN", "BRIDGES", 1)
                     NonCacheable, ReadWrite,
                     0x0, 0x80000000, 0x8FFFFFFF, 0x0, 0x10000000)
             })
+        }
+
+        /*
+         * _SEG read before a term the walk stops at (OperationRegion), so the
+         * segment is still known.
+         */
+        Device (PCIS)
+        {
+            Name (_HID, "PNP0A08")
+            Name (_SEG, 8)
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0xC0000000, 0xCFFFFFFF, 0x0, 0x10000000)
+            })
+            OperationRegion (OPR1, SystemMemory, 0x1000, 0x10)
         }
     }
 }

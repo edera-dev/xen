@@ -50,6 +50,22 @@ static const struct __attribute__((__packed__)) {
     },
 };
 
+/*
+ * A Device that ends, with the table, one byte into a Word _SEG:
+ *     Device (PCI0) { Name (_SEG, 0x0100 without its last byte
+ */
+static const struct __attribute__((__packed__)) {
+    struct acpi_table_header header;
+    uint8_t aml[14];
+} cut_seg = {
+    .header.length = sizeof(cut_seg),
+    .aml = {
+        0x5b, 0x82, 0x0c, 'P', 'C', 'I', '0',   /* Device, 12 bytes */
+        0x08, '_', 'S', 'E', 'G',               /* Name (_SEG, */
+        0x0b, 0x00,                             /* Word, 1 of its 2 bytes */
+    },
+};
+
 static const struct test {
     const char *name;
     const void *table;
@@ -64,7 +80,7 @@ static const struct test {
         { 2, { { 0x10000000, 0x3efeffff }, { 0x8000000000, 0xffffffffff } } },
     },
     {
-        "no _SEG is segment 0",
+        "segment 0 is the bridge with no _SEG, not those ahead of it",
         bridges, sizeof(bridges), 0, 0, { 1, { { 0x10000000, 0x1fffffff } } },
     },
     {
@@ -101,8 +117,16 @@ static const struct test {
         &cut_hid, sizeof(cut_hid), 0, -ENODEV, { 0 },
     },
     {
+        "_SEG read before the walk stops",
+        bridges, sizeof(bridges), 8, 0, { 1, { { 0xc0000000, 0xcfffffff } } },
+    },
+    {
         "EisaId _HID cut by the end of the table",
         &cut_eisaid, sizeof(cut_eisaid), 0, -ENODEV, { 0 },
+    },
+    {
+        "_SEG cut by the end of the table",
+        &cut_seg, sizeof(cut_seg), 0, -ENODEV, { 0 },
     },
 };
 
