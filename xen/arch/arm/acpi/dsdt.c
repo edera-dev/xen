@@ -26,6 +26,7 @@
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/rangeset.h>
+#include <xen/unaligned.h>
 
 #include <asm/acpi-dsdt.h>
 
@@ -62,6 +63,10 @@
 #define ACPI_RESOURCE_DWORD_ADDRESS     0x87
 #define ACPI_RESOURCE_QWORD_ADDRESS     0x8a
 #define ACPI_RESOURCE_TYPE_MEMORY       0
+
+/* The host bridge IDs, as the ASL EisaId () macro compresses them. */
+#define EISAID_PNP0A08                  0x080ad041
+#define EISAID_PNP0A03                  0x030ad041
 
 struct aml_span {
     const uint8_t *p;
@@ -373,16 +378,17 @@ static int __init scan_device(struct aml_span body, struct crs_search *search)
 
         if ( !memcmp(seg, "_HID", 4) || !memcmp(seg, "_CID", 4) )
         {
-            /* Either a string, or a compressed EisaId in a DWord. */
-            /* Prefix byte plus "PNP0A0x" and its NUL: 9 bytes. */
+            /*
+             * Either a string, or a compressed EisaId in a DWord.  The string
+             * is the prefix byte plus "PNP0A0x" and its NUL: 9 bytes.
+             */
             if ( data.p + 9 <= data.end && *data.p == AML_STRING_PREFIX &&
                  (!memcmp(data.p + 1, "PNP0A08", 8) ||
                   !memcmp(data.p + 1, "PNP0A03", 8)) )
                 is_host_bridge = true;
             else if ( data.p + 5 <= data.end && *data.p == AML_DWORD_PREFIX &&
-                      data.p[1] == 0xd0 && data.p[2] == 0x41 &&
-                      data.p[3] == 0x0a &&
-                      (data.p[4] == 0x08 || data.p[4] == 0x03) )
+                      (get_unaligned_le32(data.p + 1) == EISAID_PNP0A08 ||
+                       get_unaligned_le32(data.p + 1) == EISAID_PNP0A03) )
                 is_host_bridge = true;
         }
         else if ( !memcmp(seg, "_SEG", 4) && data.p < data.end )
