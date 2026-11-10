@@ -1,0 +1,96 @@
+name: Unit tests
+
+# Runs the tests in tools/tests that compile hypervisor code into a program
+# for the runner, on every pull request and push to an edera/** branch. They
+# need no running Xen, so they run here and take seconds.
+#
+# Not run:
+#
+#   - mem-claim, paging-mempool, resource, tsx and xenstore, which call a
+#     running Xen;
+#   - x86_emulator, whose EVEX cases run only on a CPU with AVX-512, so its
+#     result changes with the hardware the runner happens to get.
+#
+# numa, pdx and vpci skip themselves, and still pass, when CC is not HOSTCC.
+# Nothing here sets CC, so both are the runner's compiler and the tests run.
+#
+# It has no path filter, so it can be made a required check.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: ['edera/**']
+  push:
+    branches: ['edera/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  tools-tests:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            runner: ubuntu-24.04
+            skip: ''
+          - name: arm64
+            runner: ubuntu-24.04-arm
+            # x86-only
+            skip: cpu-policy tsx x86_emulator
+    name: tools-tests (${{ matrix.name }})
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # What tools/configure requires. libfdt is required only on Arm.
+      - name: Install toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config python3-dev acpica-tools uuid-dev \
+            libncurses-dev libyajl-dev zlib1g-dev libfdt-dev
+
+      # The tests include the generated config and public headers, so the
+      # tools are configured, but without the parts that fetch or build QEMU
+      # and firmware.
+      - name: Configure
+        run: |
+          set -euo pipefail
+          ./configure --disable-xen --disable-docs --disable-stubdom \
+            --with-system-qemu=/bin/true \
+            --disable-rombios --disable-seabios --disable-ipxe \
+            --disable-pvshim --disable-golang --disable-ocamltools
+          make -C tools/include
+
+      - name: Run
+        env:
+          ARCH_SKIP: ${{ matrix.skip }}
+        run: |
+          set -euo pipefail
+          # Tests that call into a running Xen
+          skip="mem-claim paging-mempool resource tsx xenstore x86_emulator $ARCH_SKIP"
+          for dir in tools/tests/*/; do
+            t=$(basename "$dir")
+            case " $skip " in
+              *" $t "*) echo "skipped: $t"; continue ;;
+            esac
+            echo "::group::$t"
+            make -C "tools/tests/$t" run
+            echo "::endgroup::"
+          done
