@@ -89,6 +89,20 @@ DefinitionBlock ("", "DSDT", 2, "XEN", "BRIDGES", 1)
             })
         }
 
+        /* Known as a host bridge by an EisaId _CID alone. */
+        Device (PCI6)
+        {
+            Name (_HID, "TEST0002")
+            Name (_CID, EisaId ("PNP0A03"))
+            Name (_SEG, 6)
+            Name (_CRS, ResourceTemplate ()
+            {
+                DWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite,
+                    0x0, 0x70000000, 0x7FFFFFFF, 0x0, 0x10000000)
+            })
+        }
+
         /* _SEG in a WordPrefix integer. */
         Device (PCIW)
         {
