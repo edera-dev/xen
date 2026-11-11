@@ -10,6 +10,9 @@ name: Build
 #   - arm64-vpci: the arm64 config with PCI passthrough, which brings in the
 #     downstream vPCI stack.
 #
+# Then it boots the arm64 build, with a busybox dom0, on an emulated machine
+# that describes itself only through UEFI and ACPI, as Graviton does.
+#
 # It has no path filter, so it can be made a required check.
 
 on:
@@ -111,3 +114,73 @@ jobs:
 
       - name: Build
         run: make -C xen -j"$(nproc)"
+
+      - name: Upload the hypervisor to boot
+        if: matrix.name == 'arm64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xen-${{ matrix.name }}
+          path: xen/xen
+          if-no-files-found: error
+          retention-days: 7
+
+  boot:
+    needs: build
+    # Boot even when another configuration fails to build. Without the arm64
+    # build, downloading it fails instead.
+    if: ${{ !cancelled() }}
+    # An arm64 runner, so that its own package is an aarch64 busybox. QEMU
+    # emulates the CPU all the same: Xen needs EL2, and no hosted runner
+    # gives a guest EL2.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    name: boot (arm64)
+    env:
+      # An arm64 host kernel that protect has shipped, pinned so that a boot
+      # does not change when protect moves to a newer one.
+      DOM0_KERNEL: ghcr.io/edera-dev/host-kernel:6.18@sha256:84c3b8d300ef34985e838caf73f50d7ea471d0888dbfb3d1388c9dd91a4a90cb
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download the hypervisor
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: xen-arm64
+          path: ${{ runner.temp }}/xen
+
+      - name: Install QEMU and busybox
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-arm qemu-efi-aarch64 busybox-static cpio
+
+      - name: Fetch the dom0 kernel
+        run: |
+          set -euo pipefail
+          # The image has no command to run; docker create needs one anyway.
+          id=$(docker create --platform linux/arm64 "$DOM0_KERNEL" /none)
+          docker cp "$id:/kernel/image" "$RUNNER_TEMP/Image"
+          docker rm "$id" >/dev/null
+
+      - name: Boot
+        run: |
+          bash .github/boot/run-arm64.sh --xen "$RUNNER_TEMP/xen/xen" \
+            --kernel "$RUNNER_TEMP/Image" --busybox /usr/bin/busybox \
+            --out "$RUNNER_TEMP/boot"
+
+      - name: Upload the console log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: boot-arm64
+          path: ${{ runner.temp }}/boot/serial.log
+          retention-days: 30
