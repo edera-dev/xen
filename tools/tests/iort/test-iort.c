@@ -246,6 +246,28 @@ static void expect_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
                rid, segment, id, rc, want_id, want_rc);
 }
 
+/* That RID on @segment reaches the ITS group of ITS @want_its as @want_id. */
+static void expect_its(uint16_t segment, uint32_t rid, uint32_t want_id,
+                       uint32_t want_its)
+{
+    const struct acpi_iort_its_group *group;
+    const struct acpi_iort_node *node;
+    uint32_t id = 0;
+    int rc;
+
+    rc = iort_map_rid(segment, rid, ACPI_IORT_NODE_ITS_GROUP, &id, &node);
+    if ( rc )
+    {
+        report("RID %#x on segment %u returned %d", rid, segment, rc);
+        return;
+    }
+
+    group = (const struct acpi_iort_its_group *)node->node_data;
+    if ( id != want_id || group->identifiers[0] != want_its )
+        report("RID %#x on segment %u gives %#x on ITS %u, want %#x on ITS %u",
+               rid, segment, id, group->identifiers[0], want_id, want_its);
+}
+
 /*
  * Build the hardware domain's IORT from the loaded one, in a buffer of the
  * size the parser asks for.
@@ -376,6 +398,33 @@ static void test_hwdom_split_middle(void)
         report("building it returned %d, want %d", rc, -ENXIO);
 }
 
+/* Two ITS groups, one for each segment. */
+static void test_hwdom_two_its_groups(void)
+{
+    uint32_t its_a, its_b, len;
+    void *hwdom;
+    int rc;
+
+    table_start();
+    its_a = add_its_group(IDS(0));
+    its_b = add_its_group(IDS(1));
+    add_root_complex(0, MAPS(map(0, 0x10000, 0, its_a)));
+    add_root_complex(1, MAPS(map(0, 0x10000, 0x10000, its_b)));
+    load_iort(table, table_len);
+
+    rc = make_hwdom_iort(&hwdom, &len);
+    if ( rc )
+    {
+        report("building it returned %d", rc);
+        return;
+    }
+
+    load_iort(hwdom, len);
+
+    expect_its(0, 0x10, 0x10, 0);
+    expect_its(1, 0x10, 0x10010, 1);
+}
+
 /* An SMMU that maps IDs to itself. */
 static void test_mapping_loop(void)
 {
@@ -448,6 +497,8 @@ static const struct {
       test_hwdom_split_range },
     { "hardware domain's IORT: nor one split only in the middle",
       test_hwdom_split_middle },
+    { "hardware domain's IORT: each segment keeps its ITS group",
+      test_hwdom_two_its_groups },
     { "a mapping loop ends", test_mapping_loop },
     { "root complex with its mapping offset past the table",
       test_mapping_offset_past_table },
