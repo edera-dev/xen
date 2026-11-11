@@ -227,27 +227,27 @@ struct acpi_subtable_header *acpi_table_get_entry_madt(enum acpi_madt_type id,
     return &madt_its[entry_id].header;
 }
 
+/* The case being run, for the messages about it. */
 static const char *test_name;
-static unsigned int failures;
 
-#define report(fmt, args...) do {                       \
-    printf("%s: " fmt "\n", test_name, ## args);        \
-    failures++;                                         \
-} while ( 0 )
-
-static void expect_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
+static bool expect_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
                        int want_rc, uint32_t want_id)
 {
     uint32_t id = 0;
     int rc = iort_map_rid(segment, rid, target_type, &id, NULL);
 
     if ( rc != want_rc || (!rc && id != want_id) )
-        report("RID %#x on segment %u gives %#x and %d, want %#x and %d",
-               rid, segment, id, rc, want_id, want_rc);
+    {
+        printf("%s: RID %#x on segment %u gives %#x and %d, want %#x and %d\n",
+               test_name, rid, segment, id, rc, want_id, want_rc);
+        return false;
+    }
+
+    return true;
 }
 
 /* That RID on @segment reaches the ITS group of ITS @want_its as @want_id. */
-static void expect_its(uint16_t segment, uint32_t rid, uint32_t want_id,
+static bool expect_its(uint16_t segment, uint32_t rid, uint32_t want_id,
                        uint32_t want_its)
 {
     const struct acpi_iort_its_group *group;
@@ -258,14 +258,21 @@ static void expect_its(uint16_t segment, uint32_t rid, uint32_t want_id,
     rc = iort_map_rid(segment, rid, ACPI_IORT_NODE_ITS_GROUP, &id, &node);
     if ( rc )
     {
-        report("RID %#x on segment %u returned %d", rid, segment, rc);
-        return;
+        printf("%s: RID %#x on segment %u returned %d\n", test_name, rid,
+               segment, rc);
+        return false;
     }
 
     group = (const struct acpi_iort_its_group *)node->node_data;
     if ( id != want_id || group->identifiers[0] != want_its )
-        report("RID %#x on segment %u gives %#x on ITS %u, want %#x on ITS %u",
-               rid, segment, id, group->identifiers[0], want_id, want_its);
+    {
+        printf("%s: RID %#x, segment %u: %#x on ITS %u, want %#x on ITS %u\n",
+               test_name, rid, segment, id, group->identifiers[0], want_id,
+               want_its);
+        return false;
+    }
+
+    return true;
 }
 
 /*
@@ -308,20 +315,25 @@ static void build_smmu_between(void)
     add_root_complex(0, MAPS(map(0, 0x10000, 0x10000, smmu)));
 }
 
-static void test_rid_through_smmu(void)
+static bool test_rid_through_smmu(void)
 {
+    bool pass = true;
+
     build_smmu_between();
     load_iort(table, table_len);
 
-    expect_rid(0, 0x10, ACPI_IORT_NODE_SMMU_V3, 0, 0x10010);
-    expect_rid(0, 0x10, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20010);
-    expect_rid(0, 0xffff, ACPI_IORT_NODE_ITS_GROUP, 0, 0x2ffff);
-    expect_rid(0, 0x10000, ACPI_IORT_NODE_ITS_GROUP, -ENODEV, 0);
+    pass &= expect_rid(0, 0x10, ACPI_IORT_NODE_SMMU_V3, 0, 0x10010);
+    pass &= expect_rid(0, 0x10, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20010);
+    pass &= expect_rid(0, 0xffff, ACPI_IORT_NODE_ITS_GROUP, 0, 0x2ffff);
+    pass &= expect_rid(0, 0x10000, ACPI_IORT_NODE_ITS_GROUP, -ENODEV, 0);
+
+    return pass;
 }
 
-static void test_hwdom_same_device_ids(void)
+static bool test_hwdom_same_device_ids(void)
 {
-    unsigned int smmus = 0;
+    unsigned int nodes, smmus = 0;
+    bool pass = true;
     uint32_t len;
     void *hwdom;
     int rc;
@@ -332,32 +344,44 @@ static void test_hwdom_same_device_ids(void)
     rc = make_hwdom_iort(&hwdom, &len);
     if ( rc )
     {
-        report("building it returned %d", rc);
-        return;
+        printf("%s: building it returned %d\n", test_name, rc);
+        return false;
     }
 
     load_iort(hwdom, len);
 
-    if ( ((struct acpi_table_iort *)hwdom)->node_count != 2 )
-        report("%u nodes, want the ITS group and the root complex",
-               ((struct acpi_table_iort *)hwdom)->node_count);
+    nodes = ((struct acpi_table_iort *)hwdom)->node_count;
+    if ( nodes != 2 )
+    {
+        printf("%s: %u nodes, want the ITS group and the root complex\n",
+               test_name, nodes);
+        pass = false;
+    }
 
     rc = iort_for_each_smmu_v3(count_node, &smmus);
     if ( rc )
-        report("walking its SMMUv3 nodes returned %d", rc);
+    {
+        printf("%s: walking its SMMUv3 nodes returned %d\n", test_name, rc);
+        pass = false;
+    }
     else if ( smmus )
-        report("%u SMMUv3 nodes, want none", smmus);
+    {
+        printf("%s: %u SMMUv3 nodes, want none\n", test_name, smmus);
+        pass = false;
+    }
 
-    expect_rid(0, 0, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20000);
-    expect_rid(0, 0x10, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20010);
-    expect_rid(0, 0xffff, ACPI_IORT_NODE_ITS_GROUP, 0, 0x2ffff);
+    pass &= expect_rid(0, 0, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20000);
+    pass &= expect_rid(0, 0x10, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20010);
+    pass &= expect_rid(0, 0xffff, ACPI_IORT_NODE_ITS_GROUP, 0, 0x2ffff);
+
+    return pass;
 }
 
 /*
  * The SMMU sends the two halves of the root complex's range to DeviceIDs far
  * apart, which one mapping from the root complex cannot express.
  */
-static void test_hwdom_split_range(void)
+static bool test_hwdom_split_range(void)
 {
     uint32_t its, smmu, len;
     void *hwdom;
@@ -372,14 +396,20 @@ static void test_hwdom_split_range(void)
 
     rc = make_hwdom_iort(&hwdom, &len);
     if ( rc != -ENXIO )
-        report("building it returned %d, want %d", rc, -ENXIO);
+    {
+        printf("%s: building it returned %d, want %d\n", test_name, rc,
+               -ENXIO);
+        return false;
+    }
+
+    return true;
 }
 
 /*
  * The SMMU sends only the middle of the root complex's range elsewhere, so the
  * first and last IDs are still 0xffff DeviceIDs apart, as if contiguous.
  */
-static void test_hwdom_split_middle(void)
+static bool test_hwdom_split_middle(void)
 {
     uint32_t its, smmu, len;
     void *hwdom;
@@ -395,13 +425,20 @@ static void test_hwdom_split_middle(void)
 
     rc = make_hwdom_iort(&hwdom, &len);
     if ( rc != -ENXIO )
-        report("building it returned %d, want %d", rc, -ENXIO);
+    {
+        printf("%s: building it returned %d, want %d\n", test_name, rc,
+               -ENXIO);
+        return false;
+    }
+
+    return true;
 }
 
 /* Two ITS groups, one for each segment. */
-static void test_hwdom_two_its_groups(void)
+static bool test_hwdom_two_its_groups(void)
 {
     uint32_t its_a, its_b, len;
+    bool pass = true;
     void *hwdom;
     int rc;
 
@@ -415,18 +452,20 @@ static void test_hwdom_two_its_groups(void)
     rc = make_hwdom_iort(&hwdom, &len);
     if ( rc )
     {
-        report("building it returned %d", rc);
-        return;
+        printf("%s: building it returned %d\n", test_name, rc);
+        return false;
     }
 
     load_iort(hwdom, len);
 
-    expect_its(0, 0x10, 0x10, 0);
-    expect_its(1, 0x10, 0x10010, 1);
+    pass &= expect_its(0, 0x10, 0x10, 0);
+    pass &= expect_its(1, 0x10, 0x10010, 1);
+
+    return pass;
 }
 
 /* An SMMU that maps IDs to itself. */
-static void test_mapping_loop(void)
+static bool test_mapping_loop(void)
 {
     uint32_t smmu;
 
@@ -437,7 +476,7 @@ static void test_mapping_loop(void)
     add_root_complex(0, MAPS(map(0, 0x10000, 0, smmu)));
     load_iort(table, table_len);
 
-    expect_rid(0, 0x10, ACPI_IORT_NODE_ITS_GROUP, -EINVAL, 0);
+    return expect_rid(0, 0x10, ACPI_IORT_NODE_ITS_GROUP, -EINVAL, 0);
 }
 
 /*
@@ -445,9 +484,10 @@ static void test_mapping_loop(void)
  * past the end of the table.  The hardware domain's table copies a root
  * complex up to its mapping offset, so the node must not be walked.
  */
-static void test_mapping_offset_past_table(void)
+static bool test_mapping_offset_past_table(void)
 {
     uint32_t rc_node, len;
+    unsigned int nodes;
     void *hwdom;
     int rc;
 
@@ -459,17 +499,26 @@ static void test_mapping_offset_past_table(void)
 
     rc = make_hwdom_iort(&hwdom, &len);
     if ( rc )
-        report("building it returned %d", rc);
-    else if ( ((struct acpi_table_iort *)hwdom)->node_count != 1 )
-        report("%u nodes, want only the ITS group",
-               ((struct acpi_table_iort *)hwdom)->node_count);
+    {
+        printf("%s: building it returned %d\n", test_name, rc);
+        return false;
+    }
+
+    nodes = ((struct acpi_table_iort *)hwdom)->node_count;
+    if ( nodes != 1 )
+    {
+        printf("%s: %u nodes, want only the ITS group\n", test_name, nodes);
+        return false;
+    }
+
+    return true;
 }
 
 /*
  * The group lists ITS 3, 4 and 7, and the MADT describes 7 and then 4: the
  * base is ITS 4's, not that of the MADT's first ITS or the group's last.
  */
-static void test_msi_base(void)
+static bool test_msi_base(void)
 {
     paddr_t base = 0;
     uint32_t its;
@@ -482,13 +531,18 @@ static void test_msi_base(void)
 
     rc = iort_get_msi_base(0, 0x10, &base);
     if ( rc || base != ITS_BASE )
-        report("returned %d and %#" PRIx64 ", want 0 and %#x", rc, base,
-               ITS_BASE);
+    {
+        printf("%s: returned %d and %#" PRIx64 ", want 0 and %#x\n",
+               test_name, rc, base, ITS_BASE);
+        return false;
+    }
+
+    return true;
 }
 
 static const struct {
     const char *name;
-    void (*run)(void);
+    bool (*run)(void);
 } tests[] = {
     { "RID through an SMMUv3 to the ITS", test_rid_through_smmu },
     { "hardware domain's IORT: no SMMUv3, same DeviceIDs",
@@ -507,7 +561,7 @@ static const struct {
 
 int main(void)
 {
-    unsigned int i;
+    unsigned int i, failed = 0;
 
     /* A walk that never ends stops the test here, not at the CI timeout. */
     alarm(10);
@@ -523,12 +577,13 @@ int main(void)
         printf("%s\n", test_name);
         fflush(stdout);
 
-        tests[i].run();
+        if ( !tests[i].run() )
+            failed++;
     }
 
-    printf("%s\n", failures ? "FAIL" : "PASS");
+    printf("%s\n", failed ? "FAIL" : "PASS");
 
-    return failures != 0;
+    return failed != 0;
 }
 
 /*
