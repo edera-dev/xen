@@ -1,16 +1,58 @@
 # What checks this repo has, and what runs on a PR
 
-Start with the fact that shapes every coverage answer: **nothing compiles or
-boots this tree on a GitHub pull request.** `.github/workflows/coverity.yml` is
-`workflow_dispatch` and `schedule` only, with a comment saying so explicitly —
-it scans release code, not pull requests. The upstream project's own CI is
-GitLab-based, under `automation/gitlab-ci/`, and does not trigger from this
-repository's pull requests. The workflows that do run on a pull request build
-nothing: the advisory review checks, and the upstream rebase self-test, which
-runs only when the rebase scripts change.
+Start with the fact that shapes every coverage answer: **nothing boots this
+tree on a GitHub pull request.** A pull request is compiled and unit tested,
+nothing more:
 
-So a coverage review here is not "which test file covers this". It is "what
-would have to run, and where does it live".
+- `.github/workflows/build.yml` compiles the hypervisor in the configurations
+  Edera ships: x86_64, arm64, and arm64 with PCI passthrough.
+- `.github/workflows/unit-tests.yml` runs the host unit tests in `tools/tests`;
+  see "Unit tests" below.
+- `.github/workflows/qa-dispatch.yml` hands the pull request to
+  `edera-dev/xen-qa`, which boots x86 Xen under QEMU, but only when the
+  `XENQA_DISPATCH_TOKEN` secret is set, and its result is advisory.
+
+`.github/workflows/coverity.yml` is `workflow_dispatch` and `schedule` only,
+with a comment saying so explicitly: it scans release code, not pull requests.
+The upstream project's own CI is GitLab-based, under `automation/gitlab-ci/`,
+and does not trigger from this repository's pull requests. The other workflows
+that run on a pull request build nothing: the advisory review checks, and the
+upstream rebase self-test, which runs only when the rebase scripts change.
+
+So a coverage review here is mostly not "which test file covers this". It is
+"what would have to run, and where does it live", except for code that a test
+in `tools/tests` compiles.
+
+## Unit tests
+
+`.github/workflows/unit-tests.yml` runs on every pull request and every push to
+an `edera/**` branch, on x86_64 and arm64 runners. It runs every directory in
+`tools/tests` except a skip list:
+
+- `mem-claim`, `paging-mempool`, `resource`, `tsx` and `xenstore`, which call a
+  running Xen;
+- `x86_emulator`, whose EVEX cases run only on a CPU with AVX-512, so its
+  result depends on the hardware the runner gets;
+- on arm64, the x86-only `cpu-policy`, `tsx` and `x86_emulator`.
+
+A new test directory runs with no change to the workflow. Each test compiles
+one hypervisor source file into a host program with a small harness, so it
+covers the logic of that file, not how the hypervisor uses it.
+
+Two of the tests cover downstream code; the rest are upstream's tests of
+upstream code:
+
+- `tools/tests/dsdt` covers the Arm AML walker in `xen/arch/arm/acpi/dsdt.c`,
+  `acpi_pci_get_host_bridge_windows()`: finding a host bridge by a string or
+  EisaId `_HID` or `_CID`, reading `_SEG` in every integer encoding and
+  refusing a `_SEG` it cannot read, taking the memory windows from `_CRS`, and
+  stepping over Methods, Packages and nested Devices. Its tables are compiled
+  by iasl, and each ends where an unreadable page begins, so a read past the
+  end of a table fails the test. It does not cover a host bridge in an SSDT,
+  which the walker does not read, or several host bridges on one segment.
+- `tools/tests/log-q16` covers the fixed-point logarithms in
+  `xen/lib/log-q16.c` that `dom0_mem=ln` sizes dom0 with, but not the parsing
+  of `dom0_mem` or the sizing curve itself.
 
 ## Build configurations
 
@@ -54,10 +96,10 @@ requests.
 `.github/workflows/upstream-rebase.yml` replays the downstream series onto
 upstream `staging-4.22` and builds the hypervisor for x86, arm64 defconfig and
 arm64 with PCI passthrough before it moves `edera/4.22`. It runs only on nights
-when upstream has new commits. That is the first build a merged change gets,
-and it happens after merge: a change that breaks one of those builds stops the
-next rebase rather than failing its own pull request. It does not build the
-tools.
+when upstream has new commits. It is the first build of a merged change on top
+of those commits, and it happens after merge: a change that only breaks with
+them stops the next rebase rather than failing its own pull request. It does
+not build the tools.
 
 `.github/workflows/upstream-rebase-selftest.yml` runs the tests for
 `verify-upstream-rebase.sh` and `report-needs-decision.sh` on pull requests
