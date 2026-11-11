@@ -181,14 +181,11 @@ static void load_dsdt(const void *table, size_t size)
     dsdt = memcpy(pages + page - size, table, size);
 }
 
-static unsigned int failures;
-
-#define report(fmt, args...) do { printf(fmt, ## args); failures++; } while ( 0 )
-
-static void check(const struct test *t)
+static bool check(const struct test *t)
 {
     const struct rangeset *want = &t->windows;
     struct rangeset got = { 0 };
+    bool pass = true;
     unsigned int i;
     int rc;
 
@@ -200,32 +197,41 @@ static void check(const struct test *t)
     rc = acpi_pci_get_host_bridge_windows(t->segment, &got);
 
     if ( rc != t->rc )
-        report("%s: returned %d, want %d\n", t->name, rc, t->rc);
+    {
+        printf("%s: returned %d, want %d\n", t->name, rc, t->rc);
+        pass = false;
+    }
 
     if ( got.nr != want->nr )
     {
-        report("%s: %u windows, want %u\n", t->name, got.nr, want->nr);
-        return;
+        printf("%s: %u windows, want %u\n", t->name, got.nr, want->nr);
+        return false;
     }
 
     for ( i = 0; i < want->nr; i++ )
         if ( got.ranges[i].start != want->ranges[i].start ||
              got.ranges[i].end != want->ranges[i].end )
-            report("%s: window %u is [%#lx, %#lx], want [%#lx, %#lx]\n",
+        {
+            printf("%s: window %u is [%#lx, %#lx], want [%#lx, %#lx]\n",
                    t->name, i, got.ranges[i].start, got.ranges[i].end,
                    want->ranges[i].start, want->ranges[i].end);
+            pass = false;
+        }
+
+    return pass;
 }
 
 int main(void)
 {
-    unsigned int i;
+    unsigned int i, failed = 0;
 
     for ( i = 0; i < ARRAY_SIZE(tests); i++ )
-        check(&tests[i]);
+        if ( !check(&tests[i]) )
+            failed++;
 
-    printf("%s\n", failures ? "FAIL" : "PASS");
+    printf("%s\n", failed ? "FAIL" : "PASS");
 
-    return failures != 0;
+    return failed != 0;
 }
 
 /*
