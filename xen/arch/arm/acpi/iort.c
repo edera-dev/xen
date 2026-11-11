@@ -311,6 +311,32 @@ int iort_for_each_smmu_v3(int (*cb)(const struct acpi_iort_node *node,
 }
 
 /*
+ * Where iort_hwdom_walk() puts its copy of the ITS group @its: the groups go
+ * first, in the order of the firmware's table.  Fails for a group the walk
+ * does not reach, which it therefore did not copy.
+ */
+static bool iort_hwdom_its_offset(const struct acpi_iort_node *its,
+                                  uint32_t *offset)
+{
+    const struct acpi_iort_node *node;
+
+    *offset = sizeof(struct acpi_table_iort);
+
+    iort_for_each_node(node)
+    {
+        if ( node->type != ACPI_IORT_NODE_ITS_GROUP )
+            continue;
+
+        if ( node == its )
+            return true;
+
+        *offset += node->length;
+    }
+
+    return false;
+}
+
+/*
  * Build the IORT the hardware domain gets to see.
  *
  * The host table is not handed over as-is because it describes the SMMUs,
@@ -332,9 +358,8 @@ static int iort_hwdom_walk(void *base, size_t size, uint32_t *len_out)
 {
     const struct acpi_iort_node *node;
     struct acpi_table_iort *out = base;
-    uint32_t offset, its_out_offset = 0;
+    uint32_t offset;
     unsigned int nodes = 0;
-    const struct acpi_iort_node *its_src = NULL;
 
     offset = sizeof(*out);
 
@@ -351,18 +376,12 @@ static int iort_hwdom_walk(void *base, size_t size, uint32_t *len_out)
             memcpy((char *)base + offset, node, node->length);
         }
 
-        /* Only the first group is referenced; see the mapping loop below. */
-        if ( !its_src )
-        {
-            its_src = node;
-            its_out_offset = offset;
-        }
-
         offset += node->length;
         nodes++;
     }
 
-    if ( !its_src )
+    /* So far, only ITS groups are counted. */
+    if ( !nodes )
         return -ENODEV;
 
     iort_for_each_node(node)
@@ -401,16 +420,18 @@ static int iort_hwdom_walk(void *base, size_t size, uint32_t *len_out)
 
             for ( i = 0; i < node->mapping_count; i++ )
             {
-                uint32_t devid;
+                const struct acpi_iort_node *its;
+                uint32_t devid, its_offset;
 
                 if ( iort_map_ids(rc->pci_segment_number, in[i].input_base,
                                   in[i].id_count, ACPI_IORT_NODE_ITS_GROUP,
-                                  &devid, NULL) )
+                                  &devid, &its) ||
+                     !iort_hwdom_its_offset(its, &its_offset) )
                     return -ENXIO;
 
                 outmap[i] = in[i];
                 outmap[i].output_base = devid;
-                outmap[i].output_reference = its_out_offset;
+                outmap[i].output_reference = its_offset;
             }
 
             outnode->length = node->mapping_offset +
