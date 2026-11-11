@@ -1,0 +1,13 @@
+#!/bin/busybox sh
+# The first process of dom0 in the arm64 boot test. It reports on hvc0, whose
+# output reaches the serial console only through Xen, in the line protocol of
+# edera-dev/xen-qa. Then it powers dom0 off, and Xen halts the machine.
+
+/bin/busybox --install -s
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+echo "xenqa: pass boot.dom0_runs_init"
+
+poweroff -f
