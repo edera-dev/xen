@@ -128,11 +128,13 @@ static const struct acpi_iort_node *iort_find_rc_node(uint16_t segment)
 }
 
 /*
- * Push @id through one node's ID mappings.  On success @id is replaced by the
- * translated value and the node it maps to is returned.
+ * Push the IDs from @id to @id + @id_count through one node's ID mappings.
+ * On success @id is replaced by the first translated ID and the node they map
+ * to is returned.  The IDs stay contiguous only when the mapping that takes
+ * the first takes them all, so a range that would come apart fails.
  */
-static const struct acpi_iort_node *iort_node_map_id(
-    const struct acpi_iort_node *node, uint32_t *id)
+static const struct acpi_iort_node *iort_node_map_ids(
+    const struct acpi_iort_node *node, uint32_t *id, uint32_t id_count)
 {
     const struct acpi_iort_id_mapping *map;
     unsigned int i;
@@ -142,6 +144,7 @@ static const struct acpi_iort_node *iort_node_map_id(
 
     for ( i = 0; i < node->mapping_count; i++, map++ )
     {
+        bool single = map->flags & ACPI_IORT_ID_SINGLE_MAPPING;
         const struct acpi_iort_node *out;
 
         /*
@@ -149,7 +152,7 @@ static const struct acpi_iort_node *iort_node_map_id(
          * ID to output_base; otherwise the ID has to fall inside the range.
          * id_count is the last offset in the range, not the number of IDs.
          */
-        if ( !(map->flags & ACPI_IORT_ID_SINGLE_MAPPING) &&
+        if ( !single &&
              (*id < map->input_base ||
               *id > (uint64_t)map->input_base + map->id_count) )
             continue;
@@ -158,9 +161,14 @@ static const struct acpi_iort_node *iort_node_map_id(
         if ( !out )
             continue;
 
-        *id = (map->flags & ACPI_IORT_ID_SINGLE_MAPPING)
-              ? map->output_base
-              : map->output_base + (*id - map->input_base);
+        if ( id_count &&
+             (single ||
+              (uint64_t)*id + id_count >
+              (uint64_t)map->input_base + map->id_count) )
+            return NULL;
+
+        *id = single ? map->output_base
+                     : map->output_base + (*id - map->input_base);
 
         return out;
     }
@@ -168,8 +176,15 @@ static const struct acpi_iort_node *iort_node_map_id(
     return NULL;
 }
 
-int iort_map_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
-                 uint32_t *id_out, const struct acpi_iort_node **target)
+/*
+ * Translate the requester IDs from @rid to @rid + @id_count through the ID
+ * mappings of their root complex until a node of type @target_type is
+ * reached, as iort_map_rid() does for one.  This fails unless they stay
+ * contiguous at every hop, so @id_out is the first of as many contiguous IDs.
+ */
+static int iort_map_ids(uint16_t segment, uint32_t rid, uint32_t id_count,
+                        uint8_t target_type, uint32_t *id_out,
+                        const struct acpi_iort_node **target)
 {
     const struct acpi_iort_node *node;
     unsigned int hops = 0;
@@ -196,7 +211,7 @@ int iort_map_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
             return -EINVAL;
         }
 
-        node = iort_node_map_id(node, &id);
+        node = iort_node_map_ids(node, &id, id_count);
     }
 
     if ( !node )
@@ -207,6 +222,12 @@ int iort_map_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
         *target = node;
 
     return 0;
+}
+
+int iort_map_rid(uint16_t segment, uint32_t rid, uint8_t target_type,
+                 uint32_t *id_out, const struct acpi_iort_node **target)
+{
+    return iort_map_ids(segment, rid, 0, target_type, id_out, target);
 }
 
 int iort_get_msi_base(uint16_t segment, uint32_t rid, paddr_t *base)
@@ -301,10 +322,11 @@ int iort_for_each_smmu_v3(int (*cb)(const struct acpi_iort_node *node,
  * Dropping the table altogether is not an option: without an IORT Linux has
  * no MSI domain for a PCI device and MSIs stop working entirely.
  *
- * Composing two ID mappings only stays expressible as one mapping while the
- * range remains contiguous through the chain, which is checked below.  It
- * holds for every layout seen so far, and when it does not the caller falls
- * back to passing the firmware table through unchanged.
+ * The mappings of a chain compose into one mapping only while the whole range
+ * falls inside one mapping at every hop, which iort_map_ids() checks.  It
+ * holds for every layout seen so far.  When it does not, the caller passes the
+ * firmware table through if it describes no SMMU, and gives no table at all
+ * if it does.
  */
 static int iort_hwdom_walk(void *base, size_t size, uint32_t *len_out)
 {
@@ -379,21 +401,15 @@ static int iort_hwdom_walk(void *base, size_t size, uint32_t *len_out)
 
             for ( i = 0; i < node->mapping_count; i++ )
             {
-                uint32_t lo, hi;
+                uint32_t devid;
 
-                if ( iort_map_rid(rc->pci_segment_number, in[i].input_base,
-                                  ACPI_IORT_NODE_ITS_GROUP, &lo, NULL) ||
-                     iort_map_rid(rc->pci_segment_number,
-                                  in[i].input_base + in[i].id_count,
-                                  ACPI_IORT_NODE_ITS_GROUP, &hi, NULL) )
-                    return -ENXIO;
-
-                /* The composed range has to stay contiguous to be expressible. */
-                if ( hi - lo != in[i].id_count )
+                if ( iort_map_ids(rc->pci_segment_number, in[i].input_base,
+                                  in[i].id_count, ACPI_IORT_NODE_ITS_GROUP,
+                                  &devid, NULL) )
                     return -ENXIO;
 
                 outmap[i] = in[i];
-                outmap[i].output_base = lo;
+                outmap[i].output_base = devid;
                 outmap[i].output_reference = its_out_offset;
             }
 
