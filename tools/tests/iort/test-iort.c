@@ -353,6 +353,29 @@ static void test_hwdom_split_range(void)
         report("building it returned %d, want %d", rc, -ENXIO);
 }
 
+/*
+ * The SMMU sends only the middle of the root complex's range elsewhere, so the
+ * first and last IDs are still 0xffff DeviceIDs apart, as if contiguous.
+ */
+static void test_hwdom_split_middle(void)
+{
+    uint32_t its, smmu, len;
+    void *hwdom;
+    int rc;
+
+    table_start();
+    its = add_its_group(IDS(0));
+    smmu = add_smmu_v3(MAPS(map(0, 0x4000, 0, its),
+                            map(0x4000, 0x8000, 0x100000, its),
+                            map(0xc000, 0x4000, 0xc000, its)));
+    add_root_complex(0, MAPS(map(0, 0x10000, 0, smmu)));
+    load_iort(table, table_len);
+
+    rc = make_hwdom_iort(&hwdom, &len);
+    if ( rc != -ENXIO )
+        report("building it returned %d, want %d", rc, -ENXIO);
+}
+
 /* An SMMU that maps IDs to itself. */
 static void test_mapping_loop(void)
 {
@@ -423,6 +446,8 @@ static const struct {
       test_hwdom_same_device_ids },
     { "hardware domain's IORT: a range split apart cannot be expressed",
       test_hwdom_split_range },
+    { "hardware domain's IORT: nor one split only in the middle",
+      test_hwdom_split_middle },
     { "a mapping loop ends", test_mapping_loop },
     { "root complex with its mapping offset past the table",
       test_mapping_offset_past_table },
