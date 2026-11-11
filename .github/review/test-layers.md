@@ -39,7 +39,7 @@ A new test directory runs with no change to the workflow. Each test compiles
 one hypervisor source file into a host program with a small harness, so it
 covers the logic of that file, not how the hypervisor uses it.
 
-Two of the tests cover downstream code; the rest are upstream's tests of
+Three of the tests cover downstream code; the rest are upstream's tests of
 upstream code:
 
 - `tools/tests/dsdt` covers the Arm AML walker in `xen/arch/arm/acpi/dsdt.c`,
@@ -50,6 +50,17 @@ upstream code:
   by iasl, and each ends where an unreadable page begins, so a read past the
   end of a table fails the test. It does not cover a host bridge in an SSDT,
   which the walker does not read, or several host bridges on one segment.
+- `tools/tests/iort` covers the IORT parser in `xen/arch/arm/acpi/iort.c`:
+  translating a requester ID through an SMMUv3 to its StreamID and its
+  DeviceID, stopping a mapping loop, and the IORT built for the hardware
+  domain, which has no SMMUv3, gives the same DeviceIDs, keeps each root
+  complex on its own ITS group, and is refused when a range cannot stay
+  contiguous. It also covers a node whose mapping offset is past the table,
+  and taking the MSI base from the first ITS that the MADT describes. Its
+  tables are built from Xen's own ACPICA structures, and both the firmware's
+  table and the hardware domain's buffer end where an unreadable page begins.
+  It does not cover the single-mapping flag, `iort_init()` refusing a table,
+  named components, or the table of any real platform.
 - `tools/tests/log-q16` covers the fixed-point logarithms in
   `xen/lib/log-q16.c` that `dom0_mem=ln` sizes dom0 with, but not the parsing
   of `dom0_mem` or the sizing curve itself.
