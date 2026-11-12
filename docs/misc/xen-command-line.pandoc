@@ -2126,6 +2126,9 @@ Flag to enable or disable Xen PCI scan at boot. When the flag is enabled, the
 hardware domain cannot have access to the real PCI bus, it will see the bus
 emulated by Xen.
 
+Only a boot with a device tree supports it. When Xen boots with ACPI, it
+ignores this option and prints a warning.
+
 ### pcid (x86)
 > `= <boolean> | xpti=<bool>`
 
