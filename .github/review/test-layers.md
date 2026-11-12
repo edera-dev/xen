@@ -1,13 +1,14 @@
 # What checks this repo has, and what runs on a PR
 
 Start with the fact that shapes every coverage answer: **a GitHub pull request
-boots only the shipped arm64 build, only on emulated machines, and only as far
-as a busybox dom0.** A pull request is compiled, unit tested, and booted that
-far:
+boots only arm64 builds, the shipped one and a debug one, only on emulated
+machines, and only as far as a busybox dom0.** A pull request is compiled, unit
+tested, and booted that far:
 
 - `.github/workflows/build.yml` compiles the hypervisor in the configurations
-  Edera ships: x86_64, arm64, and arm64 with PCI passthrough. Then it boots
-  the arm64 build; see "Boot tests" below.
+  Edera ships: x86_64, arm64, and arm64 with PCI passthrough. It also compiles
+  arm64 with DEBUG and UBSAN. Then it boots the two arm64 builds; see "Boot
+  tests" below.
 - `.github/workflows/unit-tests.yml` runs the host unit tests in `tools/tests`;
   see "Unit tests" below.
 - `.github/workflows/qa-dispatch.yml` hands the pull request to
@@ -80,6 +81,11 @@ only through UEFI and ACPI, with GICv3, an ITS and an SMMUv3. dom0 is the
 arm64 host kernel that protect ships, with a busybox init. A boot fails on a
 crash or a warning from Xen or dom0, when dom0 gets no IORT from Xen, and when
 dom0 does not run init to the end.
+
+The job also boots the debug build on the graviton4 machine, where a failed
+ASSERT or a report from UBSAN fails the boot. That build leaves out UBSAN's
+alignment check: ACPICA reads misaligned XSDT entries on purpose, and arm64
+handles misaligned loads.
 
 Each file in `.github/boot/machines` imitates the platform of a Graviton
 generation: its core, as near as QEMU has one, and its sockets, each a NUMA
