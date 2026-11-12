@@ -64,7 +64,7 @@ A compiler warning disabled, a MISRA deviation added under `automation/eclair_an
 Logic that can be exercised by building a configuration should not need a boot to demonstrate. Behaviour that only appears on a running hypervisor does.
 
 <!-- focus: NO_TEST_LAYER -->
-That is often the situation here. Nothing in this repository compiles or boots the tree on a GitHub pull request, and much hypervisor behaviour can only be observed by booting. Naming the build configuration or the smoke script under `automation/scripts/` that would exercise the change is more useful than asking for a unit test.
+That is often the situation here. A GitHub pull request is built in the shipped configurations, unit tested with the host tests in `tools/tests`, and booted only as `.github/boot/run-arm64.sh` boots it: the shipped arm64 build, on emulated machines, as far as a busybox dom0. Much hypervisor behaviour can only be observed by booting some other way. Naming the build configuration, the boot machine or case under `.github/boot/`, or the smoke script under `automation/scripts/` that would exercise the change is more useful than asking for a unit test.
 
 <!-- focus: OUT_OF_SCOPE -->
 Style, naming, formatting, indentation, and comment wording — `CODING_STYLE` governs those and a reviewer restating it adds nothing. Upstream code the diff does not touch. Merged architecture.
@@ -123,10 +123,11 @@ The index arrives as a hypercall argument and reaches the array subscript withou
 <!-- focus: WHERE_TO_LOOK -->
 - `automation/scripts/`, which holds the smoke scripts the upstream pipeline runs: the qemu dom0 and dom0less scripts per architecture, the XTF runner, and the tools test runner. These are the closest thing to a behavioural check, and naming the right one is usually the most useful thing a coverage review can do here;
 - `automation/gitlab-ci/`, for which build configurations exist and what they cover. Note this pipeline does not run on a GitHub pull request;
+- `.github/boot/`, the arm64 boot test that does run on every pull request: `machines/` for the platforms it emulates, and `cases/` for the Xen options it sets and the outcomes it checks;
 - `automation/eclair_analysis/`, for the static analysis configuration and its deviations;
 - any in-tree test under `xen/test/` or the XTF cases the scripts invoke.
 
-There are no unit tests in the hypervisor in the sense other repositories mean it. Do not look for a test file next to the changed function.
+Unit tests of hypervisor code live in `tools/tests`, never next to the changed function, and exist only for a source file that compiles on its own with a small harness.
 
 <!-- focus: PROPORTIONATE -->
 Naming the smoke script or build configuration that would exercise the change is proportionate. Asking for a unit test framework the hypervisor does not have is not.
@@ -135,11 +136,11 @@ Naming the smoke script or build configuration that would exercise the change is
 "A guest that issues the hypercall with an index past the live limit reads hypervisor memory, and nothing between the hypercall entry and the subscript checks it" names the condition and the result. "This could have security implications" names neither.
 
 <!-- focus: TWO_SHAPES -->
-- **Nothing compiles the change on the pull request.** The upstream pipeline is GitLab-based and the Coverity workflow here is scheduled and dispatch-only by design. No build and no smoke test runs on a GitHub pull request in this repository; the advisory review checks that do run compile nothing. Say that once, then name what would have caught the change.
+- **Nothing that runs on the pull request reaches the change.** A pull request is built, unit tested in `tools/tests`, and booted on the arm64 machines in `.github/boot/machines`, and nothing more. The upstream pipeline is GitLab-based, the Coverity workflow here is scheduled and dispatch-only by design, and the advisory review checks compile nothing. When none of what runs reaches the change, say that once, then name what would have caught it.
 - **The code is not compiled by the configuration that gets built.** A change under an architecture or config symbol outside the usual build set is not exercised even where CI does run. Check which configurations reach the code before treating a build as coverage.
 
 <!-- focus: SMALLEST_LAYER -->
-Pick the smallest thing that would catch the failure. A build of the configuration that compiles the code, for anything that can fail to compile or link. The matching qemu smoke script under `automation/scripts/`, for behaviour that appears at boot or on a running domain. An XTF case, for guest-visible hypercall behaviour. Do not propose a test framework the tree does not have.
+Pick the smallest thing that would catch the failure. A build of the configuration that compiles the code, for anything that can fail to compile or link. A boot machine or case under `.github/boot/`, or the matching qemu smoke script under `automation/scripts/`, for behaviour that appears at boot or on a running domain. An XTF case, for guest-visible hypercall behaviour. Do not propose a test framework the tree does not have.
 
 <!-- focus: COVER_BAD -->
 The arm64 dom0less smoke script covers this. It boots a dom0less configuration with two domains, exercises the timer path on both, checks the console output for the expected banner and then verifies that each domain reaches userspace without...
@@ -153,8 +154,8 @@ Nothing here needs a check. It's a comment fix.
 <!-- focus: GAP_EXAMPLE -->
 One gap, and it can follow the merge.
 
-**Nothing boots the configuration this change affects.**
+**Nothing boots the platform this change affects.**
 
-A hypervisor that hangs in the new ACPI path would reach a release without anything having run it: the smoke scripts under `automation/scripts/` cover the device-tree boot on this architecture, and none of them boots with ACPI, so the added parser is compiled and never executed.
+A hypervisor that breaks the new PCI UART path would reach a release without anything having run it: the machines in `.github/boot/machines` give Xen a PL011 console, so the code that hides the SPCR's PCI UART is compiled and never executed.
 
-An ACPI variant of `qemu-smoke-dom0-arm64.sh` that boots with the tables present and asserts dom0 reaches userspace would exercise it. Nothing on the pull request runs either way, so this is about what a pipeline could catch, not about this check.
+A boot machine whose console is a PCI UART behind a switch, as on Graviton, would exercise it, with a case that checks dom0 cannot see the UART.
