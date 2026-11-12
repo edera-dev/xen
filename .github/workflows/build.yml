@@ -150,7 +150,7 @@ jobs:
     env:
       # An arm64 host kernel that protect has shipped, pinned so that a boot
       # does not change when protect moves to a newer one.
-      DOM0_KERNEL: ghcr.io/edera-dev/host-kernel:6.18@sha256:84c3b8d300ef34985e838caf73f50d7ea471d0888dbfb3d1388c9dd91a4a90cb
+      DOM0_KERNEL: ghcr.io/edera-dev/host-kernel:6.18@sha256:c6f067e91b94e2dcc6cda29dce718787ba197d31b59be26c036f11f389a04afe
       MACHINE: ${{ matrix.machine }}
       CASES: ${{ matrix.cases }}
       # How long run-arm64.sh lets one boot take. A job may boot several
