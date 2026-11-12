@@ -1,11 +1,13 @@
 # What checks this repo has, and what runs on a PR
 
-Start with the fact that shapes every coverage answer: **nothing boots this
-tree on a GitHub pull request.** A pull request is compiled and unit tested,
-nothing more:
+Start with the fact that shapes every coverage answer: **a GitHub pull request
+boots only the shipped arm64 build, only on emulated machines, and only as far
+as a busybox dom0.** A pull request is compiled, unit tested, and booted that
+far:
 
 - `.github/workflows/build.yml` compiles the hypervisor in the configurations
-  Edera ships: x86_64, arm64, and arm64 with PCI passthrough.
+  Edera ships: x86_64, arm64, and arm64 with PCI passthrough. Then it boots
+  the arm64 build; see "Boot tests" below.
 - `.github/workflows/unit-tests.yml` runs the host unit tests in `tools/tests`;
   see "Unit tests" below.
 - `.github/workflows/qa-dispatch.yml` hands the pull request to
@@ -21,7 +23,7 @@ upstream rebase self-test, which runs only when the rebase scripts change.
 
 So a coverage review here is mostly not "which test file covers this". It is
 "what would have to run, and where does it live", except for code that a test
-in `tools/tests` compiles.
+in `tools/tests` compiles or that the arm64 boot reaches.
 
 ## Unit tests
 
@@ -56,14 +58,52 @@ upstream code:
   domain, which has no SMMUv3, gives the same DeviceIDs, keeps each root
   complex on its own ITS group, and is refused when a range cannot stay
   contiguous. It also covers a node whose mapping offset is past the table,
-  and taking the MSI base from the first ITS that the MADT describes. Its
-  tables are built from Xen's own ACPICA structures, and both the firmware's
-  table and the hardware domain's buffer end where an unreadable page begins.
-  It does not cover the single-mapping flag, `iort_init()` refusing a table,
-  named components, or the table of any real platform.
+  taking the MSI base from the first ITS that the MADT describes, and which
+  mapping takes an ID that two mappings claim, single mappings among them. A
+  root complex whose first mapping has an ID count one too large, as QEMU's
+  has, is covered both in a lookup and in the IORT built for the hardware
+  domain. Its tables are built from Xen's own ACPICA structures, and both the
+  firmware's table and the hardware domain's buffer end where an unreadable
+  page begins. It does not cover a single mapping in the hardware domain's
+  IORT, an SMMUv3's own single mapping, `iort_init()` refusing a table, named
+  components, or the table of any real platform.
 - `tools/tests/log-q16` covers the fixed-point logarithms in
   `xen/lib/log-q16.c` that `dom0_mem=ln` sizes dom0 with, but not the parsing
   of `dom0_mem` or the sizing curve itself.
+
+## Boot tests
+
+The `boot` job in `.github/workflows/build.yml` runs on every pull request and
+every push to an `edera/**` branch. It boots the shipped arm64 build with
+`.github/boot/run-arm64.sh` on QEMU's virt machine, which describes itself
+only through UEFI and ACPI, with GICv3, an ITS and an SMMUv3. dom0 is the
+arm64 host kernel that protect ships, with a busybox init. A boot fails on a
+crash or a warning from Xen or dom0, when dom0 gets no IORT from Xen, and when
+dom0 does not run init to the end.
+
+Each file in `.github/boot/machines` imitates the platform of a Graviton
+generation: its core, as near as QEMU has one, and its sockets, each a NUMA
+node. Every machine has the same four cores and 2G of memory. A boot checks
+that Xen brings up every core, that dom0 gets them all, and the Spectre-BHB
+sequence that Xen picks for the core.
+
+Each directory in `.github/boot/cases` holds the cases for one Xen option. A
+case changes the Xen command line or the memory, and checks what Xen does with
+it. The boot job's matrix names each directory that runs, and one job boots
+its cases in turn; a directory the matrix does not name never runs.
+`dom0-mem-default` covers the size arm64 Xen gives dom0 when `dom0_mem` is not
+set.
+
+What the boots do not reach:
+
+- Graviton's console, a 16550 behind a PCI switch. QEMU's console is a PL011,
+  so the code that hides the SPCR's PCI UART from dom0 stops early.
+- Graviton's PCI layout: a host bridge on segment 1, described in an SSDT,
+  whose firmware BARs Linux keeps. QEMU's host bridge is on segment 0, in the
+  DSDT.
+- What only many cores or much memory reach.
+- The GIC redistributor layout and the memory map of Graviton firmware.
+- The arm64 build with PCI passthrough, and x86.
 
 ## Build configurations
 
