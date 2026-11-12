@@ -3,10 +3,12 @@
  * Unit tests for the IORT parser: translating a PCI requester ID through the
  * table, and the table built for the hardware domain.
  *
- * Tables are built here from Xen's ACPICA structures.  The parser reads each
- * from the end of a page that is followed by one that cannot be touched, and
- * the hardware domain's table is built in such a buffer too, so a read past a
- * table, or a write past the size the parser asked for, stops the test.
+ * Most tables are built here from Xen's ACPICA structures; the IORTs of real
+ * platforms are kept as their firmware gives them.  The parser reads each
+ * table from the end of a page that is followed by one that cannot be
+ * touched, and the hardware domain's table is built in such a buffer too, so
+ * a read past a table, or a write past the size the parser asked for, stops
+ * the test.
  */
 
 #include <inttypes.h>
@@ -18,6 +20,9 @@
 
 /* Included, not linked, so that load_iort() can drop the previous table. */
 #include "iort.c"
+
+/* The IORTs of real platforms, as their firmware gives them. */
+#include "graviton3.h"
 
 /* QEMU virt's SMMUv3 and ITS, and a second ITS beside it. */
 #define SMMU_V3_BASE 0x09050000
@@ -611,6 +616,59 @@ static bool test_msi_base(void)
     return true;
 }
 
+/*
+ * The @len bytes at @iort are the IORT of a real platform, whose root complex
+ * on @segment gives RIDs 0 to 0xffff the DeviceIDs from @devid on ITS @its.
+ * The hardware domain's IORT keeps only the ITS group and the root complex,
+ * gives the RIDs the same DeviceIDs, and keeps the root complex's revision
+ * and node data, which Linux reads its DMA limit and ATS support from.
+ */
+static bool expect_platform(const uint8_t *iort, size_t len, uint16_t segment,
+                            uint32_t devid, uint32_t its)
+{
+    const struct acpi_iort_node *fw, *hw;
+    bool pass = true;
+
+    load_iort(iort, len);
+
+    fw = iort_table ? iort_find_rc_node(segment) : NULL;
+    if ( !fw )
+    {
+        printf("%s: the firmware's IORT has no root complex for segment %u\n",
+               test_name, segment);
+        return false;
+    }
+
+    /* The same node in @iort, as loading another table replaces this copy. */
+    fw = (const void *)(iort + ((const uint8_t *)fw -
+                                (const uint8_t *)firmware_iort));
+
+    if ( !load_hwdom_iort(2) )
+        return false;
+
+    hw = iort_find_rc_node(segment);
+    if ( !hw || hw->revision != fw->revision ||
+         hw->mapping_offset != fw->mapping_offset ||
+         memcmp(hw->node_data, fw->node_data,
+                fw->mapping_offset - offsetof(struct acpi_iort_node,
+                                              node_data)) )
+    {
+        printf("%s: the hardware domain's root complex differs from the "
+               "firmware's ahead of its mappings\n", test_name);
+        pass = false;
+    }
+
+    pass &= expect_its(segment, 0, devid, its);
+    pass &= expect_its(segment, 0xffff, devid + 0xffff, its);
+
+    return pass;
+}
+
+static bool test_graviton3(void)
+{
+    return expect_platform(graviton3_iort, sizeof(graviton3_iort), 1, 0, 1);
+}
+
 static const struct {
     const char *name;
     bool (*run)(void);
@@ -631,6 +689,7 @@ static const struct {
     { "root complex with its mapping offset past the table",
       test_mapping_offset_past_table },
     { "MSI base from the first ITS that the MADT describes", test_msi_base },
+    { "Graviton3's IORT, and the hardware domain's", test_graviton3 },
 };
 
 int main(void)
