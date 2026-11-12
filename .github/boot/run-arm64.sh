@@ -4,9 +4,11 @@
 # console for a clean boot.
 #
 #   run-arm64.sh --xen xen.efi --kernel Image --busybox busybox --out DIR
+#                [--machine NAME]
 #
 # --kernel is the dom0 kernel, compressed or not, and --busybox a static
-# aarch64 busybox. The console log is DIR/serial.log.
+# aarch64 busybox. --machine names a file in machines/, the platform to
+# imitate, by default graviton4. The console log is DIR/serial.log.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -19,18 +21,39 @@ usage() {
 }
 
 xen='' kernel='' busybox='' out=''
+machine=graviton4
 while [ $# -gt 0 ]; do
     case $1 in
     --xen) xen=$2 ;;
     --kernel) kernel=$2 ;;
     --busybox) busybox=$2 ;;
     --out) out=$2 ;;
+    --machine) machine=$2 ;;
     *) usage ;;
     esac
     shift 2
 done
 [ -n "$xen" ] && [ -n "$kernel" ] && [ -n "$busybox" ] && [ -n "$out" ] ||
     usage
+
+# Every machine has the same few cores and the same memory: QEMU emulates
+# each core, and the platform model, not the size of a host, is what is
+# tested.
+cpus=4
+memory_mib=2048
+
+# A machine file sets its CPU model and sockets.
+cpu='' sockets=1
+# Each is an extended regular expression that some console line must match.
+expect=()
+
+# shellcheck source=/dev/null
+. "$HERE/machines/$machine.sh"
+cores=$((cpus / sockets))
+expect+=(
+    "^\(XEN\) Brought up $cpus CPUs"
+    "smp: Brought up [0-9]+ nodes?, $cpus CPUs"
+)
 
 rm -rf "$out"
 mkdir -p "$out/esp/EFI/BOOT" "$out/initramfs"
@@ -46,7 +69,7 @@ out=$(cd "$out" && pwd)
 
 # Booted from the removable media path, xen.efi reads its configuration from
 # BOOTAA64.cfg beside it. The Xen command line is the one the installer gives
-# arm64 hosts, with a dom0_mem that fits this machine.
+# arm64 hosts, with a dom0_mem that fits these machines.
 install -m 0644 "$xen" "$out/esp/EFI/BOOT/BOOTAA64.EFI"
 install -m 0644 "$kernel" "$out/esp/EFI/BOOT/Image"
 cat >"$out/esp/EFI/BOOT/BOOTAA64.cfg" <<'EOF'
@@ -61,17 +84,29 @@ EOF
 
 cp "$FIRMWARE/AAVMF_VARS.fd" "$out/vars.fd"
 
+# Each socket is a NUMA node with an equal share of the memory, which QEMU
+# describes to the firmware in an SRAT.
+numa=()
+if [ "$sockets" -gt 1 ]; then
+    for ((s = 0; s < sockets; s++)); do
+        numa+=(
+            -object "memory-backend-ram,id=mem$s,size=$((memory_mib / sockets))M"
+            -numa "node,nodeid=$s,cpus=$((s * cores))-$((s * cores + cores - 1)),memdev=mem$s"
+        )
+    done
+fi
+
 # virtualization=on gives Xen EL2. When QEMU supplies ACPI tables, the
 # firmware gives the operating system no device tree, so Xen finds the machine
-# through ACPI alone. Of the CPU models in QEMU 8.2, neoverse-n2 is the
-# nearest to Graviton4's Neoverse V2, and unlike "max" it has the same
-# features in every QEMU version. With an SMMUv3 between the PCI root complex
-# and the ITS, Xen rewrites the IORT it gives dom0, as it does on Graviton
-# metal. A dom0 panic reboots, which -no-reboot turns into an exit.
+# through ACPI alone. With an SMMUv3 between the PCI root complex and the ITS,
+# Xen rewrites the IORT it gives dom0, as it does on Graviton hardware. A dom0
+# panic reboots, which -no-reboot turns into an exit.
+echo "Booting $machine"
 status=0
 timeout "$TIMEOUT" qemu-system-aarch64 \
     -machine virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3 \
-    -cpu neoverse-n2 -smp 4 -m 2G \
+    -cpu "$cpu" -smp "$cpus,sockets=$sockets,cores=$cores,threads=1" \
+    -m "${memory_mib}M" "${numa[@]}" \
     -nodefaults -display none -serial stdio -no-reboot \
     -drive if=pflash,format=raw,readonly=on,file="$FIRMWARE/AAVMF_CODE.fd" \
     -drive if=pflash,format=raw,file="$out/vars.fd" \
@@ -110,6 +145,10 @@ for pattern in "${faults[@]}"; do
     while read -r line; do
         fail "$line"
     done < <(grep -E -- "$pattern" "$out/serial.log")
+done
+for pattern in "${expect[@]}"; do
+    grep -q -E -- "$pattern" "$out/serial.log" ||
+        fail "no line matches: $pattern"
 done
 grep -q 'xenqa: pass boot.dom0_runs_init' "$out/serial.log" ||
     fail "dom0 did not run init"
