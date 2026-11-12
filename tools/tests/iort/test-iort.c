@@ -304,11 +304,60 @@ static int make_hwdom_iort(void **iort, uint32_t *len)
     return iort_make_hwdom_table(*iort, size, len);
 }
 
-static int count_node(const struct acpi_iort_node *node, void *arg)
+/*
+ * Build the hardware domain's IORT from the loaded one, and load it in its
+ * place.  It keeps only the ITS groups and the root complexes: @want_nodes
+ * nodes, as its header counts them and as a walk finds them, none of them an
+ * SMMUv3.
+ */
+static bool load_hwdom_iort(unsigned int want_nodes)
 {
-    (*(unsigned int *)arg)++;
+    const struct acpi_iort_node *node;
+    unsigned int walked = 0, smmus = 0;
+    uint32_t len;
+    void *hwdom;
+    int rc;
 
-    return 0;
+    rc = make_hwdom_iort(&hwdom, &len);
+    if ( rc )
+    {
+        printf("%s: building the hardware domain's IORT returned %d\n",
+               test_name, rc);
+        return false;
+    }
+
+    load_iort(hwdom, len);
+    if ( !iort_table )
+    {
+        printf("%s: the parser refused the hardware domain's IORT\n",
+               test_name);
+        return false;
+    }
+
+    /* The walk stops at the first node that does not fit in the table. */
+    iort_for_each_node(node)
+    {
+        walked++;
+        if ( node->type == ACPI_IORT_NODE_SMMU_V3 )
+            smmus++;
+    }
+
+    if ( iort_table->node_count != want_nodes || walked != want_nodes )
+    {
+        printf("%s: the hardware domain's IORT counts %u nodes, and a walk "
+               "finds %u, want %u\n", test_name, iort_table->node_count,
+               walked, want_nodes);
+        return false;
+    }
+
+    if ( smmus )
+    {
+        printf("%s: the hardware domain's IORT has %u SMMUv3 nodes, want "
+               "none\n", test_name, smmus);
+        return false;
+    }
+
+    return true;
 }
 
 /*
@@ -343,43 +392,13 @@ static bool test_rid_through_smmu(void)
 
 static bool test_hwdom_same_device_ids(void)
 {
-    unsigned int nodes, smmus = 0;
     bool pass = true;
-    uint32_t len;
-    void *hwdom;
-    int rc;
 
     build_smmu_between();
     load_iort(table, table_len);
 
-    rc = make_hwdom_iort(&hwdom, &len);
-    if ( rc )
-    {
-        printf("%s: building it returned %d\n", test_name, rc);
+    if ( !load_hwdom_iort(2) )
         return false;
-    }
-
-    load_iort(hwdom, len);
-
-    nodes = ((struct acpi_table_iort *)hwdom)->node_count;
-    if ( nodes != 2 )
-    {
-        printf("%s: %u nodes, want the ITS group and the root complex\n",
-               test_name, nodes);
-        pass = false;
-    }
-
-    rc = iort_for_each_smmu_v3(count_node, &smmus);
-    if ( rc )
-    {
-        printf("%s: walking its SMMUv3 nodes returned %d\n", test_name, rc);
-        pass = false;
-    }
-    else if ( smmus )
-    {
-        printf("%s: %u SMMUv3 nodes, want none\n", test_name, smmus);
-        pass = false;
-    }
 
     pass &= expect_rid(0, 0, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20000);
     pass &= expect_rid(0, 0x10, ACPI_IORT_NODE_ITS_GROUP, 0, 0x20010);
@@ -455,10 +474,8 @@ static bool test_hwdom_split_middle(void)
  */
 static bool test_id_count_one_too_many(void)
 {
-    uint32_t its, smmu, len;
+    uint32_t its, smmu;
     bool pass = true;
-    void *hwdom;
-    int rc;
 
     table_start();
     its = add_its_group(IDS(0));
@@ -471,15 +488,8 @@ static bool test_id_count_one_too_many(void)
 
     pass &= expect_rid(0, 0x100, ACPI_IORT_NODE_ITS_GROUP, 0, 0x30100);
 
-    rc = make_hwdom_iort(&hwdom, &len);
-    if ( rc )
-    {
-        printf("%s: building the hardware domain's returned %d\n", test_name,
-               rc);
+    if ( !load_hwdom_iort(3) )
         return false;
-    }
-
-    load_iort(hwdom, len);
 
     pass &= expect_rid(0, 0xff, ACPI_IORT_NODE_ITS_GROUP, 0, 0x200ff);
     pass &= expect_rid(0, 0x100, ACPI_IORT_NODE_ITS_GROUP, 0, 0x30100);
@@ -523,10 +533,8 @@ static bool test_id_claimed_twice(void)
 /* Two ITS groups, one for each segment. */
 static bool test_hwdom_two_its_groups(void)
 {
-    uint32_t its_a, its_b, len;
+    uint32_t its_a, its_b;
     bool pass = true;
-    void *hwdom;
-    int rc;
 
     table_start();
     its_a = add_its_group(IDS(0));
@@ -535,14 +543,8 @@ static bool test_hwdom_two_its_groups(void)
     add_root_complex(1, MAPS(map(0, 0x10000, 0x10000, its_b)));
     load_iort(table, table_len);
 
-    rc = make_hwdom_iort(&hwdom, &len);
-    if ( rc )
-    {
-        printf("%s: building it returned %d\n", test_name, rc);
+    if ( !load_hwdom_iort(4) )
         return false;
-    }
-
-    load_iort(hwdom, len);
 
     pass &= expect_its(0, 0x10, 0x10, 0);
     pass &= expect_its(1, 0x10, 0x10010, 1);
@@ -572,10 +574,7 @@ static bool test_mapping_loop(void)
  */
 static bool test_mapping_offset_past_table(void)
 {
-    uint32_t rc_node, len;
-    unsigned int nodes;
-    void *hwdom;
-    int rc;
+    uint32_t rc_node;
 
     table_start();
     add_its_group(IDS(0));
@@ -583,21 +582,7 @@ static bool test_mapping_offset_past_table(void)
     ((struct acpi_iort_node *)(table + rc_node))->mapping_offset = 0x1000;
     load_iort(table, table_len);
 
-    rc = make_hwdom_iort(&hwdom, &len);
-    if ( rc )
-    {
-        printf("%s: building it returned %d\n", test_name, rc);
-        return false;
-    }
-
-    nodes = ((struct acpi_table_iort *)hwdom)->node_count;
-    if ( nodes != 1 )
-    {
-        printf("%s: %u nodes, want only the ITS group\n", test_name, nodes);
-        return false;
-    }
-
-    return true;
+    return load_hwdom_iort(1);
 }
 
 /*
