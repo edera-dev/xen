@@ -8,7 +8,10 @@ name: Build
 #     PCI support, so code that compiles only with CONFIG_HAS_PCI breaks
 #     this build alone;
 #   - arm64-vpci: the arm64 config with PCI passthrough, which brings in the
-#     downstream vPCI stack.
+#     downstream vPCI stack;
+#   - arm64-debug: the arm64 config with DEBUG and UBSAN, less UBSAN's
+#     alignment check, so that ASSERTs and the checks for undefined
+#     behaviour are compiled in.
 #
 # Then it boots the arm64 build, with a busybox dom0, on emulated machines
 # with the platform of each Graviton generation, which describe themselves
@@ -55,6 +58,11 @@ jobs:
             config: arm64
             cross: aarch64-linux-gnu-
             pci: true
+          - name: arm64-debug
+            arch: arm64
+            config: arm64
+            cross: aarch64-linux-gnu-
+            debug: true
     name: build (${{ matrix.name }})
     # make reads both from the environment.
     env:
@@ -94,6 +102,7 @@ jobs:
         env:
           CONFIG: ${{ matrix.config }}
           PCI: ${{ matrix.pci }}
+          DEBUG: ${{ matrix.debug }}
         run: |
           set -euo pipefail
           # xen-oci keeps one config per major.minor release.
@@ -112,9 +121,26 @@ jobs:
             xen/scripts/config --file xen/.config --enable EXPERT --enable PCI_PASSTHROUGH
             make -C xen olddefconfig
           fi
+          if [ "$DEBUG" = "true" ]; then
+            xen/scripts/config --file xen/.config --enable DEBUG --enable UBSAN
+            make -C xen olddefconfig
+          fi
 
       - name: Build
-        run: make -C xen -j"$(nproc)"
+        env:
+          DEBUG: ${{ matrix.debug }}
+        run: |
+          set -euo pipefail
+          if [ "$DEBUG" = "true" ]; then
+            # ACPICA reads the XSDT's 64-bit entries where they are only
+            # 4-byte aligned, as it does on purpose on any 64-bit target that
+            # handles misaligned loads. arm64 does, so leave UBSAN's alignment
+            # check out, as Linux does on arm64.
+            make -C xen -j"$(nproc)" \
+              CFLAGS_UBSAN="-fsanitize=undefined -fno-sanitize=alignment"
+          else
+            make -C xen -j"$(nproc)"
+          fi
 
       - name: Upload the hypervisor to boot
         if: matrix.name == 'arm64'
