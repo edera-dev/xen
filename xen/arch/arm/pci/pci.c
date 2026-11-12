@@ -73,10 +73,9 @@ static int __init dt_pci_init(void)
 
 #ifdef CONFIG_ACPI
 /*
- * Register a host bridge for every MCFG allocation.  That is all ACPI gives us
- * without an AML interpreter: the PCI windows are in the root complex's _CRS,
- * so Xen cannot assign BARs itself and the hardware domain does it instead,
- * reporting devices back through PHYSDEVOP_pci_device_add.
+ * Register a host bridge for every MCFG allocation.  Xen does not assign BARs
+ * on an ACPI system: it leaves them to the firmware and the hardware domain,
+ * which reports the devices back through PHYSDEVOP_pci_device_add.
  */
 static int __init acpi_pci_init(void)
 {
@@ -160,6 +159,23 @@ boolean_param("pci-scan", pci_scan_enabled);
 static int __init pci_init(void)
 {
     int ret;
+
+    /*
+     * pci-scan gives the hardware domain a host bridge that Xen emulates in
+     * place of the real ones, and Xen can describe that bridge only in a
+     * device tree. With ACPI, the hardware domain finds the devices itself,
+     * as on x86. Clear the flag, not only skip the scan: the hardware
+     * domain's vPCI, its vITS and its PHYSDEVOP calls read it too. They read
+     * it only once dom0 is built, after the initcalls, so this is early
+     * enough.
+     */
+    if ( pci_scan_enabled && !acpi_disabled )
+    {
+        printk(XENLOG_WARNING
+               "PCI: pci-scan is not supported with ACPI, ignoring it\n");
+        pci_scan_enabled = false;
+    }
+
     /*
      * Enable PCI passthrough when has been enabled explicitly
      * (pci-passthrough=on).

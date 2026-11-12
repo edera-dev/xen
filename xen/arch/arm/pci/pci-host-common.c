@@ -206,10 +206,9 @@ static int pci_set_msi_base(struct pci_host_bridge *bridge)
  *
  * Unlike the device tree path there is no node to hang this off, so
  * bridge->dt_node stays NULL and the device tree specific lookups skip it.
- * Nothing beyond the ECAM window is described: the PCI windows live in the
- * root complex's _CRS, which needs AML that Xen does not have.  That only
- * costs us Xen side BAR assignment, which ACPI systems leave to the hardware
- * domain anyway, so bar_ranges is left unset and pci-scan must stay off.
+ * Xen does not assign BARs here: an ACPI system leaves them to the firmware
+ * and the hardware domain.  So bar_ranges, which only pci-scan uses, is left
+ * unset, and pci_init() ignores pci-scan under ACPI.
  */
 struct pci_host_bridge *__init pci_host_acpi_probe(uint16_t segment,
                                                    paddr_t mcfg_addr,
