@@ -4,11 +4,13 @@
 # console for a clean boot.
 #
 #   run-arm64.sh --xen xen.efi --kernel Image --busybox busybox --out DIR
-#                [--machine NAME]
+#                [--machine NAME] [--case NAME]
 #
 # --kernel is the dom0 kernel, compressed or not, and --busybox a static
 # aarch64 busybox. --machine names a file in machines/, the platform to
-# imitate, by default graviton4. The console log is DIR/serial.log.
+# imitate, by default graviton4. --case names a file in cases/, such as
+# dom0-mem-default/floor: a Xen option and the outcome it must have. The
+# console log is DIR/serial.log.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -21,7 +23,7 @@ usage() {
 }
 
 xen='' kernel='' busybox='' out=''
-machine=graviton4
+machine=graviton4 case=''
 while [ $# -gt 0 ]; do
     case $1 in
     --xen) xen=$2 ;;
@@ -29,6 +31,7 @@ while [ $# -gt 0 ]; do
     --busybox) busybox=$2 ;;
     --out) out=$2 ;;
     --machine) machine=$2 ;;
+    --case) case=$2 ;;
     *) usage ;;
     esac
     shift 2
@@ -42,13 +45,22 @@ done
 cpus=4
 memory_mib=2048
 
-# A machine file sets its CPU model and sockets.
+# A machine file sets its CPU model and sockets. A case file may change the
+# memory and the Xen command line, which is the one the installer gives arm64
+# hosts, with a dom0_mem that fits these machines.
 cpu='' sockets=1
+xen_options='console=dtuart acpi=force dom0_mem=1G smp=on dom0_vcpus_pin=on spec-ctrl=ssbd=runtime pci-passthrough=on loglvl=all guest_loglvl=all sync_console'
 # Each is an extended regular expression that some console line must match.
 expect=()
+# A case may also define check(), which reads the console log named by its
+# argument and prints one line for each thing wrong with it.
 
 # shellcheck source=/dev/null
 . "$HERE/machines/$machine.sh"
+if [ -n "$case" ]; then
+    # shellcheck source=/dev/null
+    . "$HERE/cases/$case.sh"
+fi
 cores=$((cpus / sockets))
 expect+=(
     "^\(XEN\) Brought up $cpus CPUs"
@@ -68,16 +80,15 @@ out=$(cd "$out" && pwd)
 )
 
 # Booted from the removable media path, xen.efi reads its configuration from
-# BOOTAA64.cfg beside it. The Xen command line is the one the installer gives
-# arm64 hosts, with a dom0_mem that fits these machines.
+# BOOTAA64.cfg beside it.
 install -m 0644 "$xen" "$out/esp/EFI/BOOT/BOOTAA64.EFI"
 install -m 0644 "$kernel" "$out/esp/EFI/BOOT/Image"
-cat >"$out/esp/EFI/BOOT/BOOTAA64.cfg" <<'EOF'
+cat >"$out/esp/EFI/BOOT/BOOTAA64.cfg" <<EOF
 [global]
 default=xen
 
 [xen]
-options=console=dtuart acpi=force dom0_mem=1G smp=on dom0_vcpus_pin=on spec-ctrl=ssbd=runtime pci-passthrough=on loglvl=all guest_loglvl=all sync_console
+options=$xen_options
 kernel=Image console=hvc0 earlycon=xenboot panic=-1
 ramdisk=initrd
 EOF
@@ -101,7 +112,7 @@ fi
 # through ACPI alone. With an SMMUv3 between the PCI root complex and the ITS,
 # Xen rewrites the IORT it gives dom0, as it does on Graviton hardware. A dom0
 # panic reboots, which -no-reboot turns into an exit.
-echo "Booting $machine"
+echo "Booting $machine${case:+, case $case}"
 status=0
 timeout "$TIMEOUT" qemu-system-aarch64 \
     -machine virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3 \
@@ -150,6 +161,11 @@ for pattern in "${expect[@]}"; do
     grep -q -E -- "$pattern" "$out/serial.log" ||
         fail "no line matches: $pattern"
 done
+if declare -F check >/dev/null; then
+    while read -r line; do
+        fail "$line"
+    done < <(check "$out/serial.log")
+fi
 grep -q 'xenqa: pass boot.dom0_runs_init' "$out/serial.log" ||
     fail "dom0 did not run init"
 # Only init powers dom0 off, after it has reported.
