@@ -105,6 +105,17 @@ static struct acpi_iort_id_mapping map(uint32_t in, uint32_t ids, uint32_t out,
     };
 }
 
+/* A single mapping of @ids IDs from @in: each of them goes to @out. */
+static struct acpi_iort_id_mapping single_map(uint32_t in, uint32_t ids,
+                                              uint32_t out, uint32_t ref)
+{
+    struct acpi_iort_id_mapping single = map(in, ids, out, ref);
+
+    single.flags = ACPI_IORT_ID_SINGLE_MAPPING;
+
+    return single;
+}
+
 /* An ITS group of the @nr_ids ITS identifiers at @ids. */
 static uint32_t add_its_group(const uint32_t *ids, unsigned int nr_ids)
 {
@@ -434,6 +445,81 @@ static bool test_hwdom_split_middle(void)
     return true;
 }
 
+/*
+ * QEMU virt with iommu=smmuv3 gives the root complex's first mapping an
+ * id_count one too large, so it ends on 0x100, the first ID of the mapping
+ * that bypasses the SMMU.  The two lead to different DeviceIDs, so that
+ * taking the wrong one for 0x100 shows.  The SMMU splits its IDs at 0x100,
+ * so the hardware domain's IORT can be built only if the first mapping gives
+ * 0x100 up.  A mapping of one ID, on segment 1, has nothing to give up.
+ */
+static bool test_id_count_one_too_many(void)
+{
+    uint32_t its, smmu, len;
+    bool pass = true;
+    void *hwdom;
+    int rc;
+
+    table_start();
+    its = add_its_group(IDS(0));
+    smmu = add_smmu_v3(MAPS(map(0, 0x100, 0x20000, its),
+                            map(0x100, 0xff00, 0x40100, its)));
+    add_root_complex(0, MAPS(map(0, 0x101, 0, smmu),
+                             map(0x100, 0xff00, 0x30100, its)));
+    add_root_complex(1, MAPS(map(0x10, 0x1, 0x50010, its)));
+    load_iort(table, table_len);
+
+    pass &= expect_rid(0, 0x100, ACPI_IORT_NODE_ITS_GROUP, 0, 0x30100);
+
+    rc = make_hwdom_iort(&hwdom, &len);
+    if ( rc )
+    {
+        printf("%s: building the hardware domain's returned %d\n", test_name,
+               rc);
+        return false;
+    }
+
+    load_iort(hwdom, len);
+
+    pass &= expect_rid(0, 0xff, ACPI_IORT_NODE_ITS_GROUP, 0, 0x200ff);
+    pass &= expect_rid(0, 0x100, ACPI_IORT_NODE_ITS_GROUP, 0, 0x30100);
+    pass &= expect_rid(1, 0x10, ACPI_IORT_NODE_ITS_GROUP, 0, 0x50010);
+
+    return pass;
+}
+
+/*
+ * An ID that two mappings claim, as in Linux.  A later range takes it from
+ * one that ends on it only by starting on it, and a range of one ID ends
+ * where it starts.  A single mapping takes any ID it is reached with, both
+ * from the range that ends on it (segment 1) and on its own range's last ID
+ * (segment 2).
+ */
+static bool test_id_claimed_twice(void)
+{
+    bool pass = true;
+    uint32_t its;
+
+    table_start();
+    its = add_its_group(IDS(0));
+    add_root_complex(0, MAPS(map(0x000, 0x101, 0x10000, its),
+                             map(0x080, 0x100, 0x20080, its),
+                             map(0x200, 0x1, 0x30200, its),
+                             map(0x200, 0x100, 0x40200, its)));
+    add_root_complex(1, MAPS(map(0x000, 0x101, 0x10000, its),
+                             single_map(0, 0x1, 0x50000, its)));
+    add_root_complex(2, MAPS(single_map(0x300, 0x11, 0x60000, its),
+                             map(0x310, 0x10, 0x70310, its)));
+    load_iort(table, table_len);
+
+    pass &= expect_rid(0, 0x100, ACPI_IORT_NODE_ITS_GROUP, 0, 0x10100);
+    pass &= expect_rid(0, 0x200, ACPI_IORT_NODE_ITS_GROUP, 0, 0x30200);
+    pass &= expect_rid(1, 0x100, ACPI_IORT_NODE_ITS_GROUP, 0, 0x50000);
+    pass &= expect_rid(2, 0x310, ACPI_IORT_NODE_ITS_GROUP, 0, 0x60000);
+
+    return pass;
+}
+
 /* Two ITS groups, one for each segment. */
 static bool test_hwdom_two_its_groups(void)
 {
@@ -551,6 +637,9 @@ static const struct {
       test_hwdom_split_range },
     { "hardware domain's IORT: nor one split only in the middle",
       test_hwdom_split_middle },
+    { "an id_count one too large: the range starting on the ID takes it",
+      test_id_count_one_too_many },
+    { "an ID that two mappings claim", test_id_claimed_twice },
     { "hardware domain's IORT: each segment keeps its ITS group",
       test_hwdom_two_its_groups },
     { "a mapping loop ends", test_mapping_loop },
