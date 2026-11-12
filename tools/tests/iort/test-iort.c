@@ -23,6 +23,7 @@
 
 /* The IORTs of real platforms, as their firmware gives them. */
 #include "graviton3.h"
+#include "graviton4.h"
 
 /* QEMU virt's SMMUv3 and ITS, and a second ITS beside it. */
 #define SMMU_V3_BASE 0x09050000
@@ -669,6 +670,12 @@ static bool test_graviton3(void)
     return expect_platform(graviton3_iort, sizeof(graviton3_iort), 1, 0, 1);
 }
 
+static bool test_graviton4(void)
+{
+    return expect_platform(graviton4_iort, sizeof(graviton4_iort), 3, 0x30000,
+                           1);
+}
+
 static const struct {
     const char *name;
     bool (*run)(void);
@@ -690,6 +697,7 @@ static const struct {
       test_mapping_offset_past_table },
     { "MSI base from the first ITS that the MADT describes", test_msi_base },
     { "Graviton3's IORT, and the hardware domain's", test_graviton3 },
+    { "Graviton4's IORT, and the hardware domain's", test_graviton4 },
 };
 
 int main(void)
