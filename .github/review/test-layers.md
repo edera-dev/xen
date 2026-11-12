@@ -63,11 +63,16 @@ upstream code:
   mapping takes an ID that two mappings claim, single mappings among them. A
   root complex whose first mapping has an ID count one too large, as QEMU's
   has, is covered both in a lookup and in the IORT built for the hardware
-  domain. Its tables are built from Xen's own ACPICA structures, and both the
-  firmware's table and the hardware domain's buffer end where an unreadable
-  page begins. It does not cover a single mapping in the hardware domain's
-  IORT, an SMMUv3's own single mapping, `iort_init()` refusing a table, named
-  components, or the table of any real platform.
+  domain. Its tables are built from Xen's own ACPICA structures, except the
+  IORTs of a Graviton3 and a one-socket Graviton4 instance, kept as their
+  firmware gives them. Those have what no built table has: a node longer
+  than its mappings, root complex node data that is not zero, and a PMCG
+  node that refers to the SMMUv3. For them the hardware domain's IORT must
+  also keep the root complex's revision and node data. Both the firmware's
+  table and the hardware domain's buffer end where an unreadable page
+  begins. It does not cover a single mapping in the hardware domain's IORT,
+  an SMMUv3's own single mapping, `iort_init()` refusing a table, named
+  components, or the table of a real platform with more than one ITS group.
 - `tools/tests/log-q16` covers the fixed-point logarithms in
   `xen/lib/log-q16.c` that `dom0_mem=ln` sizes dom0 with, but not the parsing
   of `dom0_mem` or the sizing curve itself.
