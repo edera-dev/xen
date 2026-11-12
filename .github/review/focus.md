@@ -64,7 +64,7 @@ A compiler warning disabled, a MISRA deviation added under `automation/eclair_an
 Logic that can be exercised by building a configuration should not need a boot to demonstrate. Behaviour that only appears on a running hypervisor does.
 
 <!-- focus: NO_TEST_LAYER -->
-That is often the situation here. A GitHub pull request is built in the shipped configurations, unit tested with the host tests in `tools/tests`, and booted only as `.github/boot/run-arm64.sh` boots it: the shipped arm64 build, on emulated machines, as far as a busybox dom0. Much hypervisor behaviour can only be observed by booting some other way. Naming the build configuration, the boot machine or case under `.github/boot/`, or the smoke script under `automation/scripts/` that would exercise the change is more useful than asking for a unit test.
+That is often the situation here. A GitHub pull request is built in the shipped configurations, unit tested with the host tests in `tools/tests`, and booted only as `.github/boot/run-arm64.sh` boots it: the shipped arm64 build and a debug one, on emulated machines, as far as a busybox dom0. Much hypervisor behaviour can only be observed by booting some other way. Naming the build configuration, the boot machine or case under `.github/boot/`, or the smoke script under `automation/scripts/` that would exercise the change is more useful than asking for a unit test.
 
 <!-- focus: OUT_OF_SCOPE -->
 Style, naming, formatting, indentation, and comment wording — `CODING_STYLE` governs those and a reviewer restating it adds nothing. Upstream code the diff does not touch. Merged architecture.
