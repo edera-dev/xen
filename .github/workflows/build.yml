@@ -134,18 +134,28 @@ jobs:
     # emulates the CPU all the same: Xen needs EL2, and no hosted runner
     # gives a guest EL2.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # The files in .github/boot/machines.
-        machine: [graviton3, graviton4, graviton4-numa]
-    name: boot (arm64, ${{ matrix.machine }})
+        # machine names a file in .github/boot/machines, and cases a
+        # directory in .github/boot/cases, whose cases the job boots in turn.
+        include:
+          - machine: graviton3
+          - machine: graviton4
+          - machine: graviton4-numa
+          - machine: graviton4
+            cases: dom0-mem-default
+    name: boot (arm64, ${{ matrix.machine }}${{ matrix.cases && format(', {0}', matrix.cases) || '' }})
     env:
       # An arm64 host kernel that protect has shipped, pinned so that a boot
       # does not change when protect moves to a newer one.
       DOM0_KERNEL: ghcr.io/edera-dev/host-kernel:6.18@sha256:84c3b8d300ef34985e838caf73f50d7ea471d0888dbfb3d1388c9dd91a4a90cb
       MACHINE: ${{ matrix.machine }}
+      CASES: ${{ matrix.cases }}
+      # How long run-arm64.sh lets one boot take. A job may boot several
+      # cases in turn, so timeout-minutes has to leave room for all of them.
+      TIMEOUT: 180
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -180,14 +190,34 @@ jobs:
 
       - name: Boot
         run: |
-          bash .github/boot/run-arm64.sh --xen "$RUNNER_TEMP/xen/xen" \
-            --kernel "$RUNNER_TEMP/Image" --busybox /usr/bin/busybox \
-            --out "$RUNNER_TEMP/boot" --machine "$MACHINE"
+          set -uo pipefail
+          boot() {
+            bash .github/boot/run-arm64.sh --xen "$RUNNER_TEMP/xen/xen" \
+              --kernel "$RUNNER_TEMP/Image" --busybox /usr/bin/busybox \
+              --machine "$MACHINE" "$@"
+          }
+          if [ -z "$CASES" ]; then
+            boot --out "$RUNNER_TEMP/boot/$MACHINE"
+            exit
+          fi
+          # Every case boots, even after one fails.
+          failed=''
+          for file in .github/boot/cases/"$CASES"/*.sh; do
+            case=$CASES/$(basename "$file" .sh)
+            echo "::group::$case"
+            boot --case "$case" --out "$RUNNER_TEMP/boot/$case" ||
+              failed="$failed $case"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::failed:$failed"
+            exit 1
+          fi
 
       - name: Upload the console log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: boot-arm64-${{ matrix.machine }}
-          path: ${{ runner.temp }}/boot/serial.log
+          name: boot-arm64-${{ matrix.machine }}${{ matrix.cases && format('-{0}', matrix.cases) || '' }}
+          path: ${{ runner.temp }}/boot/**/serial.log
           retention-days: 30
