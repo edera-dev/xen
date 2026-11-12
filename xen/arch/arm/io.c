@@ -333,6 +333,24 @@ enum io_state try_handle_mmio(struct cpu_user_regs *regs,
         return handle_read(handler, v, info);
 }
 
+/* Whether [addr, addr + size) overlaps a handler already registered. */
+static bool mmio_handler_overlaps(const struct vmmio *vmmio, paddr_t addr,
+                                  paddr_t size)
+{
+    unsigned int i;
+
+    for ( i = 0; i < vmmio->num_entries; i++ )
+    {
+        const struct mmio_handler *handler = &vmmio->handlers[i];
+
+        if ( addr < handler->addr + handler->size &&
+             handler->addr < addr + size )
+            return true;
+    }
+
+    return false;
+}
+
 void register_mmio_handler(struct domain *d,
                            const struct mmio_handler_ops *ops,
                            paddr_t addr, paddr_t size, void *priv)
@@ -343,6 +361,12 @@ void register_mmio_handler(struct domain *d,
     BUG_ON(vmmio->num_entries >= vmmio->max_num_entries);
 
     write_lock(&vmmio->lock);
+
+    /*
+     * find_mmio_handler() searches the handlers by address, which finds the
+     * right one only while no two overlap.
+     */
+    ASSERT(!mmio_handler_overlaps(vmmio, addr, size));
 
     handler = &vmmio->handlers[vmmio->num_entries];
 
