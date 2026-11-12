@@ -65,6 +65,8 @@ cores=$((cpus / sockets))
 expect+=(
     "^\(XEN\) Brought up $cpus CPUs"
     "smp: Brought up [0-9]+ nodes?, $cpus CPUs"
+    # dom0 has an IORT, without which its PCI MSIs have no route to the ITS.
+    '^\[ *[0-9.]+\] ACPI: IORT '
 )
 
 rm -rf "$out"
@@ -139,6 +141,8 @@ faults=(
     'WARNING: CPU: [0-9]+ PID: [0-9]+'
     '\bBUG: '
     'xenqa: fail '
+    # dom0 gets no IORT, or the firmware's with the SMMUs Xen uses.
+    'Unable to rewrite the IORT'
 )
 
 failed=0
