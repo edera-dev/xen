@@ -136,7 +136,7 @@ static const struct acpi_iort_node *iort_find_rc_node(uint16_t segment)
 static const struct acpi_iort_node *iort_node_map_ids(
     const struct acpi_iort_node *node, uint32_t *id, uint32_t id_count)
 {
-    const struct acpi_iort_id_mapping *map;
+    const struct acpi_iort_id_mapping *map, *match = NULL;
     unsigned int i;
 
     map = (const struct acpi_iort_id_mapping *)((const char *)node +
@@ -145,7 +145,6 @@ static const struct acpi_iort_node *iort_node_map_ids(
     for ( i = 0; i < node->mapping_count; i++, map++ )
     {
         bool single = map->flags & ACPI_IORT_ID_SINGLE_MAPPING;
-        const struct acpi_iort_node *out;
 
         /*
          * A single mapping ignores the input range entirely and sends every
@@ -157,23 +156,72 @@ static const struct acpi_iort_node *iort_node_map_ids(
               *id > (uint64_t)map->input_base + map->id_count) )
             continue;
 
-        out = iort_node_at_offset(map->output_reference);
-        if ( !out )
+        if ( !iort_node_at_offset(map->output_reference) )
             continue;
 
-        if ( id_count &&
-             (single ||
-              (uint64_t)*id + id_count >
-              (uint64_t)map->input_base + map->id_count) )
-            return NULL;
+        /*
+         * Firmware, QEMU's among it, can give the number of IDs as id_count,
+         * so that a range ends on the first ID of the next.  As Linux does,
+         * keep a match on the last ID of a range of more than one only until
+         * a single mapping, or a range that starts on that ID, takes it.
+         */
+        if ( match && !single && *id != map->input_base )
+            continue;
 
-        *id = single ? map->output_base
-                     : map->output_base + (*id - map->input_base);
+        match = map;
 
-        return out;
+        if ( single || !map->id_count ||
+             *id != (uint64_t)map->input_base + map->id_count )
+            break;
     }
 
-    return NULL;
+    if ( !match )
+        return NULL;
+
+    if ( match->flags & ACPI_IORT_ID_SINGLE_MAPPING )
+    {
+        if ( id_count )
+            return NULL;
+
+        *id = match->output_base;
+    }
+    else
+    {
+        if ( (uint64_t)*id + id_count >
+             (uint64_t)match->input_base + match->id_count )
+            return NULL;
+
+        *id = match->output_base + (*id - match->input_base);
+    }
+
+    return iort_node_at_offset(match->output_reference);
+}
+
+/*
+ * The id_count of @map, a mapping of @node, less the last ID if another
+ * mapping of @node starts on it.  That ID is the other mapping's, as
+ * iort_node_map_ids() reads it, so a range of IDs pushed through @map stops
+ * short of it.
+ */
+static uint32_t iort_map_id_count(const struct acpi_iort_node *node,
+                                  const struct acpi_iort_id_mapping *map)
+{
+    uint64_t last = (uint64_t)map->input_base + map->id_count;
+    const struct acpi_iort_id_mapping *other;
+    unsigned int i;
+
+    /* A mapping of one ID starts on its last ID, and keeps it. */
+    if ( !map->id_count )
+        return 0;
+
+    other = (const struct acpi_iort_id_mapping *)((const char *)node +
+                                                  node->mapping_offset);
+
+    for ( i = 0; i < node->mapping_count; i++, other++ )
+        if ( other->input_base == last )
+            return map->id_count - 1;
+
+    return map->id_count;
 }
 
 /*
@@ -420,16 +468,18 @@ static int iort_hwdom_walk(void *base, size_t size, uint32_t *len_out)
 
             for ( i = 0; i < node->mapping_count; i++ )
             {
+                uint32_t id_count = iort_map_id_count(node, &in[i]);
                 const struct acpi_iort_node *its;
                 uint32_t devid, its_offset;
 
                 if ( iort_map_ids(rc->pci_segment_number, in[i].input_base,
-                                  in[i].id_count, ACPI_IORT_NODE_ITS_GROUP,
+                                  id_count, ACPI_IORT_NODE_ITS_GROUP,
                                   &devid, &its) ||
                      !iort_hwdom_its_offset(its, &its_offset) )
                     return -ENXIO;
 
                 outmap[i] = in[i];
+                outmap[i].id_count = id_count;
                 outmap[i].output_base = devid;
                 outmap[i].output_reference = its_offset;
             }
