@@ -42,7 +42,7 @@ A new test directory runs with no change to the workflow. Each test compiles
 one hypervisor source file into a host program with a small harness, so it
 covers the logic of that file, not how the hypervisor uses it.
 
-Three of the tests cover downstream code; the rest are upstream's tests of
+Four of the tests cover downstream code; the rest are upstream's tests of
 upstream code:
 
 - `tools/tests/dsdt` covers the Arm AML walker in `xen/arch/arm/acpi/dsdt.c`,
@@ -71,6 +71,14 @@ upstream code:
 - `tools/tests/log-q16` covers the fixed-point logarithms in
   `xen/lib/log-q16.c` that `dom0_mem=ln` sizes dom0 with, but not the parsing
   of `dom0_mem` or the sizing curve itself.
+- `tools/tests/spcr` covers `xen/arch/arm/acpi/spcr.c`, which decides whether
+  to hide the SPCR's PCI UART, Xen's console, from the hardware domain: each
+  reason to keep it visible, the bridge scan that finds the port above it, an
+  error from making that port read-only, the choice of MCFG window, and the
+  parts of the UART's page that read as all ones around the hardware domain's
+  vuart. Each case lays out a configuration space in memory. It does not
+  cover a hardware domain without a vuart, or several host bridges in one
+  MCFG window.
 
 ## Boot tests
 
@@ -103,7 +111,8 @@ set.
 What the boots do not reach:
 
 - Graviton's console, a 16550 behind a PCI switch. QEMU's console is a PL011,
-  so the code that hides the SPCR's PCI UART from dom0 stops early.
+  so the code that hides the SPCR's PCI UART from dom0 stops early;
+  `tools/tests/spcr` covers its decisions.
 - Graviton's PCI layout: a host bridge on segment 1, described in an SSDT,
   whose firmware BARs Linux keeps. QEMU's host bridge is on segment 0, in the
   DSDT.
