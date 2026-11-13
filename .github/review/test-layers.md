@@ -130,12 +130,13 @@ What the boots do not reach:
 
 ## XTF tests
 
-The `xtf` job in `.github/workflows/build.yml` runs on every pull request and
-every push to an `edera/**` branch. It boots the shipped x86_64 build with
-`.github/xtf/run-x86_64.sh` in a Fedora container, with one XTF test as dom0. QEMU emulates the CPU,
-SVM and nested paging included, so an `hvm64` test runs as a PVH dom0 with
-HAP, and a `pv64` test as a PV dom0. XTF is cloned at the commit the script
-pins. A run fails when the test does not print a successful verdict.
+The `boot-x86_64` job in `.github/workflows/build.yml` runs on every pull
+request and every push to an `edera/**` branch. It boots the shipped x86_64
+build with `.github/xtf/run-x86_64.sh` in a Fedora container, with one XTF test
+as dom0. QEMU emulates the CPU, SVM and nested paging included, so an `hvm64`
+test runs as a PVH dom0 with HAP, and a `pv64` test as a PV dom0. XTF is cloned
+at the commit the script pins. A run fails when the test does not print a
+successful verdict.
 
 Each directory in `.github/xtf/tests` is a test in XTF's layout. The job's
 matrix names each test and environment that runs; a directory the matrix does

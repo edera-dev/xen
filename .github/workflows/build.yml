@@ -253,7 +253,7 @@ jobs:
           path: ${{ runner.temp }}/boot/**/serial.log
           retention-days: 30
 
-  xtf:
+  boot-x86_64:
     needs: build
     # Run even when another configuration fails to build. Without the x86_64
     # build, downloading it fails instead.
@@ -270,7 +270,7 @@ jobs:
             variant: hvm64
           - test: gnttab-copy-ops
             variant: pv64
-    name: xtf (${{ matrix.test }}, ${{ matrix.variant }})
+    name: boot (x86_64, ${{ matrix.variant }}, ${{ matrix.test }})
     env:
       TEST: ${{ matrix.test }}
       VARIANT: ${{ matrix.variant }}
@@ -310,7 +310,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: xtf-${{ matrix.test }}-${{ matrix.variant }}
+          name: boot-x86_64-${{ matrix.variant }}-${{ matrix.test }}
           path: |
             ${{ runner.temp }}/xtf/run/serial.log
             ${{ runner.temp }}/xtf/run/build.log
