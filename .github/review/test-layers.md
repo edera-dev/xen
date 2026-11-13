@@ -1,15 +1,16 @@
 # What checks this repo has, and what runs on a PR
 
 Start with the fact that shapes every coverage answer: **a GitHub pull request
-boots the arm64 builds, the shipped one and a debug one, only on emulated
+boots the arm64 builds, the shipped one and two debug ones, only on emulated
 machines and only as far as a busybox dom0, and boots the x86_64 build only
 with an XTF test as dom0.** A pull request is compiled, unit tested, and booted
 that far:
 
 - `.github/workflows/build.yml` compiles the hypervisor in the configurations
-  Edera ships: x86_64, arm64, and arm64 with PCI passthrough. It also compiles
-  arm64 with DEBUG and UBSAN. Then it boots the two arm64 builds; see "Boot
-  tests" below. It also boots the x86_64 build with each XTF test in
+  Edera ships, x86_64 and arm64. It also compiles arm64 with PCI passthrough,
+  with DEBUG and UBSAN, and with all three, which Edera does not ship. Then it
+  boots the shipped arm64 build and the two debug builds; see "Boot tests"
+  below. It also boots the x86_64 build with each XTF test in
   `.github/xtf/tests`; see "XTF tests" below.
 - `.github/workflows/unit-tests.yml` runs the host unit tests in `tools/tests`;
   see "Unit tests" below.
@@ -103,6 +104,12 @@ ASSERT or a report from UBSAN fails the boot. That build leaves out UBSAN's
 alignment check: ACPICA reads misaligned XSDT entries on purpose, and arm64
 handles misaligned loads.
 
+The job also boots the debug build with PCI passthrough on the graviton4
+machine, with the `pci-passthrough` cases. In that build Xen registers the
+host bridge from the MCFG, and dom0 reports each PCI device to Xen. The build
+has no SMMUv3 driver, so the IOMMU is off and dom0 gets no vPCI. The release
+build with PCI passthrough is compiled but not booted.
+
 Each file in `.github/boot/machines` imitates the platform of a Graviton
 generation: its core, as near as QEMU has one, and its sockets, each a NUMA
 node. Every machine has the same four cores and 2G of memory. A boot checks
@@ -114,7 +121,9 @@ case changes the Xen command line or the memory, and checks what Xen does with
 it. The boot job's matrix names each directory that runs, and one job boots
 its cases in turn; a directory the matrix does not name never runs.
 `dom0-mem-default` covers the size arm64 Xen gives dom0 when `dom0_mem` is not
-set.
+set. `pci-passthrough` covers the host bridge that Xen registers from the
+MCFG and the windows it reads for it, and Xen accepting each PCI device that
+dom0 reports.
 
 What the boots do not reach:
 
@@ -126,7 +135,11 @@ What the boots do not reach:
   DSDT.
 - What only many cores or much memory reach.
 - The GIC redistributor layout and the memory map of Graviton firmware.
-- The arm64 build with PCI passthrough, and x86.
+- vPCI, which needs an IOMMU: no build has the SMMUv3 driver, and QEMU's
+  SMMUv3 offers only stage-1 translation unless told otherwise.
+- A guest with a PCI device passed through: the builds with PCI passthrough
+  boot only dom0.
+- x86.
 
 ## XTF tests
 
