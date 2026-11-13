@@ -36,6 +36,9 @@ extern const struct paging_mode *hap_paging_get_mode(struct vcpu *v);
 int hap_set_allocation(struct domain *d, unsigned int pages, bool *preempted);
 unsigned int hap_get_allocation(struct domain *d);
 
+bool hap_walk_write_4_levels(struct vcpu *v, unsigned long gva, gfn_t *gfn,
+                             mfn_t pt[4]);
+
 #endif /* XEN_HAP_H */
 
 /*
