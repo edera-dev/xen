@@ -1,0 +1,4 @@
+*.tmp
+/pci_regs.h
+/spcr.c
+/test-spcr
