@@ -19,7 +19,7 @@ name: Build
 #
 # Then it boots the arm64 build, with a busybox dom0, on emulated machines
 # with the platform of each Graviton generation, which describe themselves
-# only through UEFI and ACPI, and boots the arm64 debug build on one of them.
+# only through UEFI and ACPI. It boots the two debug builds on one of them.
 #
 # It also boots the x86_64 build with each XTF test in .github/xtf as dom0.
 #
@@ -155,7 +155,9 @@ jobs:
           fi
 
       - name: Upload the hypervisor to boot
-        if: matrix.name == 'x86_64' || matrix.name == 'arm64' || matrix.name == 'arm64-debug'
+        # The x86_64 build for the XTF tests, and every arm64 build, so that
+        # the boot matrix can name any of them.
+        if: matrix.name == 'x86_64' || matrix.arch == 'arm64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: xen-${{ matrix.name }}
@@ -187,6 +189,9 @@ jobs:
             cases: dom0-mem-default
           - machine: graviton4
             build: arm64-debug
+          - machine: graviton4
+            cases: pci-passthrough
+            build: arm64-vpci-debug
     name: boot (${{ matrix.build || 'arm64' }}, ${{ matrix.machine }}${{ matrix.cases && format(', {0}', matrix.cases) || '' }})
     env:
       # An arm64 host kernel that protect has shipped, pinned so that a boot
