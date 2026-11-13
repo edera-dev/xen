@@ -43,6 +43,22 @@ int replace_grant_host_mapping(uint64_t gpaddr, mfn_t frame,
 static inline void gnttab_unmap_batch_begin(void) {}
 static inline int gnttab_unmap_batch_end(void) { return 0; }
 
+struct gnttab_ops_pin {};
+
+static inline void *gnttab_ops_pin(struct gnttab_ops_pin *pin,
+                                   unsigned long addr)
+{
+    return NULL;
+}
+
+static inline void gnttab_ops_unpin(struct gnttab_ops_pin *pin) {}
+
+static inline bool gnttab_ops_pin_stale(const struct gnttab_ops_pin *pin,
+                                        mfn_t written)
+{
+    return false;
+}
+
 /*
  * The region used by Xen on the memory will never be mapped in DOM0
  * memory layout. Therefore it can be used for the grant table.

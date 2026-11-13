@@ -125,6 +125,54 @@ unsigned long cf_check hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
 }
 
 
+#if GUEST_PAGING_LEVELS == 4
+
+/*
+ * Translate @gva for a supervisor write by @v, and report the frames the
+ * translation was read from, for a caller that keeps the result.
+ */
+bool hap_walk_write_4_levels(struct vcpu *v, unsigned long gva, gfn_t *gfn,
+                             mfn_t pt[4])
+{
+    struct p2m_domain *p2m = p2m_get_hostp2m(v->domain);
+    gfn_t top_gfn = _gfn(v->arch.hvm.guest_cr[3] >> PAGE_SHIFT);
+    struct page_info *top_page;
+    p2m_type_t p2mt;
+    void *top_map;
+    walk_t gw;
+    bool ok;
+
+    top_page = p2m_get_page_from_gfn(p2m, top_gfn, &p2mt, NULL,
+                                     P2M_ALLOC | P2M_UNSHARE);
+    if ( !top_page )
+        return false;
+    if ( p2m_is_paging(p2mt) || p2m_is_shared(p2mt) )
+    {
+        put_page(top_page);
+        return false;
+    }
+
+    top_map = map_domain_page(page_to_mfn(top_page));
+    ok = guest_walk_tables(v, p2m, gva, &gw,
+                           PFEC_page_present | PFEC_write_access,
+                           top_gfn, page_to_mfn(top_page), top_map);
+    unmap_domain_page(top_map);
+    put_page(top_page);
+
+    if ( !ok )
+        return false;
+
+    *gfn = guest_walk_to_gfn(&gw);
+    pt[0] = gw.l4mfn;
+    pt[1] = gw.l3mfn;
+    pt[2] = gw.l2mfn;
+    pt[3] = gw.l1mfn;
+
+    return true;
+}
+
+#endif /* GUEST_PAGING_LEVELS == 4 */
+
 /*
  * Local variables:
  * mode: C

@@ -45,6 +45,15 @@ static inline int __must_check gnttab_unmap_batch_end(void)
     return 0;
 }
 
+static inline void *gnttab_ops_pin(struct gnttab_ops_pin *pin,
+                                   unsigned long addr)
+{
+    return is_hvm_vcpu(current) ? grant_ops_pin(pin, addr) : NULL;
+}
+
+#define gnttab_ops_unpin     grant_ops_unpin
+#define gnttab_ops_pin_stale grant_ops_pin_stale
+
 #define gnttab_get_frame_gfn(gt, st, idx) ({                             \
     mfn_t mfn_ = (st) ? gnttab_status_mfn(gt, idx)                       \
                       : gnttab_shared_mfn(gt, idx);                      \
