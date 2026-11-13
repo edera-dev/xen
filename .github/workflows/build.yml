@@ -192,6 +192,9 @@ jobs:
           - machine: graviton4
             cases: pci-passthrough
             build: arm64-vpci-debug
+          - machine: graviton4
+            cases: pci-scan
+            build: arm64-vpci-debug
     name: boot (${{ matrix.build || 'arm64' }}, ${{ matrix.machine }}${{ matrix.cases && format(', {0}', matrix.cases) || '' }})
     env:
       # An arm64 host kernel that protect has shipped, pinned so that a boot
