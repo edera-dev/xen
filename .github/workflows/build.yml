@@ -6,12 +6,16 @@ name: Build
 #   - x86_64: the amd64 config;
 #   - arm64: the arm64 config, which leaves PCI support out. x86 always has
 #     PCI support, so code that compiles only with CONFIG_HAS_PCI breaks
-#     this build alone;
-#   - arm64-vpci: the arm64 config with PCI passthrough, which brings in the
-#     downstream vPCI stack;
-#   - arm64-debug: the arm64 config with DEBUG and UBSAN, less UBSAN's
-#     alignment check, so that ASSERTs and the checks for undefined
-#     behaviour are compiled in.
+#     this build alone.
+#
+# It also builds the arm64 config with changes that Edera does not ship:
+#
+#   - arm64-vpci: with PCI passthrough, which brings in the downstream vPCI
+#     stack;
+#   - arm64-debug: with DEBUG and UBSAN, less UBSAN's alignment check, so
+#     that ASSERTs and the checks for undefined behaviour are compiled in;
+#   - arm64-vpci-debug: with both, so that those checks are compiled into
+#     the vPCI stack too.
 #
 # Then it boots the arm64 build, with a busybox dom0, on emulated machines
 # with the platform of each Graviton generation, which describe themselves
@@ -64,6 +68,12 @@ jobs:
             arch: arm64
             config: arm64
             cross: aarch64-linux-gnu-
+            debug: true
+          - name: arm64-vpci-debug
+            arch: arm64
+            config: arm64
+            cross: aarch64-linux-gnu-
+            pci: true
             debug: true
     name: build (${{ matrix.name }})
     # make reads both from the environment.
