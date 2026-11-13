@@ -1,14 +1,16 @@
 # What checks this repo has, and what runs on a PR
 
 Start with the fact that shapes every coverage answer: **a GitHub pull request
-boots only arm64 builds, the shipped one and a debug one, only on emulated
-machines, and only as far as a busybox dom0.** A pull request is compiled, unit
-tested, and booted that far:
+boots the arm64 builds, the shipped one and a debug one, only on emulated
+machines and only as far as a busybox dom0, and boots the x86_64 build only
+with an XTF test as dom0.** A pull request is compiled, unit tested, and booted
+that far:
 
 - `.github/workflows/build.yml` compiles the hypervisor in the configurations
   Edera ships: x86_64, arm64, and arm64 with PCI passthrough. It also compiles
   arm64 with DEBUG and UBSAN. Then it boots the two arm64 builds; see "Boot
-  tests" below.
+  tests" below. It also boots the x86_64 build with each XTF test in
+  `.github/xtf/tests`; see "XTF tests" below.
 - `.github/workflows/unit-tests.yml` runs the host unit tests in `tools/tests`;
   see "Unit tests" below.
 - `.github/workflows/qa-dispatch.yml` hands the pull request to
@@ -24,7 +26,8 @@ upstream rebase self-test, which runs only when the rebase scripts change.
 
 So a coverage review here is mostly not "which test file covers this". It is
 "what would have to run, and where does it live", except for code that a test
-in `tools/tests` compiles or that the arm64 boot reaches.
+in `tools/tests` compiles, that the arm64 boot reaches, or that an XTF test in
+`.github/xtf/tests` exercises.
 
 ## Unit tests
 
@@ -110,6 +113,26 @@ What the boots do not reach:
 - What only many cores or much memory reach.
 - The GIC redistributor layout and the memory map of Graviton firmware.
 - The arm64 build with PCI passthrough, and x86.
+
+## XTF tests
+
+The `xtf` job in `.github/workflows/build.yml` runs on every pull request and
+every push to an `edera/**` branch. It boots the shipped x86_64 build with
+`.github/xtf/run-x86_64.sh` in a Fedora container, with one XTF test as dom0. QEMU emulates the CPU,
+SVM and nested paging included, so an `hvm64` test runs as a PVH dom0 with
+HAP, and a `pv64` test as a PV dom0. XTF is cloned at the commit the script
+pins. A run fails when the test does not print a successful verdict.
+
+Each directory in `.github/xtf/tests` is a test in XTF's layout. The job's
+matrix names each test and environment that runs; a directory the matrix does
+not name never runs. `gnttab-copy-ops` covers how `GNTTABOP_copy` reads its
+array of operations and writes each status: an array across a page boundary,
+a copy that overwrites a later operation, and, on `hvm64`, a copy that
+rewrites the page table entry mapping the array. Its last `hvm64` case fails
+when Xen does not keep the array's page translated across the operations.
+
+What the tests do not reach: Intel VT-x and EPT, since QEMU emulates SVM, an
+HVM or PVH domU, and anything that needs more than one domain.
 
 ## Build configurations
 

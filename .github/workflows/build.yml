@@ -17,6 +17,8 @@ name: Build
 # with the platform of each Graviton generation, which describe themselves
 # only through UEFI and ACPI, and boots the arm64 debug build on one of them.
 #
+# It also boots the x86_64 build with each XTF test in .github/xtf as dom0.
+#
 # It has no path filter, so it can be made a required check.
 
 on:
@@ -143,7 +145,7 @@ jobs:
           fi
 
       - name: Upload the hypervisor to boot
-        if: matrix.name == 'arm64' || matrix.name == 'arm64-debug'
+        if: matrix.name == 'x86_64' || matrix.name == 'arm64' || matrix.name == 'arm64-debug'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: xen-${{ matrix.name }}
@@ -249,4 +251,67 @@ jobs:
         with:
           name: boot-${{ matrix.build || 'arm64' }}-${{ matrix.machine }}${{ matrix.cases && format('-{0}', matrix.cases) || '' }}
           path: ${{ runner.temp }}/boot/**/serial.log
+          retention-days: 30
+
+  xtf:
+    needs: build
+    # Run even when another configuration fails to build. Without the x86_64
+    # build, downloading it fails instead.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # test names a directory in .github/xtf/tests, and variant the XTF
+        # environment it runs in: hvm64 is a PVH dom0 with HAP, pv64 a PV dom0.
+        include:
+          - test: gnttab-copy-ops
+            variant: hvm64
+          - test: gnttab-copy-ops
+            variant: pv64
+    name: xtf (${{ matrix.test }}, ${{ matrix.variant }})
+    env:
+      TEST: ${{ matrix.test }}
+      VARIANT: ${{ matrix.variant }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download the hypervisor
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: xen-x86_64
+          path: ${{ runner.temp }}/xen
+
+      - name: Run the test
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/xtf"
+          # In Fedora, for its QEMU: the one Ubuntu 24.04 packages hangs an
+          # emulated PVH dom0.
+          docker run --rm -e VARIANT -e TEST \
+            -v "$PWD/.github/xtf:/xtf:ro" \
+            -v "$RUNNER_TEMP/xen/xen:/xen:ro" \
+            -v "$RUNNER_TEMP/xtf:/out" \
+            fedora:42 sh -euc '
+              dnf install -y -q gcc make python3 git-core qemu-system-x86-core
+              bash /xtf/run-x86_64.sh --xen /xen --variant "$VARIANT" \
+                --test "$TEST" --out /out/run'
+
+      - name: Upload the console log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xtf-${{ matrix.test }}-${{ matrix.variant }}
+          path: |
+            ${{ runner.temp }}/xtf/run/serial.log
+            ${{ runner.temp }}/xtf/run/build.log
           retention-days: 30
