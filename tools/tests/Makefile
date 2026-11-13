@@ -17,7 +17,7 @@ SUBDIRS-y += xenstore
 # build only on 64-bit hosts: the DSDT walker's windows need a 64-bit unsigned
 # long.  The DSDT tables are compiled by iasl, which configure requires only on
 # the hosts that build ACPI tables.
-ARM_ACPI_TESTS := iort
+ARM_ACPI_TESTS := iort spcr
 ifneq ($(IASL),)
 ARM_ACPI_TESTS += dsdt
 endif
