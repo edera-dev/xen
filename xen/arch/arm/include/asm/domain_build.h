@@ -20,6 +20,10 @@ int prepare_acpi(struct domain *d, struct kernel_info *kinfo);
 
 int hide_pci_function_from_hwdom(struct domain *d, paddr_t cfg);
 
+struct acpi_table_spcr;
+int acpi_hide_spcr_pci_uart(struct domain *d,
+                            const struct acpi_table_spcr *spcr);
+
 int add_ext_regions(unsigned long s_gfn, unsigned long e_gfn, void *data);
 
 #define ACPI_DOM0_FDT_MIN_SIZE 4096
