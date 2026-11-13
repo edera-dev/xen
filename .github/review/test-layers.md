@@ -96,8 +96,9 @@ every push to an `edera/**` branch. It boots the shipped arm64 build with
 `.github/boot/run-arm64.sh` on QEMU's virt machine, which describes itself
 only through UEFI and ACPI, with GICv3, an ITS and an SMMUv3. dom0 is the
 arm64 host kernel that protect ships, with a busybox init. A boot fails on a
-crash or a warning from Xen or dom0, when dom0 gets no IORT from Xen, and when
-dom0 does not run init to the end.
+crash or on a `WARN()` in Xen or dom0, when dom0 gets no IORT from Xen, and
+when dom0 does not run init to the end. A warning that is only a log message
+does not fail it.
 
 The job also boots the debug build on the graviton4 machine, where a failed
 ASSERT or a report from UBSAN fails the boot. That build leaves out UBSAN's
@@ -123,7 +124,9 @@ its cases in turn; a directory the matrix does not name never runs.
 `dom0-mem-default` covers the size arm64 Xen gives dom0 when `dom0_mem` is not
 set. `pci-passthrough` covers the host bridge that Xen registers from the
 MCFG and the windows it reads for it, and Xen accepting each PCI device that
-dom0 reports.
+dom0 reports. `pci-scan` covers Xen ignoring that option when it boots with
+ACPI. Only the builds with PCI passthrough compile the option, so its cases
+boot the debug one.
 
 What the boots do not reach:
 
@@ -139,6 +142,8 @@ What the boots do not reach:
   SMMUv3 offers only stage-1 translation unless told otherwise.
 - A guest with a PCI device passed through: the builds with PCI passthrough
   boot only dom0.
+- Xen's own PCI scan and the host bridge it emulates for dom0 (`pci-scan`),
+  which only a boot with a device tree runs.
 - x86.
 
 ## XTF tests
