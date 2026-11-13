@@ -3191,17 +3191,54 @@ static long gnttab_copy(
     struct gnttab_copy op;
     struct gnttab_copy_buf src = {};
     struct gnttab_copy_buf dest = {};
+    struct gnttab_ops_pin pin;
+    /* The caller's page of ops that is pinned, and the one that cannot be. */
+    unsigned long pinned = ~0UL, unpinnable = ~0UL;
+    void *ops = NULL;
     long rc = 0;
 
     for ( i = 0; i < count; i++ )
     {
+        unsigned long addr = (unsigned long)uop.p;
+        unsigned int off = addr & ~PAGE_MASK;
+        bool fast;
+
         if ( i && hypercall_preempt_check() )
         {
             rc = count - i;
             break;
         }
 
-        if ( unlikely(__copy_from_guest(&op, uop, 1)) )
+        if ( ops && (addr & PAGE_MASK) != pinned )
+        {
+            gnttab_ops_unpin(&pin);
+            ops = NULL;
+        }
+
+        fast = off + sizeof(op) <= PAGE_SIZE;
+
+        /*
+         * A translated caller pays a software page walk for every guest
+         * access, so the translation of a page of ops is kept across them.
+         */
+        if ( fast && !ops && (addr & PAGE_MASK) != unpinnable )
+        {
+            ops = gnttab_ops_pin(&pin, addr & PAGE_MASK);
+            if ( ops )
+                pinned = addr & PAGE_MASK;
+            else
+                unpinnable = addr & PAGE_MASK;
+        }
+
+        fast = fast && ops;
+
+        if ( fast )
+        {
+            /* A mispredicted bound must not read past the pinned page. */
+            off = array_index_nospec(off, PAGE_SIZE - sizeof(op) + 1);
+            memcpy(&op, ops + off, sizeof(op));
+        }
+        else if ( unlikely(__copy_from_guest(&op, uop, 1)) )
         {
             rc = -EFAULT;
             break;
@@ -3218,16 +3255,29 @@ static long gnttab_copy(
             gnttab_copy_release_buf(&src);
             gnttab_copy_release_buf(&dest);
         }
+        else if ( ops && op.len && gnttab_ops_pin_stale(&pin, dest.mfn) )
+        {
+            /* The copy wrote to a page table the pin was translated through. */
+            gnttab_ops_unpin(&pin);
+            ops = NULL;
+            fast = false;
+        }
 
         op.status = rc;
         rc = 0;
-        if ( unlikely(__copy_field_to_guest(uop, &op, status)) )
+        if ( fast )
+            memcpy(ops + off + offsetof(struct gnttab_copy, status),
+                   &op.status, sizeof(op.status));
+        else if ( unlikely(__copy_field_to_guest(uop, &op, status)) )
         {
             rc = -EFAULT;
             break;
         }
         guest_handle_add_offset(uop, 1);
     }
+
+    if ( ops )
+        gnttab_ops_unpin(&pin);
 
     gnttab_copy_release_buf(&src);
     gnttab_copy_release_buf(&dest);
