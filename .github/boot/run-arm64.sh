@@ -10,11 +10,13 @@
 # aarch64 busybox. --machine names a file in machines/, the platform to
 # imitate, by default graviton4. --case names a file in cases/, such as
 # dom0-mem-default/floor: a Xen option and the outcome it must have. The
-# console log is DIR/serial.log.
+# console log is DIR/serial.log. QEMU names the emulator, by default the
+# qemu-system-aarch64 on PATH.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 FIRMWARE=${FIRMWARE:-/usr/share/AAVMF}
+QEMU=${QEMU:-qemu-system-aarch64}
 TIMEOUT=${TIMEOUT:-300}
 
 usage() {
@@ -54,6 +56,14 @@ xen_options='console=dtuart acpi=force dom0_mem=1G smp=on dom0_vcpus_pin=on spec
 expect=()
 # A case may also define check(), which reads the console log named by its
 # argument and prints one line for each thing wrong with it.
+# It may add machine options, each with its leading comma, and devices.
+# Xen's console is the UART that the SPCR names: the PL011, unless a
+# case sets console_uart to the -device options of a PCI 16550, which needs
+# the QEMU that qemu/build.sh builds. The PL011 then keeps only the
+# firmware's output, in DIR/firmware.log.
+machine_options=''
+devices=()
+console_uart=''
 
 # shellcheck source=/dev/null
 . "$HERE/machines/$machine.sh"
@@ -113,17 +123,28 @@ fi
 # firmware gives the operating system no device tree, so Xen finds the machine
 # through ACPI alone. With an SMMUv3 between the PCI root complex and the ITS,
 # Xen rewrites the IORT it gives dom0, as it does on Graviton hardware. A dom0
-# panic reboots, which -no-reboot turns into an exit.
+# panic reboots, which -no-reboot turns into an exit. The console log is the
+# output of the UART that the SPCR names.
+console=(-serial stdio)
+if [ -n "$console_uart" ]; then
+    machine_options+=,x-spcr-pci=console
+    console=(
+        -serial "file:$out/firmware.log"
+        -chardev 'stdio,id=console'
+        -device "$console_uart,id=console,chardev=console"
+    )
+fi
 echo "Booting $machine${case:+, case $case}"
 status=0
-timeout "$TIMEOUT" qemu-system-aarch64 \
-    -machine virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3 \
+timeout "$TIMEOUT" "$QEMU" \
+    -machine "virt,virtualization=on,gic-version=3,its=on,iommu=smmuv3$machine_options" \
     -cpu "$cpu" -smp "$cpus,sockets=$sockets,cores=$cores,threads=1" \
     -m "${memory_mib}M" "${numa[@]}" \
-    -nodefaults -display none -serial stdio -no-reboot \
+    -nodefaults -display none -no-reboot \
     -drive if=pflash,format=raw,readonly=on,file="$FIRMWARE/AAVMF_CODE.fd" \
     -drive if=pflash,format=raw,file="$out/vars.fd" \
     -drive if=virtio,format=raw,readonly=on,file="fat:$out/esp" \
+    "${devices[@]}" "${console[@]}" \
     </dev/null 2>&1 | sed -u 's/\r$//' | tee "$out/serial.log" || status=$?
 
 # Lines that mean Xen or dom0 went wrong, whatever else the boot did. The Xen
@@ -156,10 +177,16 @@ if [ "$status" -eq 124 ]; then
 elif [ "$status" -ne 0 ]; then
     fail "qemu exited with status $status"
 fi
+# With a PCI console, what runs before Xen's console starts, the firmware and
+# Xen's EFI loader, writes to firmware.log instead.
+logs=("$out/serial.log")
+if [ -f "$out/firmware.log" ]; then
+    logs+=("$out/firmware.log")
+fi
 for pattern in "${faults[@]}"; do
     while read -r line; do
         fail "$line"
-    done < <(grep -E -- "$pattern" "$out/serial.log")
+    done < <(grep -h -E -- "$pattern" "${logs[@]}")
 done
 for pattern in "${expect[@]}"; do
     grep -q -E -- "$pattern" "$out/serial.log" ||
@@ -178,5 +205,8 @@ grep -q 'Hardware Dom0 halted' "$out/serial.log" ||
 
 if [ "$failed" -eq 0 ]; then
     echo PASS
+elif [ -f "$out/firmware.log" ]; then
+    echo "The end of firmware.log:"
+    sed 's/\x1b\[[0-9;]*[A-Za-z]//g; s/\r$//' "$out/firmware.log" | tail -n 20
 fi
 exit "$failed"
