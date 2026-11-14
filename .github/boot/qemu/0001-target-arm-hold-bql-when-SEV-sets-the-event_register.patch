@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Alex=20Benn=C3=A9e?= <alex.bennee@linaro.org>
+Date: Fri, 30 Oct 2026 14:10:43 +0000
+Subject: [PATCH] target/arm: hold bql when SEV sets the event_register
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+There is a race in qemu_process_cpu_events and sleeping on halt_cond
+where we can miss the setting of the event_register which would cause
+arm_cpu_has_work to report we shouldn't sleep. As by definition the
+bql has to be held when we go to sleep against halt_cond guard the
+kicking of the cpus by the SEV helper with the BQL to ensure things
+are properly serialised.
+
+The other places that set event_register are fine as they are either
+in the same vCPU context or are already serialised by the BQL.
+
+Also use qemu_cond_wait_bql like the other halt_cond users.
+
+Resolves: https://gitlab.com/qemu-project/qemu/-/work_items/4660
+Resolves: https://gitlab.com/qemu-project/qemu/-/work_items/4670
+Cc: qemu-stable@nongnu.org
+Fixes: d238858bff60 ("target/arm: Implement WFE, SEV and SEVONPEND for Cortex-M")
+Reviewed-by: Richard Henderson <richard.henderson@linaro.org>
+Signed-off-by: Alex Bennée <alex.bennee@linaro.org>
+Tested-by: Lorand Marton <lorandmarton.dev@gmail.com>
+Message-id: 20261030141046.2710206-2-alex.bennee@linaro.org
+Message-ID: <20261029161310.2065290-4-alex.bennee@linaro.org>
+Signed-off-by: Alex Bennée <alex.bennee@linaro.org>
+Signed-off-by: Peter Maydell <peter.maydell@linaro.org>
+(cherry picked from commit 8def1f30d5d4429abe163173debd06f160198350)
+Signed-off-by: Alexander M. Merritt <alexander@edera.dev>
+---
+ system/cpus.c              | 2 +-
+ target/arm/tcg/op_helper.c | 5 ++++-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/system/cpus.c b/system/cpus.c
+index 97e5a5edee..04005ae559 100644
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -471,7 +471,7 @@ void qemu_process_cpu_events(CPUState *cpu)
+             slept = true;
+             qemu_plugin_vcpu_idle_cb(cpu);
+         }
+-        qemu_cond_wait(cpu->halt_cond, &bql);
++        qemu_cond_wait_bql(cpu->halt_cond);
+     }
+     if (slept) {
+         qemu_plugin_vcpu_resume_cb(cpu);
+diff --git a/target/arm/tcg/op_helper.c b/target/arm/tcg/op_helper.c
+index 56d7983620..38ba515bef 100644
+--- a/target/arm/tcg/op_helper.c
++++ b/target/arm/tcg/op_helper.c
+@@ -475,7 +475,10 @@ void HELPER(wfit)(CPUARMState *env, uint32_t rd)
+ 
+ void HELPER(sev)(CPUARMState *env)
+ {
+-    CPUState *cs = env_cpu(env);
++    CPUState *cs;
++
++    BQL_LOCK_GUARD();
++
+     CPU_FOREACH(cs) {
+         ARMCPU *target_cpu = ARM_CPU(cs);
+         target_cpu->env.event_register = true;

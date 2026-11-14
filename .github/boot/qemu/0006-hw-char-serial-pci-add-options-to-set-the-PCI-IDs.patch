@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Alexander M. Merritt" <alexander@edera.dev>
+Date: Mon, 16 Nov 2026 11:10:33 -0500
+Subject: [PATCH] hw/char/serial-pci: add options to set the PCI IDs
+
+Linux's 8250_pci claims Graviton's console by its IDs, 1d0f:8250,
+and reads BAR 0 whatever its type. It claims pci-serial only through
+its guess for a UART of the communication class, which needs an I/O
+BAR, so it leaves a pci-serial with a memory BAR alone, and nothing
+in the guest touches the UART as it would on Graviton.
+
+Let the user give the device other IDs.
+
+Signed-off-by: Alexander M. Merritt <alexander@edera.dev>
+---
+ docs/specs/pci-serial.rst | 2 +-
+ hw/char/serial-pci.c      | 8 ++++++++
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/docs/specs/pci-serial.rst b/docs/specs/pci-serial.rst
+index f0bb70c905..6163f68a43 100644
+--- a/docs/specs/pci-serial.rst
++++ b/docs/specs/pci-serial.rst
+@@ -16,7 +16,7 @@ Single-port card
+ Name:
+   ``pci-serial``
+ PCI ID:
+-  1b36:0002
++  1b36:0002, or the IDs that ``x-vendor-id`` and ``x-device-id`` give
+ PCI Region 0:
+    IO bar, 8 bytes long, with the 16550 UART mapped to it. With
+    ``x-memory-bar=on``, a memory bar of 4 KiB instead, with the UART at
+diff --git a/hw/char/serial-pci.c b/hw/char/serial-pci.c
+index 0f7f07934f..90018f2226 100644
+--- a/hw/char/serial-pci.c
++++ b/hw/char/serial-pci.c
+@@ -40,6 +40,8 @@ struct PCISerialState {
+     SerialState state;
+     bool memory_bar;
+     MemoryRegion bar;
++    uint16_t vendor_id;
++    uint16_t device_id;
+ };
+ 
+ /* A memory BAR is one page, with the UART's registers at its start. */
+@@ -74,6 +76,8 @@ static void serial_pci_realize(PCIDevice *dev, Error **errp)
+         return;
+     }
+ 
++    pci_set_word(pci->dev.config + PCI_VENDOR_ID, pci->vendor_id);
++    pci_set_word(pci->dev.config + PCI_DEVICE_ID, pci->device_id);
+     pci->dev.config[PCI_CLASS_PROG] = 2; /* 16550 compatible */
+     pci->dev.config[PCI_INTERRUPT_PIN] = 1;
+     s->irq = pci_allocate_irq(&pci->dev);
+@@ -112,6 +116,10 @@ static const VMStateDescription vmstate_pci_serial = {
+ 
+ static const Property serial_pci_properties[] = {
+     DEFINE_PROP_BOOL("x-memory-bar", PCISerialState, memory_bar, false),
++    DEFINE_PROP_UINT16("x-vendor-id", PCISerialState, vendor_id,
++                       PCI_VENDOR_ID_REDHAT),
++    DEFINE_PROP_UINT16("x-device-id", PCISerialState, device_id,
++                       PCI_DEVICE_ID_REDHAT_SERIAL),
+ };
+ 
+ static void serial_pci_class_initfn(ObjectClass *klass, const void *data)

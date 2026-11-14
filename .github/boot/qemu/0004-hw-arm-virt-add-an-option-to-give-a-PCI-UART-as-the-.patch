@@ -1,0 +1,188 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Alexander M. Merritt" <alexander@edera.dev>
+Date: Fri, 13 Nov 2026 17:23:34 -0500
+Subject: [PATCH] hw/arm/virt: add an option to give a PCI UART as the SPCR
+ console
+
+Graviton's console is a PCI 16550 behind a PCI Express port, and its
+SPCR names that function. Xen hides the function from dom0 and makes
+the port read-only, and nothing but a boot on Graviton exercises that
+code, because the virt SPCR always gives the PL011.
+
+Let the user name a PCI 16550 by its id, and give it in the SPCR:
+its address, its interrupt, its IDs and where it sits on the bus.
+QEMU rebuilds the tables when the firmware reads them, after the
+firmware has assigned the BAR, so the address is the one the OS
+finds.
+
+Graviton's firmware drives that UART, so its decoding is on when the
+OS starts. AAVMF has no driver for it, and after it reads the tables
+it turns decoding off again on every device that no driver claims.
+Wire the UART's decoding on instead, as if a driver had turned it on
+and nothing had turned it off since.
+
+Signed-off-by: Alexander M. Merritt <alexander@edera.dev>
+---
+ hw/arm/virt-acpi-build.c | 79 ++++++++++++++++++++++++++++++++++++++++
+ hw/arm/virt.c            | 24 ++++++++++++
+ include/hw/arm/virt.h    |  1 +
+ 3 files changed, 104 insertions(+)
+
+diff --git a/hw/arm/virt-acpi-build.c b/hw/arm/virt-acpi-build.c
+index f6386088b6..4d4d05532f 100644
+--- a/hw/arm/virt-acpi-build.c
++++ b/hw/arm/virt-acpi-build.c
+@@ -757,6 +757,80 @@ build_iort(GArray *table_data, BIOSLinker *linker, VirtMachineState *vms)
+     g_array_free(smmuv3_devs, true);
+ }
+ 
++static PCIDevice *spcr_pci_device(const char *id)
++{
++    DeviceState *dev = qdev_find_recursive(sysbus_get_default(), id);
++    Object *pci = dev ? object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)
++                      : NULL;
++
++    if (!pci) {
++        error_report("x-spcr-pci: no PCI device has the id '%s'", id);
++        exit(1);
++    }
++
++    return PCI_DEVICE(pci);
++}
++
++/*
++ * Give @dev, a PCI 16550, as the console.  Firmware that uses a PCI UART as
++ * its console has assigned the UART's BAR and turned its decoding on by the
++ * time it installs these tables, so the OS finds the UART working.  AAVMF
++ * assigns the BAR, but has no driver for the UART, and after reading these
++ * tables it turns decoding off again on each device that no driver claims.
++ * So wire the UART's decoding on, as if a driver had turned it on and
++ * nothing had turned it off since.
++ */
++static void spcr_setup_pci_uart(VirtMachineState *vms, PCIDevice *dev,
++                                AcpiSpcrData *serial)
++{
++    uint32_t bar = pci_get_long(dev->config + PCI_BASE_ADDRESS_0);
++    uint16_t cmd = pci_get_word(dev->config + PCI_COMMAND);
++    uint8_t pin = pci_get_byte(dev->config + PCI_INTERRUPT_PIN);
++    uint16_t decode;
++    hwaddr addr;
++
++    if (bar & PCI_BASE_ADDRESS_SPACE_IO) {
++        /* The CPU reaches PCI I/O space through a window of MMIO. */
++        addr = vms->memmap[VIRT_PCIE_PIO].base +
++               (bar & PCI_BASE_ADDRESS_IO_MASK);
++        decode = PCI_COMMAND_IO;
++    } else {
++        /* The MMIO windows give PCI memory addresses one to one. */
++        addr = bar & PCI_BASE_ADDRESS_MEM_MASK;
++        if (bar & PCI_BASE_ADDRESS_MEM_TYPE_64) {
++            addr |= (hwaddr)pci_get_long(dev->config + PCI_BASE_ADDRESS_1)
++                    << 32;
++        }
++        decode = PCI_COMMAND_MEMORY;
++    }
++    pci_host_config_write_common(dev, PCI_COMMAND, pci_config_size(dev),
++                                 cmd | decode, 2);
++    pci_word_test_and_clear_mask(dev->wmask + PCI_COMMAND, decode);
++
++    serial->interface_type = 0;    /* 16550 compatible */
++    serial->base_addr.width = 8;
++    serial->base_addr.size = 1;    /* Byte access */
++    serial->base_addr.addr = addr;
++    serial->baud_rate = 7;         /* 115200 */
++    serial->flow_control = 0;
++    serial->pci_vendor_id = pci_get_word(dev->config + PCI_VENDOR_ID);
++    serial->pci_device_id = pci_get_word(dev->config + PCI_DEVICE_ID);
++    serial->pci_bus = pci_dev_bus_num(dev);
++    serial->pci_device = PCI_SLOT(dev->devfn);
++    serial->pci_function = PCI_FUNC(dev->devfn);
++
++    serial->interrupt_type = 0;
++    serial->interrupt = 0;
++    if (pin) {
++        PCIINTxRoute route = pci_device_route_intx_to_irq(dev, pin - 1);
++
++        if (route.mode == PCI_INTX_ENABLED) {
++            serial->interrupt_type = 1 << 3;    /* ARMH GIC interrupt */
++            serial->interrupt = route.irq + ARM_SPI_BASE;
++        }
++    }
++}
++
+ /*
+  * Serial Port Console Redirection Table (SPCR)
+  * Rev: 1.07
+@@ -788,6 +862,11 @@ spcr_setup(GArray *table_data, BIOSLinker *linker, VirtMachineState *vms)
+         .pci_flags = 0,
+         .pci_segment = 0,
+     };
++
++    if (vms->spcr_pci) {
++        spcr_setup_pci_uart(vms, spcr_pci_device(vms->spcr_pci), &serial);
++    }
++
+     /*
+      * Passing NULL as the SPCR Table for Revision 2 doesn't support
+      * NameSpaceString.
+diff --git a/hw/arm/virt.c b/hw/arm/virt.c
+index 5a303753e0..9461cafbfe 100644
+--- a/hw/arm/virt.c
++++ b/hw/arm/virt.c
+@@ -3533,6 +3533,21 @@ static void virt_set_pci_preserve_config(Object *obj, bool value,
+     vms->pci_preserve_config = value;
+ }
+ 
++static char *virt_get_spcr_pci(Object *obj, Error **errp)
++{
++    VirtMachineState *vms = VIRT_MACHINE(obj);
++
++    return g_strdup(vms->spcr_pci);
++}
++
++static void virt_set_spcr_pci(Object *obj, const char *value, Error **errp)
++{
++    VirtMachineState *vms = VIRT_MACHINE(obj);
++
++    g_free(vms->spcr_pci);
++    vms->spcr_pci = g_strdup(value);
++}
++
+ static char *virt_get_oem_id(Object *obj, Error **errp)
+ {
+     VirtMachineState *vms = VIRT_MACHINE(obj);
+@@ -4354,6 +4369,14 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
+                                           "PCI configuration that the "
+                                           "firmware made at boot");
+ 
++    object_class_property_add_str(oc, "x-spcr-pci",
++                                  virt_get_spcr_pci,
++                                  virt_set_spcr_pci);
++    object_class_property_set_description(oc, "x-spcr-pci",
++                                          "Name, by its id, the PCI 16550 "
++                                          "that the SPCR gives as the console, "
++                                          "in place of the PL011");
++
+     object_class_property_add_str(oc, "x-oem-id",
+                                   virt_get_oem_id,
+                                   virt_set_oem_id);
+@@ -4440,6 +4463,7 @@ static void virt_instance_finalize(Object *obj)
+     }
+     g_free(vms->oem_id);
+     g_free(vms->oem_table_id);
++    g_free(vms->spcr_pci);
+     g_ptr_array_free(vms->smmuv3_devices, TRUE);
+ }
+ 
+diff --git a/include/hw/arm/virt.h b/include/hw/arm/virt.h
+index 22e66d1a11..8090b44a88 100644
+--- a/include/hw/arm/virt.h
++++ b/include/hw/arm/virt.h
+@@ -204,6 +204,7 @@ struct VirtMachineState {
+     PCIBus *bus;
+     char *oem_id;
+     char *oem_table_id;
++    char *spcr_pci;
+     bool ns_el2_virt_timer_irq;
+     CXLState cxl_devices_state;
+     bool legacy_smmuv3_present;

@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Alexander M. Merritt" <alexander@edera.dev>
+Date: Fri, 13 Nov 2026 17:16:08 -0500
+Subject: [PATCH] configs/devices: add the devices that Edera's Xen boot tests
+ use
+
+Xen's CI boots Xen on the virt machine with only a few devices
+beside those the machine selects. A build of just those devices is
+short enough to run in the CI job that boots it, so the job needs no
+prebuilt QEMU.
+
+Signed-off-by: Alexander M. Merritt <alexander@edera.dev>
+---
+ configs/devices/aarch64-softmmu/xen-boot.mak | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+ create mode 100644 configs/devices/aarch64-softmmu/xen-boot.mak
+
+diff --git a/configs/devices/aarch64-softmmu/xen-boot.mak b/configs/devices/aarch64-softmmu/xen-boot.mak
+new file mode 100644
+index 0000000000..3f5a76ab4c
+--- /dev/null
++++ b/configs/devices/aarch64-softmmu/xen-boot.mak
+@@ -0,0 +1,14 @@
++# The devices that Edera's Xen boot tests use, beside those the virt machine
++# selects itself. Configure with:
++#
++#   --without-default-devices --with-devices-aarch64=xen-boot
++
++CONFIG_ARM_VIRT=y
++
++# The ESP that the firmware boots Xen from.
++CONFIG_VIRTIO_PCI=y
++CONFIG_VIRTIO_BLK=y
++
++# A console UART behind a PCI Express port, as on Graviton.
++CONFIG_PCIE_PORT=y
++CONFIG_SERIAL_PCI=y
