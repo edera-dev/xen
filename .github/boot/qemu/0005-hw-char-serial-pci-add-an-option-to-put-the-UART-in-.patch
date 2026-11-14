@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Alexander M. Merritt" <alexander@edera.dev>
+Date: Mon, 16 Nov 2026 11:06:11 -0500
+Subject: [PATCH] hw/char/serial-pci: add an option to put the UART in a memory
+ BAR
+
+Graviton's console is a PCI 16550 whose registers sit in a memory
+BAR, and the OS reaches them with MMIO. pci-serial has only an I/O
+BAR, which an arm64 guest reaches through the PCI I/O window instead,
+and which the firmware may place at port 0, where Linux's serial core
+sees no port at all and never probes the UART.
+
+Let the user ask for a memory BAR of one page instead, with the UART
+at its start and the rest of the page reading as zero.
+
+Signed-off-by: Alexander M. Merritt <alexander@edera.dev>
+---
+ docs/specs/pci-serial.rst |  4 +++-
+ hw/char/serial-pci.c      | 37 ++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/docs/specs/pci-serial.rst b/docs/specs/pci-serial.rst
+index 8d916a3669..f0bb70c905 100644
+--- a/docs/specs/pci-serial.rst
++++ b/docs/specs/pci-serial.rst
+@@ -18,7 +18,9 @@ Name:
+ PCI ID:
+   1b36:0002
+ PCI Region 0:
+-   IO bar, 8 bytes long, with the 16550 UART mapped to it.
++   IO bar, 8 bytes long, with the 16550 UART mapped to it. With
++   ``x-memory-bar=on``, a memory bar of 4 KiB instead, with the UART at
++   its start and the rest reading as zero.
+ Interrupt:
+    Wired to pin A.
+ 
+diff --git a/hw/char/serial-pci.c b/hw/char/serial-pci.c
+index d8cacc9085..0f7f07934f 100644
+--- a/hw/char/serial-pci.c
++++ b/hw/char/serial-pci.c
+@@ -38,11 +38,33 @@
+ struct PCISerialState {
+     PCIDevice dev;
+     SerialState state;
++    bool memory_bar;
++    MemoryRegion bar;
+ };
+ 
++/* A memory BAR is one page, with the UART's registers at its start. */
++#define SERIAL_PCI_MEMORY_BAR_SIZE 0x1000
++
+ #define TYPE_PCI_SERIAL "pci-serial"
+ OBJECT_DECLARE_SIMPLE_TYPE(PCISerialState, PCI_SERIAL)
+ 
++/* The rest of a memory BAR reads as zero and ignores writes. */
++static uint64_t serial_pci_bar_read(void *opaque, hwaddr addr, unsigned size)
++{
++    return 0;
++}
++
++static void serial_pci_bar_write(void *opaque, hwaddr addr, uint64_t val,
++                                 unsigned size)
++{
++}
++
++static const MemoryRegionOps serial_pci_bar_ops = {
++    .read = serial_pci_bar_read,
++    .write = serial_pci_bar_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++};
++
+ static void serial_pci_realize(PCIDevice *dev, Error **errp)
+ {
+     PCISerialState *pci = DO_UPCAST(PCISerialState, dev, dev);
+@@ -57,7 +79,15 @@ static void serial_pci_realize(PCIDevice *dev, Error **errp)
+     s->irq = pci_allocate_irq(&pci->dev);
+ 
+     memory_region_init_io(&s->io, OBJECT(pci), &serial_io_ops, s, "serial", 8);
+-    pci_register_bar(&pci->dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
++    if (pci->memory_bar) {
++        memory_region_init_io(&pci->bar, OBJECT(pci), &serial_pci_bar_ops,
++                              pci, "serial-bar", SERIAL_PCI_MEMORY_BAR_SIZE);
++        memory_region_add_subregion(&pci->bar, 0, &s->io);
++        pci_register_bar(&pci->dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY,
++                         &pci->bar);
++    } else {
++        pci_register_bar(&pci->dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
++    }
+ }
+ 
+ static void serial_pci_exit(PCIDevice *dev)
+@@ -80,6 +110,10 @@ static const VMStateDescription vmstate_pci_serial = {
+     }
+ };
+ 
++static const Property serial_pci_properties[] = {
++    DEFINE_PROP_BOOL("x-memory-bar", PCISerialState, memory_bar, false),
++};
++
+ static void serial_pci_class_initfn(ObjectClass *klass, const void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+@@ -91,6 +125,7 @@ static void serial_pci_class_initfn(ObjectClass *klass, const void *data)
+     pc->revision = 1;
+     pc->class_id = PCI_CLASS_COMMUNICATION_SERIAL;
+     dc->vmsd = &vmstate_pci_serial;
++    device_class_set_props(dc, serial_pci_properties);
+     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
+ }
+ 
