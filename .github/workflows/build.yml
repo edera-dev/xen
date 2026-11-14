@@ -20,6 +20,9 @@ name: Build
 # Then it boots the arm64 build, with a busybox dom0, on emulated machines
 # with the platform of each Graviton generation, which describe themselves
 # only through UEFI and ACPI. It boots the two debug builds on one of them.
+# It boots the arm64 build and the two debug builds once more with Xen's
+# console on a PCI UART, as on Graviton, which needs a QEMU built with the
+# patches in .github/boot/qemu.
 #
 # It also boots the x86_64 build with each XTF test in .github/xtf as dom0.
 #
@@ -180,7 +183,9 @@ jobs:
       matrix:
         # machine names a file in .github/boot/machines, and cases a
         # directory in .github/boot/cases, whose cases the job boots in turn.
-        # build names the build to boot, arm64 unless it is given.
+        # build names the build to boot, arm64 unless it is given. qemu:
+        # patched boots with the QEMU that .github/boot/qemu builds, for the
+        # cases that use the machine options its patches add.
         include:
           - machine: graviton3
           - machine: graviton4
@@ -195,6 +200,17 @@ jobs:
           - machine: graviton4
             cases: pci-scan
             build: arm64-vpci-debug
+          - machine: graviton4
+            cases: spcr-pci-uart
+            qemu: patched
+          - machine: graviton4
+            cases: spcr-pci-uart
+            build: arm64-debug
+            qemu: patched
+          - machine: graviton4
+            cases: spcr-pci-uart
+            build: arm64-vpci-debug
+            qemu: patched
     name: boot (${{ matrix.build || 'arm64' }}, ${{ matrix.machine }}${{ matrix.cases && format(', {0}', matrix.cases) || '' }})
     env:
       # An arm64 host kernel that protect has shipped, pinned so that a boot
@@ -228,6 +244,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             qemu-system-arm qemu-efi-aarch64 busybox-static cpio
+
+      # The QEMU build changes only with .github/boot/qemu, which names the
+      # release and holds the patches. The distro QEMU installed above brings
+      # the libraries that the binary runs with.
+      - name: Restore QEMU with the patches in .github/boot/qemu
+        if: matrix.qemu == 'patched'
+        id: qemu
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/qemu/qemu-system-aarch64
+          key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/boot/qemu/**') }}
+
+      - name: Build QEMU with the patches in .github/boot/qemu
+        if: matrix.qemu == 'patched' && steps.qemu.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends build-essential \
+            ninja-build pkg-config python3-venv python3-setuptools \
+            python3-wheel libglib2.0-dev libfdt-dev flex bison
+          bash .github/boot/qemu/build.sh "$RUNNER_TEMP/qemu"
+
+      - name: Use QEMU with the patches in .github/boot/qemu
+        if: matrix.qemu == 'patched'
+        run: echo "QEMU=$RUNNER_TEMP/qemu/qemu-system-aarch64" >>"$GITHUB_ENV"
 
       - name: Fetch the dom0 kernel
         run: |
@@ -268,7 +308,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: boot-${{ matrix.build || 'arm64' }}-${{ matrix.machine }}${{ matrix.cases && format('-{0}', matrix.cases) || '' }}
-          path: ${{ runner.temp }}/boot/**/serial.log
+          # firmware.log exists only when Xen's console is a PCI UART.
+          path: |
+            ${{ runner.temp }}/boot/**/serial.log
+            ${{ runner.temp }}/boot/**/firmware.log
           retention-days: 30
 
   xtf:
