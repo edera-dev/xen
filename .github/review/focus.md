@@ -156,6 +156,6 @@ One gap, and it can follow the merge.
 
 **Nothing boots the platform this change affects.**
 
-A hypervisor that breaks the new PCI UART path would reach a release without anything having run it: the machines in `.github/boot/machines` give Xen a PL011 console, so the code that hides the SPCR's PCI UART is compiled and never executed.
+A hypervisor that breaks the search for the port above a console behind a PCI switch would reach a release without anything having run it: the `spcr-pci-uart` boot puts the UART directly below a root port, so the search reads one bus, while Graviton's UART is three buses down.
 
-A boot machine whose console is a PCI UART behind a switch, as on Graviton, would exercise it, with a case that checks dom0 cannot see the UART.
+A case with the UART behind a switch, as on Graviton, would exercise it, with the same checks.
