@@ -138,6 +138,16 @@ host bridge from the MCFG, and dom0 reports each PCI device to Xen. The build
 has no SMMUv3 driver, so the IOMMU is off and dom0 gets no vPCI. The release
 build with PCI passthrough is compiled but not booted.
 
+The job also boots the shipped build and the two debug builds on the graviton4
+machine with the `spcr-pci-uart` cases, which give Xen a PCI UART as its
+console. QEMU's virt machine cannot, so those jobs build QEMU, once for each
+change to `.github/boot/qemu`, from a release with the patches there: the SPCR
+can name a PCI UART, whose decoding stays on, `pci-serial` can have its
+registers in a memory BAR and Graviton's IDs, and the host bridge's `_DSM` can
+ask the OS to keep the firmware's PCI layout, as Graviton's does. One more
+patch backports an upstream fix that no release has yet: without it, two CPUs
+that contend for a Xen spinlock can both sleep in WFE and hang the boot.
+
 Each file in `.github/boot/machines` imitates the platform of a Graviton
 generation: its core, as near as QEMU has one, and its sockets, each a NUMA
 node. Every machine has the same four cores and 2G of memory. A boot checks
@@ -145,24 +155,33 @@ that Xen brings up every core, that dom0 gets them all, and the Spectre-BHB
 sequence that Xen picks for the core.
 
 Each directory in `.github/boot/cases` holds the cases for one Xen option. A
-case changes the Xen command line or the memory, and checks what Xen does with
-it. The boot job's matrix names each directory that runs, and one job boots
-its cases in turn; a directory the matrix does not name never runs.
+case changes the Xen command line, the memory or the emulated machine, may run
+commands in dom0, and checks what Xen does. The boot job's matrix names each
+directory that runs, and one job boots its cases in turn; a directory the
+matrix does not name never runs.
 `dom0-mem-default` covers the size arm64 Xen gives dom0 when `dom0_mem` is not
 set. `pci-passthrough` covers the host bridge that Xen registers from the
 MCFG and the windows it reads for it, and Xen accepting each PCI device that
 dom0 reports. `pci-scan` covers Xen ignoring that option when it boots with
 ACPI. Only the builds with PCI passthrough compile the option, so its cases
-boot the debug one.
+boot the debug one. `spcr-pci-uart` covers Xen hiding its PCI console from
+dom0 behind a read-only port, which drops dom0's writes, with the console's
+register page empty but for the vuart; keeping the console visible when it is
+one of several functions; and hiding it on the root bus, where it has no
+port.
 
 What the boots do not reach:
 
-- Graviton's console, a 16550 behind a PCI switch. QEMU's console is a PL011,
-  so the code that hides the SPCR's PCI UART from dom0 stops early;
-  `tools/tests/spcr` covers its decisions.
-- Graviton's PCI layout: a host bridge on segment 1, described in an SSDT,
-  whose firmware BARs Linux keeps. QEMU's host bridge is on segment 0, in the
-  DSDT.
+- Graviton's console as Graviton wires it: three buses down behind a PCI
+  switch. QEMU's sits directly below a root port, with its decoding wired on,
+  so nothing dom0 does to the UART itself can cut Xen's console off. QEMU's
+  slot stays powered when pciehp takes the port, so the case checks the port's
+  hotplug capability in dom0's log. The boot checks what dom0 reads from the
+  UART's page, not how the handlers there are laid out; `tools/tests/spcr`
+  covers that and the decisions.
+- Graviton's PCI layout: a host bridge on segment 1 (Graviton3) or 3
+  (Graviton4), described in an SSDT, whose firmware BARs Linux keeps. QEMU's
+  host bridge is on segment 0, in the DSDT.
 - What only many cores or much memory reach.
 - The GIC redistributor layout and the memory map of Graviton firmware.
 - vPCI, which needs an IOMMU: no build has the SMMUv3 driver, and QEMU's
