@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Alexander M. Merritt" <alexander@edera.dev>
+Date: Fri, 13 Nov 2026 17:18:09 -0500
+Subject: [PATCH] hw/arm/virt: add an option to keep the firmware's PCI
+ configuration
+
+Without _DSM function 5 on the host bridge, an arm64 Linux assigns
+every BAR and bridge window again. Graviton's firmware provides it,
+so Linux there keeps the firmware's layout, and Xen relies on that:
+it hides its console UART from dom0 and makes the port above it
+read-only, which dom0's new layout would overlap. The virt machine
+already builds that _DSM, but only for an accelerated SMMUv3, which
+needs KVM. Let the user ask for it, so that a boot test under TCG
+sees Graviton's layout.
+
+Signed-off-by: Alexander M. Merritt <alexander@edera.dev>
+---
+ hw/arm/virt.c | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/hw/arm/virt.c b/hw/arm/virt.c
+index 219597cabd..5a303753e0 100644
+--- a/hw/arm/virt.c
++++ b/hw/arm/virt.c
+@@ -3518,6 +3518,21 @@ static void virt_set_dtb_randomness(Object *obj, bool value, Error **errp)
+     vms->dtb_randomness = value;
+ }
+ 
++static bool virt_get_pci_preserve_config(Object *obj, Error **errp)
++{
++    VirtMachineState *vms = VIRT_MACHINE(obj);
++
++    return vms->pci_preserve_config;
++}
++
++static void virt_set_pci_preserve_config(Object *obj, bool value,
++                                         Error **errp)
++{
++    VirtMachineState *vms = VIRT_MACHINE(obj);
++
++    vms->pci_preserve_config = value;
++}
++
+ static char *virt_get_oem_id(Object *obj, Error **errp)
+ {
+     VirtMachineState *vms = VIRT_MACHINE(obj);
+@@ -4331,6 +4346,14 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
+     object_class_property_set_description(oc, "dtb-kaslr-seed",
+                                           "Deprecated synonym of dtb-randomness");
+ 
++    object_class_property_add_bool(oc, "x-pci-preserve-config",
++                                   virt_get_pci_preserve_config,
++                                   virt_set_pci_preserve_config);
++    object_class_property_set_description(oc, "x-pci-preserve-config",
++                                          "Set on to tell the OS to keep the "
++                                          "PCI configuration that the "
++                                          "firmware made at boot");
++
+     object_class_property_add_str(oc, "x-oem-id",
+                                   virt_get_oem_id,
+                                   virt_set_oem_id);
