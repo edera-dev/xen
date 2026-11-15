@@ -10,4 +10,10 @@ mount -t devtmpfs devtmpfs /dev
 
 echo "xenqa: pass boot.dom0_runs_init"
 
+# What the case runs in dom0, if anything. It reports in the same protocol.
+if [ -f /case.sh ]; then
+    # shellcheck source=/dev/null
+    . /case.sh
+fi
+
 poweroff -f
