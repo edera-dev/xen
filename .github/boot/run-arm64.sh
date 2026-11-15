@@ -55,7 +55,9 @@ xen_options='console=dtuart acpi=force dom0_mem=1G smp=on dom0_vcpus_pin=on spec
 # Each is an extended regular expression that some console line must match.
 expect=()
 # A case may also define check(), which reads the console log named by its
-# argument and prints one line for each thing wrong with it.
+# argument and prints one line for each thing wrong with it, and dom0(), which
+# init runs in dom0 once it has reported. dom0() runs in busybox sh, and what
+# it prints reaches the console log.
 # It may add machine options, each with its leading comma, and devices.
 # Xen's console is the UART that the SPCR names: the PL011, unless a
 # case sets console_uart to the -device options of a PCI 16550, which needs
@@ -88,6 +90,9 @@ out=$(cd "$out" && pwd)
     mkdir -p bin sbin usr/bin usr/sbin dev proc sys
     install -m 0755 "$busybox" bin/busybox
     install -m 0755 "$HERE/init" init
+    if declare -F dom0 >/dev/null; then
+        { declare -f dom0; echo dom0; } >case.sh
+    fi
     find . | cpio --quiet -o -H newc -R 0:0 | gzip -9 >"$out/esp/EFI/BOOT/initrd"
 )
 
