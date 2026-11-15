@@ -14,12 +14,60 @@ expect+=(
     '^\(XEN\) SPCR: port 0000:00:02\.0 above console 0000:01:00\.0 is read-only to d0$'
     '^\(XEN\) SPCR: console 0000:01:00\.0 hidden from d0$'
     '^\[ *[0-9.]+\] pci 0000:00:02\.0: \[1b36:000c\] type 01 '
+    '^xenqa: pass spcr\.port_read_only'
 )
 
 # dom0 finds neither the UART nor a hotplug slot in the port above it. QEMU's
 # slot reports the UART present and powered, so a pciehp that took the port
 # would leave it on, and the console would survive: only this check shows
 # that the port hides its hotplug capability.
+#
+# The tools that dom0() runs report their errors on the console. One that
+# failed leaves the probe reading or writing some other register than it says.
 check() {
     grep -E 'pci 0000:01:00\.0|pcieport 0000:00:02\.0: pciehp' "$1"
+    grep -E '^(od|dd|sh): ' "$1"
+}
+
+# dom0 tries to turn off the port's decoding and to power off its slot. Either
+# write, let through, would cut Xen's console off: QEMU then stops routing the
+# UART's registers. Both registers must read back unchanged.
+dom0() {
+    config=/sys/bus/pci/devices/0000:00:02.0/config
+
+    # Slot Control is in the PCI Express capability. od pads the numbers it
+    # prints with spaces, and refuses them as offsets: arithmetic expansion
+    # strips the padding.
+    cap=$(od -An -tu1 -j 52 -N 1 "$config")
+    while [ "$cap" -ne 0 ] &&
+        [ "$(od -An -tu1 -j $((cap)) -N 1 "$config")" -ne 16 ]; do
+        cap=$(od -An -tu1 -j $((cap + 1)) -N 1 "$config")
+    done
+    if [ "$cap" -eq 0 ]; then
+        echo "xenqa: fail spcr.port_read_only: no PCI Express capability"
+        return
+    fi
+    slot_control=$((cap + 24))
+
+    command=$(od -An -tu2 -j 4 -N 2 "$config")
+    slot=$(od -An -tu2 -j "$slot_control" -N 2 "$config")
+
+    # Each a 16-bit write, low byte first.
+    value=$((command & ~7))
+    printf '%b' "$(printf '\\0%03o\\0%03o' $((value & 255)) $((value >> 8)))" |
+        dd of="$config" bs=2 seek=2 conv=notrunc 2>/dev/null
+    value=$((slot | 1024))
+    printf '%b' "$(printf '\\0%03o\\0%03o' $((value & 255)) $((value >> 8)))" |
+        dd of="$config" bs=2 seek=$((slot_control / 2)) conv=notrunc 2>/dev/null
+
+    command_now=$(od -An -tu2 -j 4 -N 2 "$config")
+    slot_now=$(od -An -tu2 -j "$slot_control" -N 2 "$config")
+    printf 'spcr: port command %#x, after the write %#x; ' \
+        $((command)) $((command_now))
+    printf 'slot control %#x, after the write %#x\n' $((slot)) $((slot_now))
+    if [ "$command_now" -eq "$command" ] && [ "$slot_now" -eq "$slot" ]; then
+        echo "xenqa: pass spcr.port_read_only"
+    else
+        echo "xenqa: fail spcr.port_read_only"
+    fi
 }
