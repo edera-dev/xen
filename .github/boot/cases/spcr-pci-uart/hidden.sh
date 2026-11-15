@@ -15,6 +15,8 @@ expect+=(
     '^\(XEN\) SPCR: console 0000:01:00\.0 hidden from d0$'
     '^\[ *[0-9.]+\] pci 0000:00:02\.0: \[1b36:000c\] type 01 '
     '^xenqa: pass spcr\.port_read_only'
+    '^xenqa: pass spcr\.console_page'
+    '^\(XEN\) DOM0: spcr vuart$'
 )
 
 # dom0 finds neither the UART nor a hotplug slot in the port above it. QEMU's
@@ -26,12 +28,17 @@ expect+=(
 # failed leaves the probe reading or writing some other register than it says.
 check() {
     grep -E 'pci 0000:01:00\.0|pcieport 0000:00:02\.0: pciehp' "$1"
-    grep -E '^(od|dd|sh): ' "$1"
+    grep -E '^(od|dd|dmesg|sed|devmem|sh): ' "$1"
 }
 
 # dom0 tries to turn off the port's decoding and to power off its slot. Either
 # write, let through, would cut Xen's console off: QEMU then stops routing the
 # UART's registers. Both registers must read back unchanged.
+#
+# Then dom0 reads the UART's own registers. Xen gives dom0 its vuart on the
+# first, the data register, and empties the rest of the page, so the line
+# status register reads as all ones, as from a missing UART. A line that dom0
+# writes to the data register reaches Xen's console through the vuart.
 dom0() {
     config=/sys/bus/pci/devices/0000:00:02.0/config
 
@@ -70,4 +77,18 @@ dom0() {
     else
         echo "xenqa: fail spcr.port_read_only"
     fi
+
+    uart=$(dmesg | sed -n 's/.*ACPI: SPCR: console: uart,mmio,\(0x[0-9a-f]*\),.*/\1/p')
+    data=$(devmem "$uart" 8)
+    status=$(devmem $((uart + 5)) 8)
+    echo "spcr: console data register $data, line status register $status"
+    if [ "$data" = 0x00 ] && [ "$status" = 0xFF ]; then
+        echo "xenqa: pass spcr.console_page"
+    else
+        echo "xenqa: fail spcr.console_page"
+    fi
+    # "spcr vuart" and a newline.
+    for c in 115 112 99 114 32 118 117 97 114 116 10; do
+        devmem "$uart" 8 "$c"
+    done
 }
