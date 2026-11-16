@@ -46,8 +46,8 @@ A new test directory runs with no change to the workflow. Each test compiles
 one hypervisor source file into a host program with a small harness, so it
 covers the logic of that file, not how the hypervisor uses it.
 
-Four of the tests cover downstream code; the rest are upstream's tests of
-upstream code:
+The tests below cover downstream code, and the rest are upstream's tests of
+upstream code.
 
 - `tools/tests/dsdt` covers the Arm AML walker in `xen/arch/arm/acpi/dsdt.c`,
   `acpi_pci_get_host_bridge_windows()`: finding a host bridge by a string or
@@ -80,6 +80,14 @@ upstream code:
 - `tools/tests/log-q16` covers the fixed-point logarithms in
   `xen/lib/log-q16.c` that `dom0_mem=ln` sizes dom0 with, but not the parsing
   of `dom0_mem` or the sizing curve itself.
+- `tools/tests/pv-iommu` covers `IOMMU_map_pages` in `xen/common/pv-iommu.c`,
+  built as for x86 without PCI and called through `do_iommu_op()`. A map with
+  neither `IOMMU_MAP_readable` nor `IOMMU_MAP_writeable`, or with only
+  `IOMMU_MAP_no_flush` or `IOMMU_MAP_cache`, must be refused with `-EINVAL`
+  before any page reference is taken or any context is held. A read, write or
+  read-write map must write one entry with those permissions and keep one
+  reference. The IOMMU core and the p2m are stand-ins, so it does not reach
+  the VT-d or AMD-Vi drivers, unmap, context teardown, or the Arm path.
 - `tools/tests/spcr` covers `xen/arch/arm/acpi/spcr.c`, which decides whether
   to hide the SPCR's PCI UART, Xen's console, from the hardware domain: each
   reason to keep it visible, the bridge scan that finds the port above it, an
