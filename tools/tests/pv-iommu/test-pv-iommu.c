@@ -32,13 +32,21 @@ static struct {
     unsigned int flags;    /* of the last one */
 } entries;
 
+/* Contexts got with iommu_get_context() and not put back. */
+static unsigned int contexts_held;
+
 struct iommu_context *iommu_get_context(struct domain *d, uint16_t ctx_id)
 {
-    return d == &dom && ctx_id == CTX ? &ctx : NULL;
+    if ( d != &dom || ctx_id != CTX )
+        return NULL;
+
+    contexts_held++;
+    return &ctx;
 }
 
 void iommu_put_context(struct iommu_context *c)
 {
+    contexts_held--;
 }
 
 uint64_t iommu_get_max_iova(struct domain *d)
@@ -204,11 +212,13 @@ static bool refused(uint32_t map_flags)
     struct pv_iommu_map_pages map;
     long rc = map_one(map_flags, &map);
 
-    if ( rc == -EINVAL && !map.mapped && !entries.nr && !references() )
+    if ( rc == -EINVAL && !map.mapped && !entries.nr && !references() &&
+         !contexts_held )
         return true;
 
-    printf("%s: rc %ld, mapped %u, %u entries written, %u references kept\n",
-           test_name, rc, map.mapped, entries.nr, references());
+    printf("%s: rc %ld, mapped %u, %u entries written, %u references kept, "
+           "%u contexts held\n", test_name, rc, map.mapped, entries.nr,
+           references(), contexts_held);
     return false;
 }
 
@@ -218,12 +228,14 @@ static bool mapped(uint32_t map_flags, unsigned int want)
     long rc = map_one(map_flags, &map);
 
     if ( !rc && map.mapped == 1 && entries.nr == 1 && references() == 1 &&
+         !contexts_held && !IOMMUF_order(entries.flags) &&
          (entries.flags & (IOMMUF_readable | IOMMUF_writable)) == want )
         return true;
 
     printf("%s: rc %ld, mapped %u, %u entries written with flags %#x, "
-           "%u references kept\n", test_name, rc, map.mapped, entries.nr,
-           entries.flags, references());
+           "%u references kept, %u contexts held\n", test_name, rc,
+           map.mapped, entries.nr, entries.flags, references(),
+           contexts_held);
     return false;
 }
 
@@ -280,6 +292,7 @@ int main(void)
     {
         memset(frames, 0, sizeof(frames));
         memset(&entries, 0, sizeof(entries));
+        contexts_held = 0;
 
         /* Named first, so that a fault shows which test it was. */
         test_name = tests[i].name;

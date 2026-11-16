@@ -104,8 +104,9 @@ struct iommu_context {
 };
 
 /* As xen/include/xen/iommu.h defines them. */
-#define IOMMUF_readable   (1u << 0)
-#define IOMMUF_writable   (1u << 1)
+#define IOMMUF_order(n)   ((n) & 0x3f)
+#define IOMMUF_readable   (1u << 6)
+#define IOMMUF_writable   (1u << 7)
 #define IOMMUF_no_replace (1u << 9)
 
 #define IOMMU_FLUSHF_added    (1u << 0)
