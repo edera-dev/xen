@@ -8,6 +8,7 @@ SUBDIRS-y += mem-claim
 SUBDIRS-y += numa
 SUBDIRS-y += paging-mempool
 SUBDIRS-y += pdx
+SUBDIRS-y += pv-iommu
 SUBDIRS-y += rangeset
 SUBDIRS-y += resource
 SUBDIRS-y += vpci

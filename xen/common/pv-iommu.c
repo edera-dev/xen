@@ -308,6 +308,14 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
     dfn_t dfn0 = _dfn(map->dfn); /* original map->dfn */
     unsigned long last_dfn;
 
+    /*
+     * VT-d treats an entry with neither permission as not present, so
+     * neither unmap nor the teardown walk would find it to return the page
+     * reference the map takes.
+     */
+    if ( !(map->map_flags & (IOMMU_MAP_readable | IOMMU_MAP_writeable)) )
+        return -EINVAL;
+
     if ( !map->ctx_no || !(ctx = iommu_get_context(d, map->ctx_no)) )
         return -EINVAL;
 
