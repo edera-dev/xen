@@ -8,6 +8,7 @@ SUBDIRS-y += log-q16
 SUBDIRS-y += mem-claim
 SUBDIRS-y += numa
 SUBDIRS-y += paging-mempool
+SUBDIRS-y += pci-sbdf
 SUBDIRS-y += pdx
 SUBDIRS-y += pv-iommu
 SUBDIRS-y += rangeset

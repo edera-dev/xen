@@ -1,0 +1,3 @@
+*.tmp
+/pci-sbdf.h
+/test-pci-sbdf
