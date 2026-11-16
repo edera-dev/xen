@@ -290,7 +290,6 @@ int iommu_domain_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_
     return 0;
 
 cleanup:
-    /* TODO: Reset hd->other_contexts.initialized */
     if ( hd->other_contexts.bitmap )
     {
         xfree(hd->other_contexts.bitmap);
@@ -302,6 +301,14 @@ cleanup:
         xfree(hd->other_contexts.map);
         hd->other_contexts.map = NULL;
     }
+
+    /*
+     * Nothing but this flag serializes IOMMU_init. Clear it only once the
+     * arrays above are freed, or a concurrent retry could have the arrays
+     * it allocates freed here.
+     */
+    smp_mb();
+    atomic_set(&hd->other_contexts.initialized, 0);
 
     return rc;
 }
