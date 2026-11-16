@@ -184,7 +184,9 @@ DEFINE_XEN_GUEST_HANDLE(pv_iommu_free_t);
  * Map pages on a IOMMU context.
  *
  * pgsize must be supported by pgsize_mask.
- * Fails with -EINVAL if mapping on top of another mapping.
+ * map_flags must include IOMMU_MAP_readable or IOMMU_MAP_writeable, or this
+ * fails with -EINVAL.
+ * Fails with -EADDRINUSE if mapping on top of another mapping.
  * Report actually mapped page count in mapped field (regardless of failure).
  */
 struct pv_iommu_map_pages {
