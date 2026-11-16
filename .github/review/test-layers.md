@@ -88,6 +88,12 @@ upstream code.
 - `tools/tests/log-q16` covers the fixed-point logarithms in
   `xen/lib/log-q16.c` that `dom0_mem=ln` sizes dom0 with, but not the parsing
   of `dom0_mem` or the sizing curve itself.
+- `tools/tests/pci-sbdf` covers `PCI_SBDF()` and `pci_sbdf_t`, taken from
+  `xen/include/xen/pci.h` as they are. Each of the macro's three forms must
+  give the same SBDF and fields for segments from 0 to 0xffff, and the test
+  is built to trap on a shift whose result does not fit its type, so a
+  segment that shifts into the sign bit of an `int` fails it. It does not
+  cover the callers, or the places that build an SBDF without the macro.
 - `tools/tests/pv-iommu` covers `IOMMU_map_pages` in `xen/common/pv-iommu.c`,
   built as for x86 without PCI and called through `do_iommu_op()`. A map with
   neither `IOMMU_MAP_readable` nor `IOMMU_MAP_writeable`, or with only
