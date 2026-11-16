@@ -64,7 +64,7 @@ acpi_status acpi_get_table(const char *signature, u32 instance,
 #define PCI_DEVFN1_(df)   ((df) & 0xff)
 #define PCI_DEVFN2_(d, f) ((((d) & 0x1f) << 3) | ((f) & 7))
 #define PCI_SBDF4_(s, b, d, f...) \
-    ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | PCI_BDF(b, d, ##f) })
+    ((pci_sbdf_t){ .sbdf = (((s) & 0xffffU) << 16) | PCI_BDF(b, d, ##f) })
 #define PCI_SBDF3_ PCI_SBDF4_
 
 #define PCI__(what, nr) PCI_##what##nr##_
