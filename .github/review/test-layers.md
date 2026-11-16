@@ -57,6 +57,14 @@ upstream code.
   by iasl, and each ends where an unreadable page begins, so a read past the
   end of a table fails the test. It does not cover a host bridge in an SSDT,
   which the walker does not read, or several host bridges on one segment.
+- `tools/tests/iommu` covers `iommu_domain_pviommu_init()`, which
+  `IOMMU_init` calls, built on its own from
+  `xen/drivers/passthrough/iommu.c`. A refused init, for an arena of order 0,
+  a failed arena, bitmap or context table allocation, or a count of zero,
+  must free what it allocated and let the next init succeed. A second init
+  after a successful one must be refused. The allocator and the arch hook are
+  stand-ins, so it does not cover the arena itself, two inits racing, or the
+  rest of `iommu.c`.
 - `tools/tests/iort` covers the IORT parser in `xen/arch/arm/acpi/iort.c`:
   translating a requester ID through an SMMUv3 to its StreamID and its
   DeviceID, stopping a mapping loop, and the IORT built for the hardware
