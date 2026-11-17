@@ -1,3 +1,4 @@
 *.tmp
-/pviommu-init.c
+/iommu.c
+/list.h
 /test-iommu

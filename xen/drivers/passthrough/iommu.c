@@ -1275,8 +1275,6 @@ int cf_check iommu_context_teardown(struct domain *d, struct iommu_context *ctx,
     if ( !hd->platform_ops->context_teardown )
         return -ENOSYS;
 
-    ctx->dying = true;
-
     /* first reattach devices back to default context if needed */
     if ( flags & IOMMU_TEARDOWN_REATTACH_DEFAULT )
     {
@@ -1305,6 +1303,14 @@ int cf_check iommu_context_teardown(struct domain *d, struct iommu_context *ctx,
 
     if ( !list_empty(&ctx->devices) )
         return -EBUSY; /* there is a device in context */
+
+    /*
+     * Mark the context only once nothing can refuse the free, so that a
+     * refused free leaves it usable. The caller holds the context lock until
+     * this returns, and the mark is what keeps maps and devices out while a
+     * preempted teardown waits to be continued.
+     */
+    ctx->dying = true;
 
     return iommu_call(hd->platform_ops, context_teardown, d, ctx, flags);
 }
