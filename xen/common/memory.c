@@ -1579,6 +1579,29 @@ static int flush_copy_range_errs(
 }
 
 /*
+ * Whether the caller's page of `buffer` at `off` can be copied without the
+ * copy failing part way, which would change the frame a failed write was aimed
+ * at. A copy from guest memory goes a page at a time and fails before it reads
+ * from a page it cannot, except that on x86 a copy for a PV vCPU zero-fills
+ * whatever it did not copy. So a PV caller's first page is tried, and for any
+ * caller the last page when the window spans two. Only the caller unmapping
+ * its own buffer in between can still fault the copy, and it may write this
+ * frame anyway.
+ */
+static bool copy_range_buffer_readable(XEN_GUEST_HANDLE(uint8) buffer,
+                                       unsigned long off)
+{
+    uint8_t byte;
+
+    if ( is_pv_vcpu(current) &&
+         copy_from_guest_offset(&byte, buffer, off, 1) )
+        return false;
+
+    return !(((unsigned long)buffer.p + off) & ~PAGE_MASK) ||
+           !copy_from_guest_offset(&byte, buffer, off + PAGE_SIZE - 1, 1);
+}
+
+/*
  * Copy between the caller's memory and `d`'s physical memory, a page at a time,
  * with the frame mapped in the hypervisor rather than in the caller.
  *
@@ -1731,16 +1754,21 @@ static int domain_copy_range(
 
         if ( !frc )
         {
-            frame = __map_domain_page(page);
-            if ( to_guest )
-                rc = copy_from_guest_offset(frame, xcr.buffer,
-                                            (unsigned long)done << PAGE_SHIFT,
-                                            PAGE_SIZE) ? -EFAULT : 0;
+            unsigned long off = (unsigned long)done << PAGE_SHIFT;
+
+            if ( to_guest && !copy_range_buffer_readable(xcr.buffer, off) )
+                rc = -EFAULT;
             else
-                rc = copy_to_guest_offset(xcr.buffer,
-                                          (unsigned long)done << PAGE_SHIFT,
-                                          frame, PAGE_SIZE) ? -EFAULT : 0;
-            unmap_domain_page(frame);
+            {
+                frame = __map_domain_page(page);
+                if ( to_guest )
+                    rc = copy_from_guest_offset(frame, xcr.buffer, off,
+                                                PAGE_SIZE) ? -EFAULT : 0;
+                else
+                    rc = copy_to_guest_offset(xcr.buffer, off, frame,
+                                              PAGE_SIZE) ? -EFAULT : 0;
+                unmap_domain_page(frame);
+            }
             if ( to_guest )
                 put_page_and_type(page);
             else
