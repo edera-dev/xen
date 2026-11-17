@@ -2,8 +2,9 @@
 /*
  * Unit tests for the PV-IOMMU hypercalls in xen/common/pv-iommu.c, built as
  * for x86 without PCI.  The IOMMU core and the p2m are stand-ins: every frame
- * is RAM the calling domain owns, and the test counts the page references the
- * hypercalls take and the entries they write.
+ * is RAM, owned by the calling domain unless a test frees it or gives it to
+ * another domain, and the test counts the page references the hypercalls take,
+ * the gfns they get and the entries they write.
  */
 
 #ifndef TEST_HARNESS_H
@@ -68,9 +69,13 @@ typedef unsigned int p2m_query_t;
 #define p2m_is_any_ram(t) ((t) == p2m_ram_rw || (t) == p2m_ram_ro)
 #define p2m_is_mmio(t)    ((t) == p2m_mmio_direct)
 
+struct domain;
+
 struct page_info {
     /* References taken and not yet returned. */
-    unsigned int refs;
+    int refs;
+    /* NULL for a free frame, which has no reference to take. */
+    struct domain *owner;
 };
 
 struct domain_iommu {
@@ -140,7 +145,7 @@ void iommu_put_mapped_page(struct page_info *pg);
 
 mfn_t get_gfn_type(struct domain *d, unsigned long gfn, p2m_type_t *t,
                    p2m_query_t q);
-#define put_gfn(d, gfn) ((void)0)
+void put_gfn(struct domain *d, unsigned long gfn);
 bool mfn_valid(mfn_t mfn);
 struct page_info *mfn_to_page(mfn_t mfn);
 struct domain *page_get_owner_and_reference(struct page_info *pg);

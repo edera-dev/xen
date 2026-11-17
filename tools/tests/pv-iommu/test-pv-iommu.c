@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Unit tests for IOMMU_map_pages.  Each case maps one frame of the calling
- * domain into its one context, and checks what the hypercall returned, the
- * IOMMU entries it wrote and the page references it kept.
+ * Unit tests for IOMMU_map_pages.  Each case maps one frame into the calling
+ * domain's one context, and checks what the hypercall returned, the IOMMU
+ * entries it wrote, the page references it kept and that it put back every
+ * gfn it got.
  */
 
 #include "harness.h"
@@ -17,6 +18,7 @@ static struct domain dom = {
     .iommu_enabled = true,
     .iommu = { .other_contexts.count = 1, .allow_pv_iommu = true },
 };
+static struct domain other = { .domain_id = 2 };
 static struct vcpu vcpu = { .domain = &dom };
 struct vcpu *current = &vcpu;
 
@@ -34,6 +36,9 @@ static struct {
 
 /* Contexts got with iommu_get_context() and not put back. */
 static unsigned int contexts_held;
+
+/* Gfns got with get_gfn_type() and not put back. */
+static int gfns_held;
 
 struct iommu_context *iommu_get_context(struct domain *d, uint16_t ctx_id)
 {
@@ -119,6 +124,8 @@ void iommu_put_mapped_page(struct page_info *pg)
 mfn_t get_gfn_type(struct domain *d, unsigned long gfn, p2m_type_t *t,
                    p2m_query_t q)
 {
+    gfns_held++;
+
     if ( gfn >= NR_GFNS )
     {
         *t = p2m_invalid;
@@ -127,6 +134,11 @@ mfn_t get_gfn_type(struct domain *d, unsigned long gfn, p2m_type_t *t,
 
     *t = p2m_ram_rw;
     return gfn;
+}
+
+void put_gfn(struct domain *d, unsigned long gfn)
+{
+    gfns_held--;
 }
 
 bool mfn_valid(mfn_t mfn)
@@ -139,11 +151,15 @@ struct page_info *mfn_to_page(mfn_t mfn)
     return &frames[mfn];
 }
 
+/* As Xen's: a free frame has a count of 0, and no reference is taken. */
 struct domain *page_get_owner_and_reference(struct page_info *pg)
 {
+    if ( !pg->owner )
+        return NULL;
+
     pg->refs++;
 
-    return &dom;
+    return pg->owner;
 }
 
 void put_page(struct page_info *pg)
@@ -181,9 +197,10 @@ long hypercall_create_continuation(unsigned int op, const char *format, ...)
     return -ERESTART;
 }
 
-static unsigned int references(void)
+static int references(void)
 {
-    unsigned int i, refs = 0;
+    unsigned int i;
+    int refs = 0;
 
     for ( i = 0; i < NR_GFNS; i++ )
         refs += frames[i].refs;
@@ -213,12 +230,12 @@ static bool refused(uint32_t map_flags)
     long rc = map_one(map_flags, &map);
 
     if ( rc == -EINVAL && !map.mapped && !entries.nr && !references() &&
-         !contexts_held )
+         !gfns_held && !contexts_held )
         return true;
 
-    printf("%s: rc %ld, mapped %u, %u entries written, %u references kept, "
-           "%u contexts held\n", test_name, rc, map.mapped, entries.nr,
-           references(), contexts_held);
+    printf("%s: rc %ld, mapped %u, %u entries written, %d references kept, "
+           "%d gfns held, %u contexts held\n", test_name, rc, map.mapped,
+           entries.nr, references(), gfns_held, contexts_held);
     return false;
 }
 
@@ -228,14 +245,33 @@ static bool mapped(uint32_t map_flags, unsigned int want)
     long rc = map_one(map_flags, &map);
 
     if ( !rc && map.mapped == 1 && entries.nr == 1 && references() == 1 &&
-         !contexts_held && !IOMMUF_order(entries.flags) &&
+         !gfns_held && !contexts_held && !IOMMUF_order(entries.flags) &&
          (entries.flags & (IOMMUF_readable | IOMMUF_writable)) == want )
         return true;
 
     printf("%s: rc %ld, mapped %u, %u entries written with flags %#x, "
-           "%u references kept, %u contexts held\n", test_name, rc,
-           map.mapped, entries.nr, entries.flags, references(),
+           "%d references kept, %d gfns held, %u contexts held\n", test_name,
+           rc, map.mapped, entries.nr, entries.flags, references(), gfns_held,
            contexts_held);
+    return false;
+}
+
+/*
+ * A frame the caller may not map: refused, with any reference taken on it
+ * returned and its gfn put back.
+ */
+static bool frame_refused(void)
+{
+    struct pv_iommu_map_pages map;
+    long rc = map_one(IOMMU_MAP_readable | IOMMU_MAP_writeable, &map);
+
+    if ( rc == -EPERM && !map.mapped && !entries.nr && !references() &&
+         !gfns_held && !contexts_held )
+        return true;
+
+    printf("%s: rc %ld, mapped %u, %u entries written, %d references kept, "
+           "%d gfns held, %u contexts held\n", test_name, rc, map.mapped,
+           entries.nr, references(), gfns_held, contexts_held);
     return false;
 }
 
@@ -270,6 +306,20 @@ static bool test_readable_writeable(void)
                   IOMMUF_readable | IOMMUF_writable);
 }
 
+static bool test_free_frame(void)
+{
+    frames[GFN].owner = NULL;
+
+    return frame_refused();
+}
+
+static bool test_foreign_frame(void)
+{
+    frames[GFN].owner = &other;
+
+    return frame_refused();
+}
+
 static const struct {
     const char *name;
     bool (*run)(void);
@@ -282,17 +332,24 @@ static const struct {
     { "readable: mapped read-only", test_readable },
     { "writeable: mapped write-only", test_writeable },
     { "readable and writeable: mapped read-write", test_readable_writeable },
+    { "free frame: refused, no reference dropped, and the gfn put back",
+      test_free_frame },
+    { "frame another domain owns: refused, its reference returned, and the "
+      "gfn put back", test_foreign_frame },
 };
 
 int main(void)
 {
-    unsigned int i, failed = 0;
+    unsigned int i, j, failed = 0;
 
     for ( i = 0; i < ARRAY_SIZE(tests); i++ )
     {
         memset(frames, 0, sizeof(frames));
+        for ( j = 0; j < NR_GFNS; j++ )
+            frames[j].owner = &dom;
         memset(&entries, 0, sizeof(entries));
         contexts_held = 0;
+        gfns_held = 0;
 
         /* Named first, so that a fault shows which test it was. */
         test_name = tests[i].name;
