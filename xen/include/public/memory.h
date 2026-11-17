@@ -692,6 +692,7 @@ struct xen_mem_acquire_resource {
 
 #define XENMEM_resource_ioreq_server_frame_bufioreq 0
 #define XENMEM_resource_ioreq_server_frame_ioreq(n) (1 + (n))
+#define XENMEM_resource_ioreq_server_frame_doorbell 0x8000
 
     /*
      * IN/OUT - If the tools domain is PV then, upon return, frame_list

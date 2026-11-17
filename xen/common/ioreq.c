@@ -258,9 +258,9 @@ bool vcpu_ioreq_handle_completion(struct vcpu *v)
     return res;
 }
 
-static int ioreq_server_alloc_mfn(struct ioreq_server *s, bool buf)
+static int ioreq_server_alloc_page(struct ioreq_server *s,
+                                   struct ioreq_page *iorp)
 {
-    struct ioreq_page *iorp = buf ? &s->bufioreq : &s->ioreq;
     struct page_info *page;
 
     if ( iorp->page )
@@ -306,9 +306,13 @@ static int ioreq_server_alloc_mfn(struct ioreq_server *s, bool buf)
     return -ENOMEM;
 }
 
-static void ioreq_server_free_mfn(struct ioreq_server *s, bool buf)
+static int ioreq_server_alloc_mfn(struct ioreq_server *s, bool buf)
 {
-    struct ioreq_page *iorp = buf ? &s->bufioreq : &s->ioreq;
+    return ioreq_server_alloc_page(s, buf ? &s->bufioreq : &s->ioreq);
+}
+
+static void ioreq_server_free_page(struct ioreq_page *iorp)
+{
     struct page_info *page = iorp->page;
 
     if ( !page )
@@ -323,6 +327,11 @@ static void ioreq_server_free_mfn(struct ioreq_server *s, bool buf)
     put_page_and_type(page);
 }
 
+static void ioreq_server_free_mfn(struct ioreq_server *s, bool buf)
+{
+    ioreq_server_free_page(buf ? &s->bufioreq : &s->ioreq);
+}
+
 bool is_ioreq_server_page(struct domain *d, const struct page_info *page)
 {
     const struct ioreq_server *s;
@@ -333,7 +342,8 @@ bool is_ioreq_server_page(struct domain *d, const struct page_info *page)
 
     FOR_EACH_IOREQ_SERVER(d, id, s)
     {
-        if ( (s->ioreq.page == page) || (s->bufioreq.page == page) )
+        if ( (s->ioreq.page == page) || (s->bufioreq.page == page) ||
+             (s->doorbell.page == page) )
         {
             found = true;
             break;
@@ -481,6 +491,7 @@ static int ioreq_server_alloc_pages(struct ioreq_server *s)
 
 static void ioreq_server_free_pages(struct ioreq_server *s)
 {
+    ioreq_server_free_page(&s->doorbell);
     ioreq_server_free_mfn(s, true);
     ioreq_server_free_mfn(s, false);
 }
@@ -593,6 +604,7 @@ static int ioreq_server_init(struct ioreq_server *s,
 
     s->ioreq.gfn = INVALID_GFN;
     s->bufioreq.gfn = INVALID_GFN;
+    s->doorbell.gfn = INVALID_GFN;
 
     rc = ioreq_server_alloc_rangesets(s, id);
     if ( rc )
@@ -828,6 +840,12 @@ int ioreq_server_get_frame(struct domain *d, ioservid_t id,
     case XENMEM_resource_ioreq_server_frame_ioreq(0):
         *mfn = page_to_mfn(s->ioreq.page);
         rc = 0;
+        break;
+
+    case XENMEM_resource_ioreq_server_frame_doorbell:
+        rc = ioreq_server_alloc_page(s, &s->doorbell);
+        if ( !rc )
+            *mfn = page_to_mfn(s->doorbell.page);
         break;
 
     default:
@@ -1350,6 +1368,112 @@ void ioreq_domain_init(struct domain *d)
     arch_ioreq_domain_init(d);
 }
 
+static int ioreq_server_set_doorbell_page(
+    struct domain *d, const struct xen_dm_op_set_doorbell_page *data)
+{
+    struct ioreq_server *s;
+    unsigned int shift;
+    int rc;
+
+    if ( data->pad || (data->flags & ~XEN_DMOP_DOORBELL_NULL) ||
+         data->count > XEN_DOORBELL_MAX_SLOTS ||
+         data->stride < 4 || data->stride > PAGE_SIZE ||
+         (data->stride & (data->stride - 1)) ||
+         (data->base & (data->stride - 1)) )
+        return -EINVAL;
+    shift = ffs(data->stride) - 1;
+    if ( data->base + ((uint64_t)data->count << shift) < data->base )
+        return -EINVAL;
+
+    rspin_lock(&d->ioreq_server.lock);
+
+    s = get_ioreq_server(d, data->id);
+
+    rc = -ENOENT;
+    if ( !s )
+        goto out;
+
+    rc = -EPERM;
+    if ( s->emulator != current->domain )
+        goto out;
+
+    rc = -EINVAL;
+    if ( !HANDLE_BUFIOREQ(s) )
+        goto out;
+
+    rc = ioreq_server_alloc_page(s, &s->doorbell);
+    if ( rc )
+        goto out;
+
+    /* The MMIO handler reads these fields without the lock. */
+    domain_pause(d);
+    rc = arch_ioreq_enable_doorbells(d);
+    if ( !rc )
+    {
+        s->doorbell_count = 0;
+        smp_wmb();
+        s->doorbell_base = data->base;
+        s->doorbell_shift = shift;
+        s->doorbell_null = data->flags & XEN_DMOP_DOORBELL_NULL;
+        smp_wmb();
+        s->doorbell_count = data->count;
+    }
+    domain_unpause(d);
+
+ out:
+    rspin_unlock(&d->ioreq_server.lock);
+
+    return rc;
+}
+
+struct ioreq_server *ioreq_doorbell_find(struct domain *d, paddr_t addr)
+{
+    struct ioreq_server *s;
+    unsigned int id;
+
+    FOR_EACH_IOREQ_SERVER(d, id, s)
+    {
+        unsigned int count = ACCESS_ONCE(s->doorbell_count);
+
+        smp_rmb();
+        if ( count && addr >= s->doorbell_base &&
+             ((addr - s->doorbell_base) >> s->doorbell_shift) < count )
+            return s;
+    }
+
+    return NULL;
+}
+
+uint32_t ioreq_doorbell_read(const struct ioreq_server *s, paddr_t addr)
+{
+    const uint32_t *slots = s->doorbell.va;
+
+    if ( s->doorbell_null )
+        return 0;
+
+    return read_atomic(&slots[(addr - s->doorbell_base) >> s->doorbell_shift]);
+}
+
+void ioreq_doorbell_write(struct ioreq_server *s, paddr_t addr, uint32_t val)
+{
+    uint8_t *page = s->doorbell.va;
+    unsigned int slot = (addr - s->doorbell_base) >> s->doorbell_shift;
+
+    if ( s->doorbell_null )
+        return;
+
+    write_atomic(&((uint32_t *)page)[slot], val);
+    /*
+     * The device model sets the asleep flag and then reads the pending bits;
+     * Xen sets a pending bit and then reads the flag. Both sides use locked
+     * operations, so at least one of them sees the other.
+     */
+    set_bit(slot, (unsigned int *)(page + XEN_DOORBELL_PENDING_OFFSET));
+    if ( test_and_clear_bit(0,
+                            (unsigned int *)(page + XEN_DOORBELL_ASLEEP_OFFSET)) )
+        notify_via_xen_event_channel(s->target, s->bufioreq_evtchn);
+}
+
 int ioreq_server_dm_op(struct xen_dm_op *op, struct domain *d, bool *const_op)
 {
     long rc;
@@ -1371,6 +1495,10 @@ int ioreq_server_dm_op(struct xen_dm_op *op, struct domain *d, bool *const_op)
                                  &data->id);
         break;
     }
+
+    case XEN_DMOP_set_doorbell_page:
+        rc = ioreq_server_set_doorbell_page(d, &op->u.set_doorbell_page);
+        break;
 
     case XEN_DMOP_get_ioreq_server_info:
     {
