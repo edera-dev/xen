@@ -509,6 +509,7 @@ static int ioreq_server_alloc_rangesets(struct ioreq_server *s,
         case XEN_DMOP_IO_RANGE_PORT:   type = " port";   break;
         case XEN_DMOP_IO_RANGE_MEMORY: type = " memory"; break;
         case XEN_DMOP_IO_RANGE_PCI:    type = " pci";    break;
+        case XEN_DMOP_IO_RANGE_MEMORY_POSTED: type = " posted"; break;
         default:                       type = "";        break;
         }
 
@@ -868,6 +869,7 @@ static int ioreq_server_map_io_range(struct domain *d, ioservid_t id,
     case XEN_DMOP_IO_RANGE_PORT:
     case XEN_DMOP_IO_RANGE_MEMORY:
     case XEN_DMOP_IO_RANGE_PCI:
+    case XEN_DMOP_IO_RANGE_MEMORY_POSTED:
         r = s->range[type];
         break;
 
@@ -920,6 +922,7 @@ static int ioreq_server_unmap_io_range(struct domain *d, ioservid_t id,
     case XEN_DMOP_IO_RANGE_PORT:
     case XEN_DMOP_IO_RANGE_MEMORY:
     case XEN_DMOP_IO_RANGE_PCI:
+    case XEN_DMOP_IO_RANGE_MEMORY_POSTED:
         r = s->range[type];
         break;
 
@@ -1134,7 +1137,9 @@ struct ioreq_server *ioreq_server_select(struct domain *d,
             start = ioreq_mmio_first_byte(p);
             end = ioreq_mmio_last_byte(p);
 
-            if ( rangeset_contains_range(r, start, end) )
+            if ( rangeset_contains_range(r, start, end) ||
+                 rangeset_contains_range(s->range[XEN_DMOP_IO_RANGE_MEMORY_POSTED],
+                                         start, end) )
                 return s;
 
             break;
@@ -1245,6 +1250,14 @@ static int ioreq_send_buffered(struct ioreq_server *s, ioreq_t *p)
     spin_unlock(&s->bufioreq_lock);
 
     return IOREQ_STATUS_HANDLED;
+}
+
+bool ioreq_server_posted(const struct ioreq_server *s, const ioreq_t *p)
+{
+    return p->type == IOREQ_TYPE_COPY && p->dir == IOREQ_WRITE &&
+           !p->data_is_ptr && p->count == 1 &&
+           rangeset_contains_range(s->range[XEN_DMOP_IO_RANGE_MEMORY_POSTED],
+                                   p->addr, p->addr + p->size - 1);
 }
 
 int ioreq_send(struct ioreq_server *s, ioreq_t *proto_p,

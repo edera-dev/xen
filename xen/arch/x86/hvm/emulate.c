@@ -438,7 +438,18 @@ static int hvmemul_do_io(
         }
         else
         {
-            rc = ioreq_send(s, &p, 0);
+            rc = X86EMUL_UNHANDLEABLE;
+            if ( ioreq_server_posted(s, &p) )
+            {
+                ioreq_t q = p;
+
+                /* The buffered ring has 20 address bits; see dm_op.h. */
+                q.addr &= 0xfffff;
+                rc = ioreq_send(s, &q, true);
+            }
+            /* A full ring falls back to a synchronous request. */
+            if ( rc == X86EMUL_UNHANDLEABLE )
+                rc = ioreq_send(s, &p, 0);
             if ( rc != X86EMUL_RETRY || vio->suspended )
                 vio->req.state = STATE_IOREQ_NONE;
             else if ( !ioreq_needs_completion(&vio->req) )

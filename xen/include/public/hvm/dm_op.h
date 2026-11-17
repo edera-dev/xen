@@ -127,6 +127,16 @@ struct xen_dm_op_ioreq_server_range {
 # define XEN_DMOP_IO_RANGE_PORT   0 /* I/O port range */
 # define XEN_DMOP_IO_RANGE_MEMORY 1 /* MMIO range */
 # define XEN_DMOP_IO_RANGE_PCI    2 /* PCI segment/bus/dev/func range */
+/*
+ * MMIO range whose single, non-string writes are posted to the buffered
+ * ioreq ring instead of blocking the vCPU, for doorbell registers. The
+ * buffered ioreq carries the address modulo 1MiB, so a server must not have
+ * two posted ranges that collide modulo 1MiB. Reads, and writes that do not
+ * fit the ring, take the synchronous path. A server must drain the ring
+ * before it answers a synchronous request, so a read observes every posted
+ * write before it.
+ */
+# define XEN_DMOP_IO_RANGE_MEMORY_POSTED 3
     /* IN - inclusive start and end of range */
     uint64_aligned_t start, end;
 };

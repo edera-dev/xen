@@ -36,7 +36,7 @@ struct ioreq_vcpu {
     bool             pending;
 };
 
-#define NR_IO_RANGE_TYPES (XEN_DMOP_IO_RANGE_PCI + 1)
+#define NR_IO_RANGE_TYPES (XEN_DMOP_IO_RANGE_MEMORY_POSTED + 1)
 #define MAX_NR_IO_RANGES  256
 
 struct ioreq_server {
@@ -98,6 +98,7 @@ int ioreq_server_add_vcpu_all(struct domain *d, struct vcpu *v);
 void ioreq_server_remove_vcpu_all(struct domain *d, struct vcpu *v);
 void ioreq_server_destroy_all(struct domain *d);
 
+bool ioreq_server_posted(const struct ioreq_server *s, const ioreq_t *p);
 struct ioreq_server *ioreq_server_select(struct domain *d,
                                          ioreq_t *p);
 int ioreq_send(struct ioreq_server *s, ioreq_t *proto_p,
