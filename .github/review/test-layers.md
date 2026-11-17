@@ -105,8 +105,11 @@ upstream code.
   `IOMMU_MAP_no_flush` or `IOMMU_MAP_cache`, must be refused with `-EINVAL`
   before any page reference is taken or any context is held. A read, write or
   read-write map must write one entry with those permissions and keep one
-  reference. The IOMMU core and the p2m are stand-ins, so it does not reach
-  the VT-d or AMD-Vi drivers, unmap, context teardown, or the Arm path.
+  reference. A map of a free frame, which has no reference to take, or of a
+  frame another domain owns must be refused with `-EPERM`, leave the frame's
+  references as they were, and put back the gfn it got. The IOMMU core and the
+  p2m are stand-ins, so it does not reach the VT-d or AMD-Vi drivers, unmap,
+  context teardown, or the Arm path.
 - `tools/tests/spcr` covers `xen/arch/arm/acpi/spcr.c`, which decides whether
   to hide the SPCR's PCI UART, Xen's console, from the hardware domain: each
   reason to keep it visible, the bridge scan that finds the port above it, an
