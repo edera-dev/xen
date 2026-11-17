@@ -84,12 +84,13 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
         if ( !owner || (owner != d && !is_hardware_domain(d)) )
         {
             /* TODO: foreign mappings when d is not privileged ? */
-            put_page(*page);
+            /* No reference is taken on a frame with no owner, e.g. a free one. */
+            if ( owner )
+                put_page(*page);
             *page = NULL;
-            return -EPERM;
+            ret = -EPERM;
         }
-
-        if ( !iommu_get_mapped_page_type(*page) )
+        else if ( !iommu_get_mapped_page_type(*page) )
         {
             put_page(*page);
             *page = NULL;
@@ -137,6 +138,7 @@ static int get_paged_frame(struct domain *d, gfn_t gfn, mfn_t *mfn,
     }
 
 #ifdef CONFIG_X86
+    /* Paired with get_gfn_type() above, so no path may return before it. */
     put_gfn(d, gfn_x(gfn));
 #endif
     return ret;
