@@ -28,6 +28,8 @@
 #define MEMOP_EXTENT_SHIFT 6
 
 #define PAGE_SHIFT 12
+/* Some libcs define PAGE_SIZE in limits.h. */
+#undef  PAGE_SIZE
 #define PAGE_SIZE  (1UL << PAGE_SHIFT)
 
 typedef unsigned long gfn_t;
