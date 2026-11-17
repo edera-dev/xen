@@ -208,7 +208,7 @@ struct pv_iommu_map_pages {
     /* IN: Number of pages to map */
     uint32_t nr_pages;
 
-    /* OUT: Number of pages actually mapped */
+    /* IN/OUT: Number of pages actually mapped, added to the value passed */
     uint32_t mapped;
 };
 typedef struct pv_iommu_map_pages pv_iommu_map_pages_t;
@@ -257,7 +257,7 @@ struct pv_iommu_unmap_pages {
     /* IN: Number of pages to unmap */
     uint32_t nr_pages;
 
-    /* OUT: Number of pages actually unmapped */
+    /* IN/OUT: Number of pages actually unmapped, added to the value passed */
     uint32_t unmapped;
 };
 typedef struct pv_iommu_unmap_pages pv_iommu_unmap_pages_t;
@@ -376,6 +376,12 @@ struct pv_iommu_detach_pasid {
 typedef struct pv_iommu_detach_pasid pv_iommu_detach_pasid_t;
 DEFINE_XEN_GUEST_HANDLE(pv_iommu_detach_pasid_t);
 
-/* long do_iommu_op(int subop, XEN_GUEST_HANDLE_PARAM(void) arg) */
+/*
+ * long do_iommu_op(int subop, XEN_GUEST_HANDLE_PARAM(void) arg)
+ *
+ * Only the low 8 bits of subop name the command. Xen uses the bits above them
+ * to resume a preempted IOMMU_map_pages or IOMMU_unmap_pages, so a caller
+ * leaves them clear.
+ */
 
 #endif
