@@ -125,8 +125,9 @@ upstream code.
   each page once, and leave the caller's request as it passed it apart from
   the count it adds to. That holds through `IOMMU_remote_cmd`, for a map
   refused part way, and for two runs mapped with one request as Linux does.
-  Resume bits that Xen did not set must be refused. The IOMMU core and the p2m
-  are stand-ins, so it does not reach the VT-d or AMD-Vi drivers, context
+  Resume bits, which a caller can set itself, must be refused on a subop that
+  is never resumed and at or past a map's last page. The IOMMU core and the
+  p2m are stand-ins, so it does not reach the VT-d or AMD-Vi drivers, context
   teardown, or the Arm path.
 - `tools/tests/spcr` covers `xen/arch/arm/acpi/spcr.c`, which decides whether
   to hide the SPCR's PCI UART, Xen's console, from the hardware domain: each

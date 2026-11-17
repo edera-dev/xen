@@ -841,7 +841,8 @@ long do_iommu_op(unsigned int subop, XEN_GUEST_HANDLE_PARAM(void) arg)
     /*
      * The bits above the subop number are the page a preempted map or unmap
      * resumes at, a multiple of PVIOMMU_PREEMPT_PAGES. Keeping it here rather
-     * than in the request leaves the request as the caller passed it.
+     * than in the request leaves the request as the caller passed it. A caller
+     * can set them too, so a resumed call checks each page as a new one does.
      */
     unsigned int start = subop & ~PVIOMMU_SUBOP_MASK;
 

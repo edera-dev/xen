@@ -605,8 +605,9 @@ static bool test_remote_map_preempted(void)
 }
 
 /*
- * The bits above the subop number are only ever set by Xen, to resume a map
- * or unmap before its last page.
+ * A caller can set the bits above the subop number itself, which only moves
+ * where its own map or unmap starts.  They are refused on a subop that is
+ * never resumed, and at or past a map's last page.
  */
 static bool test_resume_bits_refused(void)
 {
