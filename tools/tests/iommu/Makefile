@@ -12,7 +12,7 @@ run: $(TARGET)
 
 .PHONY: clean
 clean:
-	$(RM) -- *.o $(TARGET) $(DEPS_RM) pviommu-init.c *.tmp
+	$(RM) -- *.o $(TARGET) $(DEPS_RM) iommu.c list.h *.tmp
 
 .PHONY: distclean
 distclean: clean
@@ -29,11 +29,16 @@ uninstall:
 
 # Generated files are written under a temporary name and then renamed, so an
 # interrupted build cannot leave a partial file that make takes as current.
-# Only iommu_domain_pviommu_init() is taken: the rest of iommu.c is the IOMMU
-# core, which these tests do not build.
-pviommu-init.c: $(XEN_ROOT)/xen/drivers/passthrough/iommu.c
+# Only the functions under test are taken from iommu.c, since the rest of it
+# is the IOMMU core, which these tests do not build.
+iommu.c: $(XEN_ROOT)/xen/drivers/passthrough/iommu.c
 	{ echo '#include "harness.h"'; \
-	  sed -n '/^int iommu_domain_pviommu_init(/,/^}/p' <$<; } >$@.tmp
+	  sed -n -e '/^int iommu_domain_pviommu_init(/,/^}/p' \
+	         -e '/^int cf_check iommu_context_teardown(/,/^}/p' <$<; } >$@.tmp
+	mv -f $@.tmp $@
+
+list.h: $(XEN_ROOT)/xen/include/xen/list.h
+	sed -e '/#include/d' <$< >$@.tmp
 	mv -f $@.tmp $@
 
 CFLAGS += -D__XEN_TOOLS__
@@ -41,8 +46,8 @@ CFLAGS += $(APPEND_CFLAGS)
 CFLAGS += $(CFLAGS_xeninclude)
 LDFLAGS += $(APPEND_LDFLAGS)
 
-pviommu-init.o test-iommu.o: harness.h
-test-iommu: pviommu-init.o test-iommu.o
+iommu.o test-iommu.o: harness.h list.h
+test-iommu: iommu.o test-iommu.o
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 -include $(DEPS_INCLUDE)
