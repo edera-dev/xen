@@ -110,17 +110,25 @@ upstream code.
   is built to trap on a shift whose result does not fit its type, so a
   segment that shifts into the sign bit of an `int` fails it. It does not
   cover the callers, or the places that build an SBDF without the macro.
-- `tools/tests/pv-iommu` covers `IOMMU_map_pages` in `xen/common/pv-iommu.c`,
-  built as for x86 without PCI and called through `do_iommu_op()`. A map with
-  neither `IOMMU_MAP_readable` nor `IOMMU_MAP_writeable`, or with only
-  `IOMMU_MAP_no_flush` or `IOMMU_MAP_cache`, must be refused with `-EINVAL`
-  before any page reference is taken or any context is held. A read, write or
-  read-write map must write one entry with those permissions and keep one
-  reference. A map of a free frame, which has no reference to take, or of a
-  frame another domain owns must be refused with `-EPERM`, leave the frame's
-  references as they were, and put back the gfn it got. The IOMMU core and the
-  p2m are stand-ins, so it does not reach the VT-d or AMD-Vi drivers, unmap,
-  context teardown, or the Arm path.
+- `tools/tests/pv-iommu` covers `IOMMU_map_pages` and `IOMMU_unmap_pages` in
+  `xen/common/pv-iommu.c`, built as for x86 without PCI and called through
+  `do_iommu_op()`. A map with neither `IOMMU_MAP_readable` nor
+  `IOMMU_MAP_writeable`, or with only `IOMMU_MAP_no_flush` or
+  `IOMMU_MAP_cache`, must be refused with `-EINVAL` before any page reference
+  is taken or any context is held. A read, write or read-write map must write
+  one entry with those permissions and keep one reference. A map of a free
+  frame, which has no reference to take, or of a frame another domain owns
+  must be refused with `-EPERM`, leave the frame's references as they were,
+  and put back the gfn it got. A map or unmap of hundreds of pages that Xen
+  preempts each time it checks, made again by the test as a guest does, must
+  be preempted every 256 pages and not after its last, map or unmap and flush
+  each page once, and leave the caller's request as it passed it apart from
+  the count it adds to. That holds through `IOMMU_remote_cmd`, for a map
+  refused part way, and for two runs mapped with one request as Linux does.
+  Resume bits, which a caller can set itself, must be refused on a subop that
+  is never resumed and at or past a map's last page. The IOMMU core and the
+  p2m are stand-ins, so it does not reach the VT-d or AMD-Vi drivers, context
+  teardown, or the Arm path.
 - `tools/tests/spcr` covers `xen/arch/arm/acpi/spcr.c`, which decides whether
   to hide the SPCR's PCI UART, Xen's console, from the hardware domain: each
   reason to keep it visible, the bridge scan that finds the port above it, an

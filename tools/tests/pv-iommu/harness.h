@@ -4,12 +4,14 @@
  * for x86 without PCI.  The IOMMU core and the p2m are stand-ins: every frame
  * is RAM, owned by the calling domain unless a test frees it or gives it to
  * another domain, and the test counts the page references the hypercalls take,
- * the gfns they get and the entries they write.
+ * the gfns they get, the entries they write and the IOTLB flushes.  A test
+ * can have Xen preempt a map or unmap each time it checks.
  */
 
 #ifndef TEST_HARNESS_H
 #define TEST_HARNESS_H
 
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -28,6 +30,7 @@
 #define __read_mostly
 #define boolean_param(name, var)
 #define unlikely(x) (x)
+#define ASSERT(p)   assert(p)
 
 #define XENLOG_INFO      ""
 #define XENLOG_WARNING   ""
