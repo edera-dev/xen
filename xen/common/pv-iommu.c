@@ -299,16 +299,46 @@ static unsigned long max_dfn(struct domain *d)
     return max ? max >> PAGE_SHIFT : ~0UL;
 }
 
-static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
+/*
+ * A map or unmap is preempted only after a multiple of this many pages, so the
+ * page it resumes at leaves the low bits of the hypercall's subop argument free
+ * for the subop itself (see do_iommu_op()).
+ */
+#define PVIOMMU_PREEMPT_PAGES 256U
+#define PVIOMMU_SUBOP_MASK    (PVIOMMU_PREEMPT_PAGES - 1)
+
+/*
+ * Whether a map or unmap of nr pages that has just done page i should stop
+ * there and be resumed. Never after the last page, which would leave a
+ * continuation with nothing to do.
+ */
+static bool preempt_after(size_t i, uint32_t nr)
+{
+    return !((i + 1) % PVIOMMU_PREEMPT_PAGES) && i + 1 < nr &&
+           hypercall_preempt_check();
+}
+
+/*
+ * Maps the request's pages from *start on. If preempted, returns -ERESTART
+ * with *start set to the page to resume at. The request is left as the caller
+ * passed it, apart from mapped.
+ */
+static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d,
+                         unsigned int *start)
 {
     struct iommu_context *ctx;
     int ret = 0, flush_ret;
     struct page_info *page = NULL;
     mfn_t mfn, mfn_lookup;
     unsigned int lookup_flags, flags = 0, flush_flags = 0;
-    size_t i = 0;
-    dfn_t dfn0 = _dfn(map->dfn); /* original map->dfn */
+    unsigned int first = *start;
+    size_t i = first;
+    dfn_t dfn0 = _dfn(map->dfn + first); /* the first DFN this call maps */
     unsigned long last_dfn;
+
+    /* A continuation never resumes at or past the last page. */
+    if ( first && first >= map->nr_pages )
+        return -EINVAL;
 
     /*
      * VT-d treats an entry with neither permission as not present, so
@@ -351,7 +381,7 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
      */
     flags |= IOMMUF_no_replace;
 
-    for (i = 0; i < map->nr_pages; i++)
+    for (i = first; i < map->nr_pages; i++)
     {
         gfn_t gfn = _gfn(map->gfn + i);
         dfn_t dfn = _dfn(map->dfn + i);
@@ -408,14 +438,9 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
 
         map->mapped++;
 
-        if ( (i & 0xff) && hypercall_preempt_check() )
+        if ( preempt_after(i, map->nr_pages) )
         {
-            i++;
-
-            map->gfn += i;
-            map->dfn += i;
-            map->nr_pages -= i;
-
+            *start = ++i;
             ret = -ERESTART;
             break;
         }
@@ -424,7 +449,8 @@ static long map_pages_op(struct pv_iommu_map_pages *map, struct domain *d)
     if ( map->map_flags & IOMMU_MAP_no_flush )
         flush_ret = 0;
     else
-        flush_ret = iommu_iotlb_flush(d, dfn0, i, flush_flags, map->ctx_no);
+        flush_ret = iommu_iotlb_flush(d, dfn0, i - first, flush_flags,
+                                      map->ctx_no);
 
     iommu_put_context(ctx);
 
@@ -490,22 +516,28 @@ static void unmap_finish_batch(struct domain *d, uint16_t ctx_no, dfn_t dfn,
             iommu_put_mapped_page(mfn_to_page(mfns[j]));
 }
 
-static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
+/* As map_pages_op(), for an unmap. */
+static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d,
+                           unsigned int *start)
 {
     struct iommu_context *ctx;
     mfn_t mfn, batch[UNMAP_BATCH];
     int ret = 0;
     unsigned int flags, flush_flags = 0, nr = 0;
-    size_t i = 0;
-    dfn_t batch_dfn = _dfn(unmap->dfn);
+    unsigned int first = *start;
+    size_t i = first;
+    dfn_t batch_dfn = _dfn(unmap->dfn + first);
     unsigned long last_dfn;
+
+    if ( first && first >= unmap->nr_pages )
+        return -EINVAL;
 
     if ( !unmap->ctx_no || !(ctx = iommu_get_context(d, unmap->ctx_no)) )
         return -EINVAL;
 
     last_dfn = max_dfn(d);
 
-    for (i = 0; i < unmap->nr_pages; i++)
+    for (i = first; i < unmap->nr_pages; i++)
     {
         dfn_t dfn = _dfn(unmap->dfn + i);
 
@@ -546,13 +578,9 @@ static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
             nr = 0;
         }
 
-        if ( (i & 0xff) && hypercall_preempt_check() )
+        if ( preempt_after(i, unmap->nr_pages) )
         {
-            i++;
-
-            unmap->dfn += i;
-            unmap->nr_pages -= i;
-
+            *start = ++i;
             ret = -ERESTART;
             break;
         }
@@ -568,10 +596,10 @@ static long unmap_pages_op(struct pv_iommu_unmap_pages *unmap, struct domain *d)
 }
 
 static long do_iommu_subop(int subop, XEN_GUEST_HANDLE_PARAM(void) arg,
-                           struct domain *d, bool remote);
+                           struct domain *d, bool remote, unsigned int *start);
 
 static long remote_cmd_op(struct pv_iommu_remote_cmd *remote_cmd,
-                          struct domain *current_domain)
+                          struct domain *current_domain, unsigned int *start)
 {
     long ret = 0;
     struct domain *d;
@@ -597,7 +625,7 @@ static long remote_cmd_op(struct pv_iommu_remote_cmd *remote_cmd,
 
     ret = do_iommu_subop(remote_cmd->subop,
                          guest_handle_to_param(remote_cmd->arg, void), d,
-                         true);
+                         true, start);
 
     put_domain(d);
 
@@ -605,9 +633,14 @@ static long remote_cmd_op(struct pv_iommu_remote_cmd *remote_cmd,
 }
 
 static long do_iommu_subop(int subop, XEN_GUEST_HANDLE_PARAM(void) arg,
-                           struct domain *d, bool remote)
+                           struct domain *d, bool remote, unsigned int *start)
 {
     long ret = 0;
+
+    /* Only a map or an unmap is resumed part way through. */
+    if ( *start && subop != IOMMU_map_pages && subop != IOMMU_unmap_pages &&
+         subop != IOMMU_remote_cmd )
+        return -EOPNOTSUPP;
 
     switch ( subop )
     {
@@ -705,7 +738,7 @@ static long do_iommu_subop(int subop, XEN_GUEST_HANDLE_PARAM(void) arg,
                 break;
             }
 
-            ret = map_pages_op(&map, d);
+            ret = map_pages_op(&map, d, start);
 
             if ( unlikely(copy_to_guest(arg, &map, 1)) )
                 ret = -EFAULT;
@@ -738,7 +771,7 @@ static long do_iommu_subop(int subop, XEN_GUEST_HANDLE_PARAM(void) arg,
                 break;
             }
 
-            ret = unmap_pages_op(&unmap, d);
+            ret = unmap_pages_op(&unmap, d, start);
 
             if ( unlikely(copy_to_guest(arg, &unmap, 1)) )
                 ret = -EFAULT;
@@ -763,7 +796,7 @@ static long do_iommu_subop(int subop, XEN_GUEST_HANDLE_PARAM(void) arg,
                 break;
             }
 
-            ret = remote_cmd_op(&remote_cmd, d);
+            ret = remote_cmd_op(&remote_cmd, d, start);
             break;
         }
 
@@ -805,14 +838,27 @@ long do_iommu_op(unsigned int subop, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     long ret = 0;
     struct domain *d = current->domain;
+    /*
+     * The bits above the subop number are the page a preempted map or unmap
+     * resumes at, a multiple of PVIOMMU_PREEMPT_PAGES. Keeping it here rather
+     * than in the request leaves the request as the caller passed it.
+     */
+    unsigned int start = subop & ~PVIOMMU_SUBOP_MASK;
+
+    BUILD_BUG_ON(IOMMU_flush_pages > PVIOMMU_SUBOP_MASK);
 
     if ( !can_use_iommu_check(d) )
         return -ENODEV;
 
-    ret = do_iommu_subop(subop, arg, d, false);
+    subop &= PVIOMMU_SUBOP_MASK;
+    ret = do_iommu_subop(subop, arg, d, false, &start);
 
     if ( ret == -ERESTART )
-        return hypercall_create_continuation(__HYPERVISOR_iommu_op, "ih", subop, arg);
+    {
+        ASSERT(!(start & PVIOMMU_SUBOP_MASK));
+        return hypercall_create_continuation(__HYPERVISOR_iommu_op, "ih",
+                                             subop | start, arg);
+    }
 
     return ret;
 }
