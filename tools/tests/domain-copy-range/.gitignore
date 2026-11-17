@@ -1,0 +1,3 @@
+*.tmp
+/memory.c
+/test-domain-copy-range
