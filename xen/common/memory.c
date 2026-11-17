@@ -1602,6 +1602,7 @@ static int domain_copy_range(
     int buf[COPY_RANGE_ERRS_BATCH];
     unsigned int nr_buf = 0, buf_at = 0;
     bool to_guest, contiguous, report_errs;
+    void *scratch = NULL;
     int rc;
 
     if ( copy_from_guest(&xcr, arg, 1) )
@@ -1648,6 +1649,18 @@ static int domain_copy_range(
         goto out;
 
     to_guest = !(xcr.flags & XENMEM_DOMAIN_COPY_from_guest);
+
+    /*
+     * A copy from the caller's memory can fail part way through, and on x86
+     * one from a PV caller zero-fills whatever it did not copy. Reading
+     * straight into the frame would leave it clobbered by a write that is
+     * reported as failed, so a write reads the whole page here first.
+     */
+    if ( to_guest && !(scratch = alloc_xenheap_page()) )
+    {
+        rc = -ENOMEM;
+        goto out;
+    }
 
     for ( done = start_extent; done < xcr.nr_frames; done++ )
     {
@@ -1725,20 +1738,28 @@ static int domain_copy_range(
 
         if ( !frc )
         {
-            frame = __map_domain_page(page);
             if ( to_guest )
-                rc = copy_from_guest_offset(frame, xcr.buffer,
+            {
+                rc = copy_from_guest_offset(scratch, xcr.buffer,
                                             (unsigned long)done << PAGE_SHIFT,
                                             PAGE_SIZE) ? -EFAULT : 0;
+                if ( !rc )
+                {
+                    frame = __map_domain_page(page);
+                    copy_page(frame, scratch);
+                    unmap_domain_page(frame);
+                }
+                put_page_and_type(page);
+            }
             else
+            {
+                frame = __map_domain_page(page);
                 rc = copy_to_guest_offset(xcr.buffer,
                                           (unsigned long)done << PAGE_SHIFT,
                                           frame, PAGE_SIZE) ? -EFAULT : 0;
-            unmap_domain_page(frame);
-            if ( to_guest )
-                put_page_and_type(page);
-            else
+                unmap_domain_page(frame);
                 put_page(page);
+            }
 
             /*
              * Not reported per frame, and not recoverable by carrying on: the
@@ -1778,6 +1799,7 @@ static int domain_copy_range(
     rc = flush_copy_range_errs(xcr.errs, buf_at, buf, nr_buf);
 
  out:
+    free_xenheap_page(scratch);
     rcu_unlock_domain(d);
 
     return rc;
