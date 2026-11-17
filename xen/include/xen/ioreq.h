@@ -55,6 +55,13 @@ struct ioreq_server {
     struct rangeset        *range[NR_IO_RANGE_TYPES];
     bool                   enabled;
     uint8_t                bufioreq_handling;
+
+    /* Doorbells that Xen completes itself, see XEN_DMOP_set_doorbell_page. */
+    struct ioreq_page      doorbell;
+    paddr_t                doorbell_base;
+    unsigned int           doorbell_count;
+    unsigned int           doorbell_shift;
+    bool                   doorbell_null;
 };
 
 static inline paddr_t ioreq_mmio_first_byte(const ioreq_t *p)
@@ -98,6 +105,10 @@ int ioreq_server_add_vcpu_all(struct domain *d, struct vcpu *v);
 void ioreq_server_remove_vcpu_all(struct domain *d, struct vcpu *v);
 void ioreq_server_destroy_all(struct domain *d);
 
+struct ioreq_server *ioreq_doorbell_find(struct domain *d, paddr_t addr);
+uint32_t ioreq_doorbell_read(const struct ioreq_server *s, paddr_t addr);
+void ioreq_doorbell_write(struct ioreq_server *s, paddr_t addr, uint32_t val);
+
 struct ioreq_server *ioreq_server_select(struct domain *d,
                                          ioreq_t *p);
 int ioreq_send(struct ioreq_server *s, ioreq_t *proto_p,
@@ -137,6 +148,7 @@ bool arch_ioreq_server_destroy_all(struct domain *d);
 bool arch_ioreq_server_get_type_addr(const struct domain *d, const ioreq_t *p,
                                      uint8_t *type, uint64_t *addr);
 void arch_ioreq_domain_init(struct domain *d);
+int arch_ioreq_enable_doorbells(struct domain *d);
 
 #endif /* __XEN_IOREQ_H__ */
 

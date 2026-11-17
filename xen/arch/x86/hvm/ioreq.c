@@ -325,6 +325,50 @@ void arch_ioreq_domain_init(struct domain *d)
     register_portio_handler(d, 0xcf8, 4, hvm_access_cf8);
 }
 
+static int cf_check doorbell_check(struct vcpu *v, unsigned long addr)
+{
+    return !!ioreq_doorbell_find(v->domain, addr);
+}
+
+static int cf_check doorbell_read(
+    struct vcpu *v, unsigned long addr, unsigned int len, unsigned long *val)
+{
+    const struct ioreq_server *s = ioreq_doorbell_find(v->domain, addr);
+
+    *val = s ? ioreq_doorbell_read(s, addr) : ~0UL;
+
+    return X86EMUL_OKAY;
+}
+
+static int cf_check doorbell_write(
+    struct vcpu *v, unsigned long addr, unsigned int len, unsigned long val)
+{
+    struct ioreq_server *s = ioreq_doorbell_find(v->domain, addr);
+
+    if ( s )
+        ioreq_doorbell_write(s, addr, val);
+
+    return X86EMUL_OKAY;
+}
+
+static const struct hvm_mmio_ops doorbell_mmio_ops = {
+    .check = doorbell_check,
+    .read = doorbell_read,
+    .write = doorbell_write,
+};
+
+/* Called with the domain paused. */
+int arch_ioreq_enable_doorbells(struct domain *d)
+{
+    if ( !d->arch.hvm.doorbell_handler )
+    {
+        register_mmio_handler(d, &doorbell_mmio_ops);
+        d->arch.hvm.doorbell_handler = true;
+    }
+
+    return 0;
+}
+
 /*
  * Local variables:
  * mode: C

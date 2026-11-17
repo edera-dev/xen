@@ -201,6 +201,11 @@ void arch_ioreq_domain_init(struct domain *d)
 {
 }
 
+int arch_ioreq_enable_doorbells(struct domain *d)
+{
+    return -EOPNOTSUPP;
+}
+
 /*
  * Local variables:
  * mode: C

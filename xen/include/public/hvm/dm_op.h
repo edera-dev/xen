@@ -444,6 +444,46 @@ struct xen_dm_op_nr_vcpus {
 };
 typedef struct xen_dm_op_nr_vcpus xen_dm_op_nr_vcpus_t;
 
+/*
+ * XEN_DMOP_set_doorbell_page: Make Xen complete guest writes to @count
+ *                             doorbell registers, @stride bytes apart from
+ *                             @base, without an ioreq.
+ *
+ * Xen stores each write in slot (addr - base) / stride of a page that the
+ * device model maps as frame XENMEM_resource_ioreq_server_frame_doorbell of
+ * the ioreq server, sets the slot's pending bit, and then signals the
+ * buffered ioreq event channel only if the device model set the asleep flag,
+ * which Xen clears. A device model that goes to sleep must set the flag and
+ * then check the pending bits once more. Reads return the last value written.
+ * With XEN_DMOP_DOORBELL_NULL Xen only completes the access, to measure the
+ * cost of the exit. A count of 0 turns the range off. The server must use
+ * buffered ioreqs.
+ */
+#define XEN_DMOP_set_doorbell_page 21
+
+struct xen_dm_op_set_doorbell_page {
+    /* IN - server id */
+    ioservid_t id;
+    /* IN - flags */
+    uint16_t flags;
+#define XEN_DMOP_DOORBELL_NULL (1u << 0)
+    /* IN - number of doorbells, at most XEN_DOORBELL_MAX_SLOTS */
+    uint32_t count;
+    /* IN - guest physical address of the first doorbell, stride aligned */
+    uint64_aligned_t base;
+    /* IN - distance between doorbells, a power of two from 4 to 4096 */
+    uint32_t stride;
+    uint32_t pad;
+};
+typedef struct xen_dm_op_set_doorbell_page xen_dm_op_set_doorbell_page_t;
+
+/* Doorbell page layout: uint32_t slots at offset 4 * slot. */
+#define XEN_DOORBELL_MAX_SLOTS     512
+/* uint32_t, bit 0: the device model waits for the event channel. */
+#define XEN_DOORBELL_ASLEEP_OFFSET 0x800
+/* XEN_DOORBELL_MAX_SLOTS pending bits, little endian, 8 byte aligned. */
+#define XEN_DOORBELL_PENDING_OFFSET 0x840
+
 struct xen_dm_op {
     uint32_t op;
     uint32_t pad;
@@ -468,6 +508,7 @@ struct xen_dm_op {
         xen_dm_op_relocate_memory_t relocate_memory;
         xen_dm_op_pin_memory_cacheattr_t pin_memory_cacheattr;
         xen_dm_op_nr_vcpus_t nr_vcpus;
+        xen_dm_op_set_doorbell_page_t set_doorbell_page;
     } u;
 };
 

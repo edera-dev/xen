@@ -71,6 +71,7 @@ struct hvm_domain {
 
     struct hvm_io_handler *io_handler;
     unsigned int          io_handler_count;
+    bool                  doorbell_handler;
 
     /* Lock protects access to irq, vpic and vioapic. */
     spinlock_t             irq_lock;

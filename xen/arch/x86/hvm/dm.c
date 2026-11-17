@@ -350,6 +350,7 @@ int dm_op(const struct dmop_args *op_args)
         [XEN_DMOP_relocate_memory]                  = sizeof(struct xen_dm_op_relocate_memory),
         [XEN_DMOP_pin_memory_cacheattr]             = sizeof(struct xen_dm_op_pin_memory_cacheattr),
         [XEN_DMOP_nr_vcpus]                         = sizeof(struct xen_dm_op_nr_vcpus),
+        [XEN_DMOP_set_doorbell_page]                = sizeof(struct xen_dm_op_set_doorbell_page),
     };
 
     rc = rcu_lock_remote_domain_by_id(op_args->domid, &d);
