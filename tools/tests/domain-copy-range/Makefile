@@ -35,6 +35,7 @@ memory.c: $(XEN_ROOT)/xen/common/memory.c
 	{ echo '#include "harness.h"'; \
 	  sed -n -e '/^#define COPY_RANGE_ERRS_BATCH /p' \
 	         -e '/^static int flush_copy_range_errs(/,/^}/p' \
+	         -e '/^static bool copy_range_buffer_readable(/,/^}/p' \
 	         -e '/^static int domain_copy_range(/,/^}/{s/^static //;p;}' <$<; \
 	} >$@.tmp
 	mv -f $@.tmp $@

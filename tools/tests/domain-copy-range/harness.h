@@ -2,9 +2,10 @@
 /*
  * Unit tests for XENMEM_domain_copy_range, built from domain_copy_range() in
  * xen/common/memory.c.  The target domain's frames and the caller's memory are
- * arrays in the test, a page lookup takes references the test counts, and a
- * copy from the caller's memory can be made to fault part way, zero-filling
- * what it did not copy as x86 does for a PV caller.
+ * arrays in the test, and a page lookup takes references the test counts.  A
+ * copy from the caller's memory fails at a page the test makes unreadable, as
+ * x86 does: for a PV vCPU zero-filling what it did not copy, and for an HVM
+ * vCPU leaving it, having copied the pages before.
  */
 
 #ifndef TEST_HARNESS_H
@@ -31,6 +32,7 @@
 /* Some libcs define PAGE_SIZE in limits.h. */
 #undef  PAGE_SIZE
 #define PAGE_SIZE  (1UL << PAGE_SHIFT)
+#define PAGE_MASK  (~(PAGE_SIZE - 1))
 
 typedef unsigned long gfn_t;
 #define _gfn(x) (x)
@@ -57,9 +59,12 @@ struct domain {
 
 struct vcpu {
     struct domain *domain;
+    bool pv;
 };
 
 extern struct vcpu *current;
+
+#define is_pv_vcpu(v) ((v)->pv)
 
 #define XSM_TARGET 0
 int xsm_add_to_physmap(int action, struct domain *d1, struct domain *d2);
@@ -75,10 +80,6 @@ void put_page_and_type(struct page_info *page);
 
 void *__map_domain_page(struct page_info *page);
 void unmap_domain_page(const void *va);
-#define copy_page(dp, sp) memcpy(dp, sp, PAGE_SIZE)
-
-void *alloc_xenheap_page(void);
-void free_xenheap_page(void *v);
 
 /* Arm's public headers define it, and x86's leave it to the hypervisor. */
 #ifndef XEN_GUEST_HANDLE_PARAM

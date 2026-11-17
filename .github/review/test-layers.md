@@ -52,13 +52,14 @@ upstream code.
 - `tools/tests/domain-copy-range` covers `XENMEM_domain_copy_range`, built from
   `domain_copy_range()` in `xen/common/memory.c`. A write must fill each frame
   from its page of the caller's buffer. A write whose page of the buffer
-  cannot be read, from its start or from part way through, must fail with
-  `-EFAULT` and leave that frame as it was, with the frames before it written.
-  A write with no scratch page must fail with `-ENOMEM` before any frame is
-  touched, and a read must copy each frame out. The page lookup, the allocator
-  and the copy from the caller are stand-ins, the copy zero-filling what it
-  could not read as x86 does for a PV caller, so it does not cover the p2m
-  types a real lookup returns, per-frame `errs`, or continuations.
+  cannot be read must fail with `-EFAULT` and leave that frame as it was, with
+  the frames before it written, both for a PV caller, whose copy zero-fills on
+  a fault, and for an HVM one, and both for a page-aligned buffer and one whose
+  page spans two of the caller's pages. An HVM caller's page-aligned write must
+  read the buffer only once per frame, a call with no frames must return 0
+  without reading it, and a read must copy each frame out. The page lookup and
+  the copy from the caller are stand-ins, so it does not cover the p2m types a
+  real lookup returns, per-frame `errs`, continuations, or Arm's copy.
 - `tools/tests/dsdt` covers the Arm AML walker in `xen/arch/arm/acpi/dsdt.c`,
   `acpi_pci_get_host_bridge_windows()`: finding a host bridge by a string or
   EisaId `_HID` or `_CID`, reading `_SEG` in every integer encoding and

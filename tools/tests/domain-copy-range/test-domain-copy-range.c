@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Unit tests for XENMEM_domain_copy_range.  A write copies pages of the
- * caller's buffer into a domain's frames and must leave a frame as it was
- * when the copy from the buffer faults; a read copies the frames out.  Each
- * case checks what the call returned, what the frames and the buffer hold
- * afterwards, and that every reference and scratch page was given back.
+ * caller's buffer into a domain's frames and must leave a frame as it was when
+ * its page of the buffer cannot be read; a read copies the frames out.  Each
+ * case checks what the call returned, what the frames hold afterwards, and
+ * that every reference was given back.  The caller is a PV or an HVM vCPU, and
+ * its buffer is page-aligned or starts half way into a page, so that each
+ * frame's page of it spans two of the caller's pages.
  */
 
 #include "harness.h"
@@ -25,14 +27,19 @@ static const char *test_name;
 
 static uint8_t frames[NR_FRAMES][PAGE_SIZE];
 static struct page_info pages[NR_FRAMES];
-static uint8_t buffer[NR_FRAMES * PAGE_SIZE];
 
-/* The part of the buffer a copy from the caller cannot read, if any. */
-static const uint8_t *unreadable_from, *unreadable_to;
+/*
+ * The caller's memory: NR_FRAMES + 1 pages, so that a buffer starting half way
+ * into the first still has NR_FRAMES pages of room.  A page of it can be made
+ * unreadable.
+ */
+static uint8_t memory[(NR_FRAMES + 1) * PAGE_SIZE]
+    __attribute__((__aligned__(PAGE_SIZE)));
+static bool unreadable[NR_FRAMES + 1];
+static uint8_t *buffer;
 
-/* Scratch pages handed out and not freed, and whether the next one fails. */
-static int scratch_live;
-static bool scratch_fails;
+/* Copies the call made from the caller's memory. */
+static unsigned int buffer_reads;
 
 int xsm_add_to_physmap(int action, struct domain *d1, struct domain *d2)
 {
@@ -92,46 +99,41 @@ void unmap_domain_page(const void *va)
 {
 }
 
-void *alloc_xenheap_page(void)
-{
-    void *p;
-
-    if ( scratch_fails )
-        return NULL;
-
-    p = malloc(PAGE_SIZE);
-    if ( p )
-        scratch_live++;
-
-    return p;
-}
-
-void free_xenheap_page(void *v)
-{
-    if ( v )
-        scratch_live--;
-    free(v);
-}
-
 /*
- * As x86 copies from a PV caller: up to the first byte that cannot be read,
- * with the rest of the destination zero-filled.
+ * A page at a time, stopping at the first page of the caller's memory that
+ * cannot be read.  For a PV vCPU the rest of the destination is zero-filled,
+ * as x86's copy_from_guest_pv() does; for an HVM vCPU it is left as it was.
  */
 unsigned long test_copy_from_guest(void *to, const void *from,
                                    unsigned long n)
 {
-    uintptr_t start = (uintptr_t)from, end = start + n;
-    unsigned long ok = n;
+    uintptr_t base = (uintptr_t)memory, src = (uintptr_t)from;
+    unsigned long done = 0;
 
-    if ( unreadable_from && start < (uintptr_t)unreadable_to &&
-         end > (uintptr_t)unreadable_from )
-        ok = (uintptr_t)unreadable_from > start
-             ? (uintptr_t)unreadable_from - start : 0;
+    if ( src < base || src >= base + sizeof(memory) )
+    {
+        memcpy(to, from, n);
+        return 0;
+    }
 
-    memcpy(to, from, ok);
-    memset((uint8_t *)to + ok, 0, n - ok);
+    buffer_reads++;
 
-    return n - ok;
+    while ( done < n )
+    {
+        unsigned long at = src + done - base;
+        unsigned long chunk = MIN(n - done, PAGE_SIZE - (at % PAGE_SIZE));
+
+        if ( at >= sizeof(memory) || unreadable[at / PAGE_SIZE] )
+            break;
+
+        memcpy((uint8_t *)to + done, memory + at, chunk);
+        done += chunk;
+    }
+
+    if ( done < n && current->pv )
+        memset((uint8_t *)to + done, 0, n - done);
+
+    return n - done;
 }
 
 unsigned long test_copy_to_guest(void *to, const void *from,
@@ -152,16 +154,27 @@ long hypercall_create_continuation(unsigned int op, const char *format, ...)
     return -ERESTART;
 }
 
-static long copy_range(uint16_t flags, unsigned int nr_frames)
+static long copy_range(uint16_t flags, unsigned int nr_frames, void *buf)
 {
     struct xen_domain_copy_range xcr = {
         .domid = DOMID, .flags = flags, .nr_frames = nr_frames,
     };
     XEN_GUEST_HANDLE_PARAM(xen_domain_copy_range_t) arg = { .p = &xcr };
 
-    set_xen_guest_handle(xcr.buffer, buffer);
+    set_xen_guest_handle(xcr.buffer, buf);
 
     return domain_copy_range(arg, 0);
+}
+
+static void caller_is(bool pv, bool aligned)
+{
+    unsigned int i;
+
+    vcpu.pv = pv;
+    buffer = memory + (aligned ? 0 : PAGE_SIZE / 2);
+
+    for ( i = 0; i < NR_FRAMES; i++ )
+        memset(buffer + i * PAGE_SIZE, NEW(i), PAGE_SIZE);
 }
 
 static bool all(const uint8_t *p, uint8_t val)
@@ -186,7 +199,7 @@ static const char *frame_state(unsigned int i)
     return "partly overwritten";
 }
 
-/* Every page reference, type reference and scratch page given back. */
+/* Every page reference and type reference given back. */
 static bool balanced(void)
 {
     unsigned int i;
@@ -195,7 +208,7 @@ static bool balanced(void)
         if ( pages[i].refs || pages[i].type_refs )
             return false;
 
-    return !scratch_live;
+    return true;
 }
 
 /*
@@ -209,63 +222,110 @@ static bool outcome(long rc, long want, bool written0, bool written1)
         return true;
 
     printf("%s: rc %ld, want %ld; frame 0 %s, frame 1 %s; references %d/%d "
-           "and %d/%d, %d scratch pages held\n", test_name, rc, want,
-           frame_state(0), frame_state(1), pages[0].refs, pages[0].type_refs,
-           pages[1].refs, pages[1].type_refs, scratch_live);
+           "and %d/%d\n", test_name, rc, want, frame_state(0), frame_state(1),
+           pages[0].refs, pages[0].type_refs, pages[1].refs,
+           pages[1].type_refs);
     return false;
 }
 
-static void unreadable(unsigned long from, unsigned long to)
+static bool test_pv_write(void)
 {
-    unreadable_from = buffer + from;
-    unreadable_to = buffer + to;
+    caller_is(true, false);
+
+    return outcome(copy_range(0, NR_FRAMES, buffer), 0, true, true);
 }
 
-static bool test_write(void)
+static bool test_hvm_write(void)
 {
-    return outcome(copy_range(0, NR_FRAMES), 0, true, true);
+    caller_is(false, true);
+
+    if ( !outcome(copy_range(0, NR_FRAMES, buffer), 0, true, true) )
+        return false;
+
+    if ( buffer_reads == NR_FRAMES )
+        return true;
+
+    printf("%s: %u reads of the buffer, want %u\n", test_name, buffer_reads,
+           NR_FRAMES);
+    return false;
 }
 
-static bool test_unreadable_page(void)
+static bool test_pv_unreadable(void)
 {
-    unreadable(0, PAGE_SIZE);
+    caller_is(true, true);
+    unreadable[0] = true;
 
-    return outcome(copy_range(0, 1), -EFAULT, false, false);
+    return outcome(copy_range(0, 1, buffer), -EFAULT, false, false);
 }
 
-static bool test_unreadable_part_way(void)
+static bool test_pv_first_unreadable(void)
 {
-    unreadable(PAGE_SIZE / 2, PAGE_SIZE);
+    caller_is(true, false);
+    unreadable[0] = true;
 
-    return outcome(copy_range(0, 1), -EFAULT, false, false);
+    return outcome(copy_range(0, 1, buffer), -EFAULT, false, false);
 }
 
-static bool test_second_page_unreadable(void)
+static bool test_pv_second_unreadable(void)
 {
-    unreadable(PAGE_SIZE, 2 * PAGE_SIZE);
+    caller_is(true, false);
+    unreadable[1] = true;
 
-    return outcome(copy_range(0, NR_FRAMES), -EFAULT, true, false);
+    return outcome(copy_range(0, 1, buffer), -EFAULT, false, false);
 }
 
-static bool test_no_scratch(void)
+static bool test_hvm_unreadable(void)
 {
-    scratch_fails = true;
+    caller_is(false, true);
+    unreadable[0] = true;
 
-    return outcome(copy_range(0, NR_FRAMES), -ENOMEM, false, false);
+    return outcome(copy_range(0, 1, buffer), -EFAULT, false, false);
+}
+
+static bool test_hvm_second_unreadable(void)
+{
+    caller_is(false, false);
+    unreadable[1] = true;
+
+    return outcome(copy_range(0, 1, buffer), -EFAULT, false, false);
+}
+
+static bool test_pv_later_page_unreadable(void)
+{
+    caller_is(true, true);
+    unreadable[1] = true;
+
+    return outcome(copy_range(0, NR_FRAMES, buffer), -EFAULT, true, false);
+}
+
+static bool test_no_frames(void)
+{
+    long rc;
+
+    caller_is(true, true);
+    rc = copy_range(0, 0, NULL);
+
+    if ( !rc && !buffer_reads && outcome(rc, 0, false, false) )
+        return true;
+
+    printf("%s: rc %ld, %u reads of the buffer\n", test_name, rc,
+           buffer_reads);
+    return false;
 }
 
 static bool test_read(void)
 {
-    long rc = copy_range(XENMEM_DOMAIN_COPY_from_guest, NR_FRAMES);
+    long rc;
+
+    caller_is(true, true);
+    rc = copy_range(XENMEM_DOMAIN_COPY_from_guest, NR_FRAMES, buffer);
 
     if ( !rc && all(buffer, OLD(0)) && all(buffer + PAGE_SIZE, OLD(1)) &&
-         all(frames[0], OLD(0)) && all(frames[1], OLD(1)) && balanced() )
+         outcome(rc, 0, false, false) )
         return true;
 
-    printf("%s: rc %ld; the buffer does not hold the frames, the frames "
-           "changed, or references %d/%d and %d/%d or %d scratch pages are "
-           "still held\n", test_name, rc, pages[0].refs, pages[0].type_refs,
-           pages[1].refs, pages[1].type_refs, scratch_live);
+    printf("%s: rc %ld, or the buffer does not hold the frames\n", test_name,
+           rc);
     return false;
 }
 
@@ -273,15 +333,24 @@ static const struct {
     const char *name;
     bool (*run)(void);
 } tests[] = {
-    { "write: each frame holds its page of the buffer", test_write },
-    { "write from an unreadable page: -EFAULT, and the frame is as it was",
-      test_unreadable_page },
-    { "write from a page that faults part way: -EFAULT, and the frame is as "
-      "it was", test_unreadable_part_way },
-    { "write whose second page is unreadable: the first frame is written, "
-      "and the second is as it was", test_second_page_unreadable },
-    { "write with no scratch page: -ENOMEM, and no frame is touched",
-      test_no_scratch },
+    { "PV caller, write across pages: each frame holds its page of the "
+      "buffer", test_pv_write },
+    { "HVM caller, write from aligned pages: each frame holds its page, read "
+      "once", test_hvm_write },
+    { "PV caller, page unreadable: -EFAULT, and the frame is as it was",
+      test_pv_unreadable },
+    { "PV caller, first of two pages unreadable: -EFAULT, and the frame is as "
+      "it was", test_pv_first_unreadable },
+    { "PV caller, second of two pages unreadable: -EFAULT, and the frame is "
+      "as it was", test_pv_second_unreadable },
+    { "HVM caller, page unreadable: -EFAULT, and the frame is as it was",
+      test_hvm_unreadable },
+    { "HVM caller, second of two pages unreadable: -EFAULT, and the frame is "
+      "as it was", test_hvm_second_unreadable },
+    { "PV caller, second frame's page unreadable: the first frame is written, "
+      "and the second is as it was", test_pv_later_page_unreadable },
+    { "no frames, as a capability probe asks: 0, and no buffer read",
+      test_no_frames },
     { "read: each page of the buffer holds its frame", test_read },
 };
 
@@ -292,14 +361,11 @@ int main(void)
     for ( i = 0; i < ARRAY_SIZE(tests); i++ )
     {
         for ( j = 0; j < NR_FRAMES; j++ )
-        {
             memset(frames[j], OLD(j), PAGE_SIZE);
-            memset(buffer + j * PAGE_SIZE, NEW(j), PAGE_SIZE);
-        }
         memset(pages, 0, sizeof(pages));
-        unreadable_from = unreadable_to = NULL;
-        scratch_live = 0;
-        scratch_fails = false;
+        memset(memory, 0, sizeof(memory));
+        memset(unreadable, 0, sizeof(unreadable));
+        buffer_reads = 0;
 
         /* Named first, so that a fault shows which test it was. */
         test_name = tests[i].name;
