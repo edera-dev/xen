@@ -49,6 +49,16 @@ covers the logic of that file, not how the hypervisor uses it.
 The tests below cover downstream code, and the rest are upstream's tests of
 upstream code.
 
+- `tools/tests/domain-copy-range` covers `XENMEM_domain_copy_range`, built from
+  `domain_copy_range()` in `xen/common/memory.c`. A write must fill each frame
+  from its page of the caller's buffer. A write whose page of the buffer
+  cannot be read, from its start or from part way through, must fail with
+  `-EFAULT` and leave that frame as it was, with the frames before it written.
+  A write with no scratch page must fail with `-ENOMEM` before any frame is
+  touched, and a read must copy each frame out. The page lookup, the allocator
+  and the copy from the caller are stand-ins, the copy zero-filling what it
+  could not read as x86 does for a PV caller, so it does not cover the p2m
+  types a real lookup returns, per-frame `errs`, or continuations.
 - `tools/tests/dsdt` covers the Arm AML walker in `xen/arch/arm/acpi/dsdt.c`,
   `acpi_pci_get_host_bridge_windows()`: finding a host bridge by a string or
   EisaId `_HID` or `_CID`, reading `_SEG` in every integer encoding and
