@@ -391,8 +391,10 @@ struct iommu_ops {
     int (*update_ire_from_msi)(struct msi_desc *msi_desc, struct msi_msg *msg);
 #endif /* CONFIG_X86 */
 
+#ifdef CONFIG_SYSTEM_SUSPEND
     int __must_check (*suspend)(void);
     void (*resume)(void);
+#endif
     void (*crash_shutdown)(void);
     int __must_check (*iotlb_flush)(struct domain *d,
                                     struct iommu_context *ctx, dfn_t dfn,
@@ -567,8 +569,10 @@ void iommu_put_mapped_page(struct page_info *pg);
 int iommu_domain_pviommu_teardown(struct domain *d);
 int __must_check iommu_relinquish_contexts(struct domain *d);
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 int __must_check iommu_suspend(void);
 void iommu_resume(void);
+#endif
 void iommu_crash_shutdown(void);
 void iommu_quiesce(void);
 int iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt);

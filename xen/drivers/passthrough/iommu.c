@@ -1451,6 +1451,7 @@ int __init iommu_setup(void)
     return rc;
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 int iommu_suspend(void)
 {
     if ( iommu_enabled )
@@ -1464,6 +1465,7 @@ void iommu_resume(void)
     if ( iommu_enabled )
         iommu_vcall(iommu_get_ops(), resume);
 }
+#endif
 
 int iommu_do_domctl(
     struct xen_domctl *domctl, struct domain *d,

@@ -18,7 +18,6 @@ config X86
 	select HAS_COMPAT
 	select HAS_CPUFREQ
 	select HAS_DIT
-	select HAS_EHCI
 	select HAS_EX_TABLE
 	select HAS_FAST_MULTIPLY
 	select HAS_IOPORTS
@@ -30,12 +29,13 @@ config X86
 	select HAS_PIRQ
 	select HAS_SCHED_GRANULARITY
 	imply HAS_SOFT_RESET
+	select HAS_SYSTEM_SUSPEND
 	select HAS_UBSAN
 	select HAS_VMAP
 	select HAS_VPCI if HVM
 	select HAS_VPCI_GUEST_SUPPORT if HVM
 	select NEEDS_LIBELF
-	select SYSTEM_SUSPEND_ALWAYS_ON
+	select SYSTEM_SUSPEND_ALWAYS_ON if PV
 
 config ARCH_DEFCONFIG
 	string

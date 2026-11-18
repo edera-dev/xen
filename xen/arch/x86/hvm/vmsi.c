@@ -147,6 +147,7 @@ int hvm_girq_dest_2_vcpu_id(struct domain *d, uint8_t dest, uint8_t dest_mode)
     return dest_vcpu_id;
 }
 
+#ifdef CONFIG_IOREQ_SERVER
 /* MSI-X mask bit hypervisor interception */
 struct msixtbl_entry
 {
@@ -791,6 +792,7 @@ void msix_write_completion(struct vcpu *v)
     if ( msixtbl_write(v, ctrl_address, 4, 0) != X86EMUL_OKAY )
         gdprintk(XENLOG_WARNING, "MSI-X write completion failure\n");
 }
+#endif /* CONFIG_IOREQ_SERVER */
 
 #ifdef CONFIG_HAS_VPCI
 static unsigned int msi_gflags(uint16_t data, uint64_t addr, bool masked)

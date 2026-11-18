@@ -367,8 +367,10 @@ boolean_param("amd-iommu-flush-on-map", amd_iommu_flush_on_map);
 unsigned int __read_mostly amd_iommu_dump_bdf;
 integer_param("amd-iommu-dump-bdf", amd_iommu_dump_bdf);
 
+#ifdef CONFIG_GUEST
 unsigned int __read_mostly amd_iommu_guest_pt_levels;
 integer_param("amd-iommu-guest-pt-levels", amd_iommu_guest_pt_levels);
+#endif
 int __read_mostly amd_iommu_min_paging_mode = 1;
 
 static int cf_check amd_iommu_domain_init(struct domain *d)
@@ -900,8 +902,10 @@ static const struct iommu_ops __initconst_cf_clobber _iommu_ops = {
     .read_apic_from_ire = amd_iommu_read_ioapic_from_ire,
     .setup_hpet_msi = amd_setup_hpet_msi,
     .adjust_irq_affinities = iov_adjust_irq_affinities,
+#ifdef CONFIG_SYSTEM_SUSPEND
     .suspend = amd_iommu_suspend,
     .resume = amd_iommu_resume,
+#endif
     .crash_shutdown = amd_iommu_crash_shutdown,
     .lookup_page = amd_iommu_lookup_page,
     .get_reserved_device_memory = amd_iommu_get_reserved_device_memory,

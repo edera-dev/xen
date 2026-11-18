@@ -1328,6 +1328,7 @@ int pci_msi_conf_write_intercept(struct pci_dev *pdev, unsigned int reg,
     return 0;
 }
 
+#ifdef CONFIG_PV
 int pci_restore_msi_state(struct pci_dev *pdev)
 {
     unsigned long flags;
@@ -1436,6 +1437,7 @@ int pci_restore_msi_state(struct pci_dev *pdev)
 
     return 0;
 }
+#endif
 
 void __init early_msi_init(void)
 {

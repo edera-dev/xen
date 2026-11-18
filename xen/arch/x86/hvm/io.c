@@ -32,6 +32,7 @@
 #include <xen/iocap.h>
 #include <public/hvm/ioreq.h>
 
+#ifdef CONFIG_IOREQ_SERVER
 void send_timeoffset_req(unsigned long timeoff)
 {
     ioreq_t p = {
@@ -49,6 +50,7 @@ void send_timeoffset_req(unsigned long timeoff)
     if ( ioreq_broadcast(&p, true) != 0 )
         gprintk(XENLOG_ERR, "Unsuccessful timeoffset update\n");
 }
+#endif
 
 bool hvm_emulate_one_insn(hvm_emulate_validate_t *validate, const char *descr)
 {

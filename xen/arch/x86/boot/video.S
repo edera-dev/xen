@@ -433,7 +433,9 @@ check_vesa:
         jnz     setbad                  # AH=0 if OK
 
         movb    $1, bootsym(graphic_mode)  # flag graphic mode
+#ifdef CONFIG_SYSTEM_SUSPEND
         movw    %bx, bootsym(video_mode)
+#endif
         stc
         ret
 
@@ -687,7 +689,9 @@ set_current:
 
         movb    $1, bootsym(graphic_mode)
         movw    %bx, bootsym(boot_vid_mode)
+#ifdef CONFIG_SYSTEM_SUSPEND
         movw    %bx, bootsym(video_mode)
+#endif
 
 .Lsetc_done:
         stc

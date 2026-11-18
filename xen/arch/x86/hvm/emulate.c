@@ -347,7 +347,7 @@ static int hvmemul_do_io(
         struct ioreq_server *s = NULL;
         p2m_type_t p2mt = p2m_invalid;
 
-        if ( is_mmio )
+        if ( IS_ENABLED(CONFIG_IOREQ_SERVER) && is_mmio )
         {
             unsigned long gmfn = paddr_to_pfn(addr);
 

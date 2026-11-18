@@ -61,7 +61,8 @@ static long cf_check smt_up_down_helper(void *data)
         if ( !(x86_cpu_to_apicid[cpu] & sibling_mask) )
             continue;
 
-        if ( !up && core_parking_remove(cpu) )
+        if ( !up && IS_ENABLED(CONFIG_CORE_PARKING) &&
+             core_parking_remove(cpu) )
             continue;
 
         ret = up ? cpu_up_helper(_p(cpu))

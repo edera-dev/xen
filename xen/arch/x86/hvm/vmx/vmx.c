@@ -4127,6 +4127,7 @@ static void vmx_handle_xrstors(void)
     domain_crash(current->domain);
 }
 
+#ifdef CONFIG_VM_EVENT
 static void vmx_handle_descriptor_access(uint32_t exit_reason)
 {
     uint64_t instr_info;
@@ -4153,6 +4154,7 @@ static void vmx_handle_descriptor_access(uint32_t exit_reason)
                                         info.instr_write);
     }
 }
+#endif /* CONFIG_VM_EVENT */
 
 static int vmx_handle_apic_write(void)
 {
@@ -4825,10 +4827,12 @@ void asmlinkage vmx_vmexit_handler(struct cpu_user_regs *regs)
         vmx_handle_xrstors();
         break;
 
+#ifdef CONFIG_VM_EVENT
     case EXIT_REASON_ACCESS_GDTR_OR_IDTR:
     case EXIT_REASON_ACCESS_LDTR_OR_TR:
         vmx_handle_descriptor_access(exit_reason);
         break;
+#endif
 
     case EXIT_REASON_NOTIFY:
         __vmread(EXIT_QUALIFICATION, &exit_qualification);

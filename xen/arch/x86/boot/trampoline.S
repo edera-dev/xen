@@ -116,7 +116,9 @@ start64:
         jmpq    *%rdi
 
 #include "video.h"
+#ifdef CONFIG_SYSTEM_SUSPEND
 #include "wakeup.S"
+#endif
 
         .balign 8
         .word   0

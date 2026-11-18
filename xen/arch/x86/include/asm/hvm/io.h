@@ -83,7 +83,11 @@ bool relocate_portio_handler(
     struct domain *d, unsigned int old_port, unsigned int new_port,
     unsigned int size);
 
+#ifdef CONFIG_IOREQ_SERVER
 void send_timeoffset_req(unsigned long timeoff);
+#else
+static inline void send_timeoffset_req(unsigned long timeoff) {}
+#endif
 bool handle_mmio_with_translation(unsigned long gla, unsigned long gpfn,
                                   struct npfec access);
 bool handle_pio(uint16_t port, unsigned int size, int dir);
@@ -91,7 +95,7 @@ void hvm_interrupt_post(struct vcpu *v, int vector, int type);
 void hvm_dpci_eoi(struct domain *d, unsigned int guest_gsi);
 void msix_write_completion(struct vcpu *v);
 
-#ifdef CONFIG_HVM
+#ifdef CONFIG_IOREQ_SERVER
 void msixtbl_init(struct domain *d);
 #else
 static inline void msixtbl_init(struct domain *d) {}

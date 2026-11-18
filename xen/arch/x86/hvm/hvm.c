@@ -3788,6 +3788,8 @@ void hvm_set_reg(struct vcpu *v, unsigned int reg, uint64_t val)
     }
 }
 
+#ifdef CONFIG_VM_EVENT
+/* Descriptor table accesses only exit to Xen when a monitor asks for it. */
 static bool cf_check is_sysdesc_access(
     const struct x86_emulate_state *state, const struct x86_emulate_ctxt *ctxt)
 {
@@ -3829,6 +3831,7 @@ int hvm_descriptor_access_intercept(uint64_t exit_info,
 
     return X86EMUL_OKAY;
 }
+#endif /* CONFIG_VM_EVENT */
 
 void hvm_ud_intercept(struct cpu_user_regs *regs)
 {
@@ -4295,6 +4298,7 @@ static int hvm_set_param(struct domain *d, uint32_t index, uint64_t value)
         if ( value > SHUTDOWN_MAX )
             rc = -EINVAL;
         break;
+#ifdef CONFIG_IOREQ_SERVER
     case HVM_PARAM_IOREQ_SERVER_PFN:
         d->arch.hvm.ioreq_gfn.base = value;
         break;
@@ -4323,6 +4327,7 @@ static int hvm_set_param(struct domain *d, uint32_t index, uint64_t value)
         if ( value )
             set_bit(index, &d->arch.hvm.ioreq_gfn.legacy_mask);
         break;
+#endif
 
     case HVM_PARAM_X87_FIP_WIDTH:
         if ( value != 0 && value != 4 && value != 8 )

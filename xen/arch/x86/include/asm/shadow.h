@@ -48,6 +48,7 @@
 /*****************************************************************************
  * Entry points into the shadow code */
 
+#if defined(CONFIG_SHADOW_PAGING) || defined(CONFIG_PV)
 /* Set up the shadow-specific parts of a domain struct at start of day.
  * Called from paging_domain_init(). */
 int shadow_domain_init(struct domain *d);
@@ -55,6 +56,19 @@ int shadow_domain_init(struct domain *d);
 /* Setup the shadow-specific parts of a vcpu struct. It is called by
  * paging_vcpu_init() in paging.c */
 void shadow_vcpu_init(struct vcpu *v);
+#else
+/* Only HVM domains with HAP can be created. */
+static inline int shadow_domain_init(struct domain *d)
+{
+    ASSERT_UNREACHABLE();
+    return -EOPNOTSUPP;
+}
+
+static inline void shadow_vcpu_init(struct vcpu *v)
+{
+    ASSERT_UNREACHABLE();
+}
+#endif
 
 #ifdef CONFIG_SHADOW_PAGING
 

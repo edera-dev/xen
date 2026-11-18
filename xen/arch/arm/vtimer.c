@@ -444,6 +444,7 @@ bool vtimer_emulate(struct cpu_user_regs *regs, union hsr hsr)
     }
 }
 
+#ifdef CONFIG_NEW_VGIC
 static void vtimer_update_irq(struct vcpu *v, struct vtimer *vtimer,
                               register_t vtimer_ctl)
 {
@@ -492,6 +493,7 @@ void vtimer_update_irqs(struct vcpu *v)
     /* For the physical timer we rely on our emulated state. */
     vtimer_update_irq(v, &v->arch.phys_timer, v->arch.phys_timer.ctl);
 }
+#endif /* CONFIG_NEW_VGIC */
 
 /*
  * Local variables:

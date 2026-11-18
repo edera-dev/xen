@@ -3,7 +3,6 @@ menuconfig HVM
 	depends on !PV_SHIM_EXCLUSIVE
 	default !PV_SHIM
 	select COMPAT
-	select IOREQ_SERVER
 	help
 	  Interfaces to support HVM domains.  HVM domains require hardware
 	  virtualisation extensions (e.g. Intel VT-x, AMD SVM), but can boot
@@ -90,6 +89,6 @@ config MEM_PAGING
 
 config MEM_SHARING
 	bool "Xen memory sharing support (UNSUPPORTED)" if UNSUPPORTED
-	depends on INTEL_VMX
+	depends on INTEL_VMX || AMD_SVM
 
 endif

@@ -1549,6 +1549,7 @@ void desc_guest_eoi(struct irq_desc *desc, struct pirq *pirq)
         on_selected_cpus(&cpu_eoi_map, set_eoi_ready, desc, 0);
 }
 
+#ifdef CONFIG_PV
 int pirq_guest_unmask(struct domain *d)
 {
     unsigned int pirq = 0, n, i;
@@ -1568,6 +1569,7 @@ int pirq_guest_unmask(struct domain *d)
 
     return 0;
 }
+#endif
 
 static int irq_acktype(const struct irq_desc *desc)
 {

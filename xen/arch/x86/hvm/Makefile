@@ -3,7 +3,7 @@ obj-$(CONFIG_VIRIDIAN) += viridian/
 obj-$(CONFIG_INTEL_VMX) += vmx/
 
 obj-y += asid.o
-obj-y += dm.o
+obj-$(CONFIG_IOREQ_SERVER) += dm.o
 obj-bin-y += dom0_build.init.o
 obj-y += domain.o
 obj-y += emulate.o
@@ -13,7 +13,7 @@ obj-y += hvm.o
 obj-y += hypercall.o
 obj-y += intercept.o
 obj-y += io.o
-obj-y += ioreq.o
+obj-$(CONFIG_IOREQ_SERVER) += ioreq.o
 obj-y += irq.o
 obj-y += mmio.o
 obj-$(CONFIG_VM_EVENT) += monitor.o

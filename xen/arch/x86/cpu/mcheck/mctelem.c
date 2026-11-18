@@ -126,8 +126,14 @@ struct mc_telem_cpu_ctl {
 };
 static DEFINE_PER_CPU(struct mc_telem_cpu_ctl, mctctl);
 
+/*
+ * Only XEN_MC_fetch (do_mca(), a PV-only hypercall) consumes committed
+ * telemetry, so the processing lists exist only with CONFIG_PV.
+ */
+#ifdef CONFIG_PV
 /* Lock protecting all processing lists */
 static DEFINE_SPINLOCK(processing_lock);
+#endif
 
 static void mctelem_xchg_head(struct mctelem_ent **headp,
 				struct mctelem_ent **linkp,
@@ -302,6 +308,7 @@ static void mctelem_hold(struct mctelem_ent *tep)
 	tep->mcte_refcnt++;
 }
 
+#ifdef CONFIG_PV
 /* Increment the reference count on an entry that is linked at the head of
  * a processing list.  The caller is responsible for locking the list.
  */
@@ -329,6 +336,7 @@ static void mctelem_processing_release(struct mctelem_ent *tep)
 		mctelem_free(tep);
 	}
 }
+#endif /* CONFIG_PV */
 
 void __init mctelem_init(unsigned int datasz)
 {
@@ -436,6 +444,7 @@ void mctelem_commit(mctelem_cookie_t cookie)
 	mctelem_xchg_head(&mctctl.mctc_committed[target], &tep->mcte_prev, tep);
 }
 
+#ifdef CONFIG_PV
 /* Move telemetry from committed list to processing list, reversing the
  * list into chronological order.  The processing list has been
  * locked by the caller, and may be non-empty.  We append the
@@ -542,6 +551,7 @@ void mctelem_ack(mctelem_class_t which, mctelem_cookie_t cookie)
 		mctelem_processing_release(tep);
 	spin_unlock(&processing_lock);
 }
+#endif /* CONFIG_PV */
 
 /*
  * Local variables:

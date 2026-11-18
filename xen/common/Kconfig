@@ -9,8 +9,18 @@ config COMPAT
 	  of the destination runmode of the guest.
 
 config CORE_PARKING
-	bool
-	depends on NR_CPUS > 1
+	bool "Core parking" if EXPERT
+	depends on X86 && NR_CPUS > 1
+	help
+	  Lets the hardware domain take physical CPU cores offline and bring
+	  them back with XENPF_core_parking, as Linux's xen-acpi-pad driver
+	  does when the firmware's ACPI Processor Aggregator Device (ACPI000C)
+	  asks for idle cores to cap power.
+
+	  Without it XENPF_core_parking cannot park cores: requests for a
+	  nonzero number of idle cores fail with -EINVAL.
+
+	  If unsure, say Y.
 
 config DEVICE_TREE_PARSE
 	bool
@@ -345,13 +355,17 @@ config HYPFS_CONFIG
 	  want to hide the .config contents from dom0.
 
 config IOREQ_SERVER
-	bool "IOREQ support (EXPERT)" if EXPERT && !X86
+	bool "IOREQ support (EXPERT)" if EXPERT
 	default X86
 	depends on HVM
 	help
 	  Enables generic mechanism for providing emulated devices to the guests.
 
-	  If unsure, say N.
+	  Without it there are no ioreq servers and no dm_op hypercall, so no
+	  device model (e.g. QEMU) can serve a guest.  On x86, HVM guests other
+	  than PVH ones depend on a device model.
+
+	  If unsure, say Y on x86 and N otherwise.
 
 config KEXEC
 	bool "kexec support"
@@ -631,13 +645,19 @@ config SYSTEM_SUSPEND_ALWAYS_ON
 config SYSTEM_SUSPEND
 	bool "System suspend support" if !SYSTEM_SUSPEND_ALWAYS_ON
 	depends on HAS_SYSTEM_SUSPEND
-	default SYSTEM_SUSPEND_ALWAYS_ON
+	default SYSTEM_SUSPEND_ALWAYS_ON || X86
 	help
 	  This option enables the system suspend support. This is the
 	  mechanism that allows the system to be suspended to RAM and
 	  later resumed.
 
-	  If unsure, say N.
+	  On x86 this is the ACPI sleep platform operation, for S3 and for
+	  S5, through which a PV hardware domain powers the system off, so
+	  it can only be disabled without PV.  A PVH hardware domain powers
+	  the system off through the ACPI registers it owns, and reboot does
+	  not depend on this option.
+
+	  If unsure, say Y on x86 and N elsewhere.
 
 menu "Supported hypercall interfaces"
 	visible if EXPERT

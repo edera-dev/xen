@@ -210,6 +210,7 @@ int iommu_add_dt_pci_sideband_ids(struct pci_dev *pdev)
 }
 #endif /* CONFIG_HAS_PCI */
 
+#ifdef CONFIG_OVERLAY_DTB
 int iommu_remove_dt_device(struct dt_device_node *np)
 {
     const struct iommu_ops *ops = iommu_get_ops();
@@ -254,6 +255,7 @@ int iommu_remove_dt_device(struct dt_device_node *np)
     spin_unlock(&dtdevs_lock);
     return rc;
 }
+#endif /* CONFIG_OVERLAY_DTB */
 
 int iommu_add_dt_device(struct dt_device_node *np)
 {

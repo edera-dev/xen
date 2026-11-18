@@ -308,7 +308,8 @@ struct vcpu
 
     struct arch_vcpu arch;
 
-#ifdef CONFIG_IOREQ_SERVER
+/* x86 HVM also uses it for I/O it emulates itself. */
+#if defined(CONFIG_IOREQ_SERVER) || (defined(CONFIG_X86) && defined(CONFIG_HVM))
     struct vcpu_io io;
 #endif
 };

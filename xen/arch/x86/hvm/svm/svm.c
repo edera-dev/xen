@@ -3042,6 +3042,7 @@ void asmlinkage svm_vmexit_handler(void)
         svm_vmexit_do_pause(regs);
         break;
 
+#ifdef CONFIG_VM_EVENT
     case VMEXIT_IDTR_READ ... VMEXIT_TR_WRITE:
     {
         /*
@@ -3062,6 +3063,7 @@ void asmlinkage svm_vmexit_handler(void)
         hvm_descriptor_access_intercept(0, 0, desc, write);
         break;
     }
+#endif
 
     case VMEXIT_BUS_LOCK:
         /*

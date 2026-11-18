@@ -7,6 +7,7 @@
 #ifndef __XEN_PCI_H__
 #define __XEN_PCI_H__
 
+#include <xen/errno.h>
 #include <xen/types.h>
 #include <xen/list.h>
 #include <xen/spinlock.h>
@@ -299,9 +300,22 @@ void pci_intx(const struct pci_dev *pdev, bool enable);
 bool pcie_aer_get_firmware_first(const struct pci_dev *pdev);
 
 struct pirq;
+#ifdef CONFIG_IOREQ_SERVER
 int msixtbl_pt_register(struct domain *d, struct pirq *pirq, uint64_t gtable);
 void msixtbl_pt_unregister(struct domain *d, struct pirq *pirq);
 void msixtbl_pt_cleanup(struct domain *d);
+#else
+/* Only a device model emulates an MSI-X table that Xen has to track. */
+static inline int msixtbl_pt_register(struct domain *d, struct pirq *pirq,
+                                      uint64_t gtable)
+{
+    return -EOPNOTSUPP;
+}
+
+static inline void msixtbl_pt_unregister(struct domain *d,
+                                         struct pirq *pirq) {}
+static inline void msixtbl_pt_cleanup(struct domain *d) {}
+#endif
 
 #ifdef CONFIG_HVM
 int arch_pci_clean_pirqs(struct domain *d);

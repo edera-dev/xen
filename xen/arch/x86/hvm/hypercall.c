@@ -186,11 +186,13 @@ int hvm_hypercall(struct cpu_user_regs *regs)
 
     HVM_DBG_LOG(DBG_LEVEL_HCALL, "hcall%lu -> %lx", eax, regs->rax);
 
+#ifdef CONFIG_IOREQ_SERVER
     if ( unlikely(curr->mapcache_invalidate) )
     {
         curr->mapcache_invalidate = false;
         ioreq_signal_mapcache_invalidate();
     }
+#endif
 
     perfc_incra(hypercalls, eax);
 

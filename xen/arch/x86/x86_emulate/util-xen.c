@@ -21,12 +21,14 @@ void x86_emulate_free_state(struct x86_emulate_state *s)
 }
 #endif
 
+#ifdef CONFIG_PV
 unsigned int x86_insn_opsize(const struct x86_emulate_state *s)
 {
     check_state(s);
 
     return s->op_bytes << 3;
 }
+#endif
 
 int x86_insn_modrm(const struct x86_emulate_state *s,
                    unsigned int *rm, unsigned int *reg)
@@ -50,6 +52,7 @@ int x86_insn_modrm(const struct x86_emulate_state *s,
     return s->modrm_mod;
 }
 
+#ifdef CONFIG_PV
 unsigned long x86_insn_operand_ea(const struct x86_emulate_state *s,
                                   enum x86_segment *seg)
 {
@@ -59,6 +62,7 @@ unsigned long x86_insn_operand_ea(const struct x86_emulate_state *s,
 
     return s->ea.mem.off;
 }
+#endif
 
 bool cf_check x86_insn_is_portio(const struct x86_emulate_state *s,
                                  const struct x86_emulate_ctxt *ctxt)
@@ -96,6 +100,7 @@ bool cf_check x86_insn_is_cr_access(const struct x86_emulate_state *s,
     return false;
 }
 
+#ifdef CONFIG_PV
 unsigned long x86_insn_immediate(const struct x86_emulate_state *s,
                                  unsigned int nr)
 {
@@ -111,6 +116,7 @@ unsigned long x86_insn_immediate(const struct x86_emulate_state *s,
 
     return 0;
 }
+#endif
 
 int cf_check x86emul_read_xcr(unsigned int reg, uint64_t *val,
                               struct x86_emulate_ctxt *ctxt)

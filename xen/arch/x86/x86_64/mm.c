@@ -936,16 +936,19 @@ void __init subarch_init_memory(void)
 
 long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
+#ifdef CONFIG_PV
     struct xen_machphys_mfn_list xmml;
     l3_pgentry_t l3e;
     l2_pgentry_t l2e;
     unsigned long v, limit;
     xen_pfn_t mfn, last_mfn;
     unsigned int i;
+#endif
     long rc = 0;
 
     switch ( cmd )
     {
+#ifdef CONFIG_PV
     case XENMEM_machphys_mfn_list:
         if ( copy_from_guest(&xmml, arg, 1) )
             return -EFAULT;
@@ -1016,6 +1019,7 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             rc = -EFAULT;
 
         break;
+#endif
 
     case XENMEM_get_sharing_freed_pages:
         return mem_sharing_get_nr_saved_mfns();
