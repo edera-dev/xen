@@ -192,7 +192,8 @@ static int get_cpufreq_para(struct xen_sysctl_pm_op *op)
                           "userspace", CPUFREQ_NAME_LEN) )
             op->u.get_para.s.u.userspace.scaling_setspeed = policy->cur;
 
-        if ( !strncasecmp(op->u.get_para.s.scaling_governor,
+        if ( IS_ENABLED(CONFIG_CPUFREQ_GOV_ONDEMAND) &&
+             !strncasecmp(op->u.get_para.s.scaling_governor,
                           "ondemand", CPUFREQ_NAME_LEN) )
             ret = get_cpufreq_ondemand_para(
                 &op->u.get_para.s.u.ondemand.sampling_rate_max,
@@ -286,7 +287,8 @@ static int set_cpufreq_para(struct xen_sysctl_pm_op *op)
     {
         unsigned int sampling_rate = op->u.set_para.ctrl_value;
 
-        if ( !strncasecmp(policy->governor->name,
+        if ( IS_ENABLED(CONFIG_CPUFREQ_GOV_ONDEMAND) &&
+             !strncasecmp(policy->governor->name,
                           "ondemand", CPUFREQ_NAME_LEN) )
             ret = write_ondemand_sampling_rate(sampling_rate);
         else
@@ -299,7 +301,8 @@ static int set_cpufreq_para(struct xen_sysctl_pm_op *op)
     {
         unsigned int up_threshold = op->u.set_para.ctrl_value;
 
-        if ( !strncasecmp(policy->governor->name,
+        if ( IS_ENABLED(CONFIG_CPUFREQ_GOV_ONDEMAND) &&
+             !strncasecmp(policy->governor->name,
                           "ondemand", CPUFREQ_NAME_LEN) )
             ret = write_ondemand_up_threshold(up_threshold);
         else

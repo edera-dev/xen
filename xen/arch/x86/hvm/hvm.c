@@ -70,7 +70,9 @@
 #include <public/version.h>
 #include <public/vm_event.h>
 
+#ifdef CONFIG_COMPAT
 #include <compat/hvm/hvm_op.h>
+#endif
 
 bool __read_mostly hvm_enabled;
 
@@ -746,8 +748,10 @@ void hvm_domain_relinquish_resources(struct domain *d)
     if ( hvm_funcs.domain_relinquish_resources )
         alternative_vcall(hvm_funcs.domain_relinquish_resources, d);
 
+#ifdef CONFIG_NESTED_VIRT
     if ( hvm_funcs.nhvm_domain_relinquish_resources )
         alternative_vcall(hvm_funcs.nhvm_domain_relinquish_resources, d);
+#endif
 
     viridian_domain_deinit(d);
 
@@ -1257,6 +1261,7 @@ static int cf_check hvm_save_cpu_xsave_states(
     return 0;
 }
 
+#ifdef CONFIG_COMPAT
 /*
  * Structure layout conformity checks, documenting correctness of the cast in
  * the invocation of validate_xstate() below.
@@ -1269,6 +1274,7 @@ CHECK_FIELD_(struct, xsave_hdr, xcomp_bv);
 CHECK_FIELD_(struct, xsave_hdr, reserved);
 #undef compat_xsave_hdr
 #undef xen_xsave_hdr
+#endif
 
 static int cf_check hvm_load_cpu_xsave_states(
     struct domain *d, hvm_domain_context_t *h)
@@ -1644,7 +1650,9 @@ int hvm_vcpu_initialise(struct vcpu *v)
     if ( rc != 0 )
         goto fail4;
 
+#ifdef CONFIG_NESTED_VIRT
     vcpu_nestedhvm(v).nv_vvmcxaddr = INVALID_PADDR;
+#endif
 
     if ( nestedhvm_enabled(d)
          && (rc = nestedhvm_vcpu_initialise(v)) < 0 ) /* teardown: nestedhvm_vcpu_destroy */
@@ -2726,7 +2734,8 @@ static void *_hvm_map_guest_frame(unsigned long gfn, bool permanent,
     if ( !permanent )
         return __map_domain_page(page);
 
-    if ( writable && *writable )
+    /* Tracked only to mark them dirty for log-dirty mode. */
+    if ( IS_ENABLED(CONFIG_PAGING_LOG_DIRTY) && writable && *writable )
     {
         struct hvm_write_map *track = xmalloc(struct hvm_write_map);
 
@@ -2794,6 +2803,7 @@ void hvm_unmap_guest_frame(void *p, bool permanent)
     put_page(page);
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 void hvm_mapped_guest_frames_mark_dirty(struct domain *d)
 {
     struct hvm_write_map *track;
@@ -2803,6 +2813,7 @@ void hvm_mapped_guest_frames_mark_dirty(struct domain *d)
         paging_mark_dirty(d, page_to_mfn(track->page));
     spin_unlock(&d->arch.hvm.write_map.lock);
 }
+#endif
 
 static void *hvm_map_entry(unsigned long va, bool *writable)
 {
@@ -2989,6 +3000,7 @@ struct tss32 {
     uint16_t trace /* :1 */, iomap;
 };
 
+#ifdef CONFIG_VMX_REALMODE_EMUL
 void hvm_prepare_vm86_tss(struct vcpu *v, uint32_t base, uint32_t limit)
 {
     /*
@@ -3019,6 +3031,7 @@ void hvm_prepare_vm86_tss(struct vcpu *v, uint32_t base, uint32_t limit)
     hvm_copy_to_guest_phys(base + offsetof(struct tss32, iomap),
                            &iomap, sizeof(iomap), v);
 }
+#endif
 
 void hvm_task_switch(
     uint16_t tss_sel, enum hvm_task_switch_reason taskswitch_reason,
@@ -3454,7 +3467,7 @@ unsigned int copy_to_user_hvm(void *to, const void *from, unsigned int len)
 {
     int rc;
 
-    if ( current->hcall_compat && is_compat_arg_xlat_range(to, len) )
+    if ( vcpu_is_hcall_compat(current) && is_compat_arg_xlat_range(to, len) )
     {
         memcpy(to, from, len);
         return 0;
@@ -3468,7 +3481,7 @@ unsigned int clear_user_hvm(void *to, unsigned int len)
 {
     int rc;
 
-    if ( current->hcall_compat && is_compat_arg_xlat_range(to, len) )
+    if ( vcpu_is_hcall_compat(current) && is_compat_arg_xlat_range(to, len) )
     {
         memset(to, 0x00, len);
         return 0;
@@ -3483,7 +3496,7 @@ unsigned int copy_from_user_hvm(void *to, const void *from, unsigned int len)
 {
     int rc;
 
-    if ( current->hcall_compat && is_compat_arg_xlat_range(from, len) )
+    if ( vcpu_is_hcall_compat(current) && is_compat_arg_xlat_range(from, len) )
     {
         memcpy(to, from, len);
         return 0;
@@ -3937,8 +3950,10 @@ static void hvm_latch_shinfo_size(struct domain *d)
      */
     if ( current->domain == d )
     {
+#ifdef CONFIG_COMPAT
         d->arch.has_32bit_shinfo =
             hvm_guest_x86_mode(current) != X86_MODE_64BIT;
+#endif
 
         /*
          * Make sure that the timebase in the shared info structure is correct.
@@ -4245,7 +4260,8 @@ static int hvm_set_param(struct domain *d, uint32_t index, uint64_t value)
          * Only actually required for VT-x lacking unrestricted_guest
          * capabilities.  Short circuit the pause if possible.
          */
-        if ( paging_mode_shadow(d) || !using_vmx() )
+        if ( paging_mode_shadow(d) || !using_vmx() ||
+             !IS_ENABLED(CONFIG_VMX_REALMODE_EMUL) )
             break;
 
         /*
@@ -4928,6 +4944,7 @@ static int do_altp2m_op(
 #endif /* CONFIG_ALTP2M */
 }
 
+#ifdef CONFIG_COMPAT
 DEFINE_XEN_GUEST_HANDLE(compat_hvm_altp2m_op_t);
 
 /*
@@ -5027,6 +5044,7 @@ static int compat_altp2m_op(
 
     return rc;
 }
+#endif /* CONFIG_COMPAT */
 
 static int hvmop_get_mem_type(
     XEN_GUEST_HANDLE_PARAM(xen_hvm_get_mem_type_t) arg)
@@ -5177,7 +5195,11 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
 
     case HVMOP_altp2m:
+#ifdef CONFIG_COMPAT
         rc = current->hcall_compat ? compat_altp2m_op(arg) : do_altp2m_op(arg);
+#else
+        rc = do_altp2m_op(arg);
+#endif
         break;
 
     default:

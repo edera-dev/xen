@@ -8,3 +8,17 @@ config ACPI_LEGACY_TABLES_LOOKUP
 config ACPI_NUMA
 	bool
 	select NUMA
+
+config ACPI_APEI
+	bool "ACPI Platform Error Interface (APEI)" if EXPERT
+	depends on X86
+	default y
+	help
+	  Lets Xen save the record of a fatal machine check to the firmware's
+	  ERST error log, for software on the next boot to read, and read the
+	  HEST table, which only the Sandy Bridge-EP PCIe AER quirk consults
+	  for firmware-first handling.  Without it, fatal machine checks are
+	  only printed, the hest_disable option is unknown, and that quirk
+	  assumes the OS handles AER.
+
+	  If unsure, say Y.

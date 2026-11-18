@@ -563,11 +563,24 @@ static inline int iommu_do_domctl(struct xen_domctl *domctl, struct domain *d,
 }
 #endif
 
-int iommu_domain_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_order);
 bool iommu_get_mapped_page_type(struct page_info *pg);
 void iommu_put_mapped_page(struct page_info *pg);
+#ifdef CONFIG_PV_IOMMU
+int iommu_domain_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_order);
 int iommu_domain_pviommu_teardown(struct domain *d);
 int __must_check iommu_relinquish_contexts(struct domain *d);
+#else
+/* Without PV-IOMMU a domain never has more than its default context. */
+static inline int iommu_domain_pviommu_teardown(struct domain *d)
+{
+    return 0;
+}
+
+static inline int __must_check iommu_relinquish_contexts(struct domain *d)
+{
+    return 0;
+}
+#endif
 
 #ifdef CONFIG_SYSTEM_SUSPEND
 int __must_check iommu_suspend(void);

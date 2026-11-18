@@ -29,7 +29,7 @@ long hvm_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return -ENOSYS;
     }
 
-    if ( !current->hcall_compat )
+    if ( !vcpu_is_hcall_compat(current) )
         rc = do_memory_op(cmd, arg);
     else
         rc = compat_memory_op(cmd, arg);
@@ -57,7 +57,7 @@ long hvm_grant_table_op(
         return -ENOSYS;
     }
 
-    if ( !current->hcall_compat )
+    if ( !vcpu_is_hcall_compat(current) )
         return do_grant_table_op(cmd, uop, count);
     else
         return compat_grant_table_op(cmd, uop, count);
@@ -98,7 +98,7 @@ long hvm_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return -ENOSYS;
     }
 
-    if ( !curr->hcall_compat )
+    if ( !vcpu_is_hcall_compat(curr) )
         return do_physdev_op(cmd, arg);
     else
         return compat_physdev_op(cmd, arg);
@@ -173,6 +173,7 @@ int hvm_hypercall(struct cpu_user_regs *regs)
         HVM_DBG_LOG(DBG_LEVEL_HCALL, "hcall%lu(%x, %x, %x, %x, %x)", eax,
                     regs->ebx, regs->ecx, regs->edx, regs->esi, regs->edi);
 
+#ifdef CONFIG_COMPAT
         curr->hcall_compat = true;
         call_handlers_hvm32(eax, regs->eax, regs->ebx, regs->ecx, regs->edx,
                             regs->esi, regs->edi);
@@ -180,6 +181,9 @@ int hvm_hypercall(struct cpu_user_regs *regs)
 
         if ( !curr->hcall_preempted && regs->eax != -ENOSYS )
             clobber_regs(regs, eax, hvm, 32);
+#else
+        regs->eax = -ENOSYS;
+#endif
     }
 
     hvmemul_cache_restore(curr, token);
@@ -212,10 +216,12 @@ enum mc_disposition hvm_do_multicall_call(struct mc_state *state)
     }
     else
     {
+#ifdef CONFIG_COMPAT
         struct compat_multicall_entry *call = &state->compat_call;
 
         call_handlers_hvm32(call->op, call->result, call->args[0], call->args[1],
                             call->args[2], call->args[3], call->args[4]);
+#endif
     }
 
     return !hvm_get_cpl(curr) ? mc_continue : mc_preempt;

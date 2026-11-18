@@ -24,7 +24,7 @@
 # undef BUG /* Make sure it's not used anywhere here. */
 void BUG(void);
 
-# ifndef CONFIG_HVM
+# ifndef CONFIG_HVM_EMUL_SIMD
 #  define X86EMUL_NO_FPU
 #  define X86EMUL_NO_MMX
 #  define X86EMUL_NO_SIMD

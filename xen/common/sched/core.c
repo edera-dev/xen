@@ -2111,6 +2111,7 @@ long do_set_timer_op(s_time_t timeout)
     return 0;
 }
 
+#ifdef CONFIG_SCHED_MGMT
 #ifdef CONFIG_SYSCTL
 /* scheduler_id - fetch ID of current scheduler */
 int scheduler_id(void)
@@ -2176,6 +2177,7 @@ long sched_adjust_global(struct xen_sysctl_scheduler_op *op)
     return rc;
 }
 #endif /* CONFIG_SYSCTL */
+#endif /* CONFIG_SCHED_MGMT */
 
 static void vcpu_periodic_timer_work_locked(struct vcpu *v)
 {
@@ -3470,6 +3472,7 @@ void scheduler_free(struct scheduler *sched)
     xfree(sched);
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 void schedule_dump(struct cpupool *c)
 {
     unsigned int      i, j;
@@ -3516,6 +3519,7 @@ void schedule_dump(struct cpupool *c)
 
     rcu_read_unlock(&sched_res_rculock);
 }
+#endif
 
 void wait(void)
 {

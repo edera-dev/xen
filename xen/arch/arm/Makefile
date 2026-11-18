@@ -55,7 +55,7 @@ obj-y += smpboot.o
 obj-$(CONFIG_SYSCTL) += sysctl.o
 obj-y += time.o
 obj-y += traps.o
-obj-y += vcpreg.o
+obj-$(CONFIG_ARM64_AARCH32_EL0) += vcpreg.o
 obj-$(CONFIG_NEW_VGIC) += vgic/
 ifneq ($(CONFIG_NEW_VGIC),y)
 obj-y += gic-vgic.o

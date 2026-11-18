@@ -7,12 +7,16 @@ struct domain;
 struct vcpu;
 struct vcpu_guest_context;
 
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
 struct resume_info {
     struct vcpu_guest_context *ctxt;
     struct vcpu *wake_cpu;
 };
 
 void arch_domain_resume(struct domain *d);
+#else
+static inline void arch_domain_resume(struct domain *d) {}
+#endif
 
 #endif /* ARM_SUSPEND_H */
 

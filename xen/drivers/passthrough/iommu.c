@@ -233,6 +233,7 @@ void iommu_put_mapped_page(struct page_info *pg)
         put_page(pg);
 }
 
+#ifdef CONFIG_PV_IOMMU
 int iommu_domain_pviommu_init(struct domain *d, uint16_t nb_ctx, uint32_t arena_order)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -376,6 +377,7 @@ int iommu_domain_pviommu_teardown(struct domain *d)
 
     return arch_iommu_pviommu_teardown(d);
 }
+#endif /* CONFIG_PV_IOMMU */
 
 int iommu_domain_init(struct domain *d, unsigned int opts)
 {
@@ -808,6 +810,7 @@ int iommu_legacy_unmap(struct domain *d, dfn_t dfn, unsigned long page_count)
     return rc;
 }
 
+#ifdef CONFIG_PV_IOMMU
 int iommu_lookup_page(struct domain *d, dfn_t dfn, mfn_t *mfn,
                       unsigned int *flags, uint16_t ctx_id)
 {
@@ -826,6 +829,7 @@ int iommu_lookup_page(struct domain *d, dfn_t dfn, mfn_t *mfn,
     iommu_put_context(ctx);
     return ret;
 }
+#endif /* CONFIG_PV_IOMMU */
 
 int iommu_iotlb_flush(struct domain *d, dfn_t dfn, unsigned long page_count,
                       unsigned int flush_flags, uint16_t ctx_id)
@@ -906,6 +910,7 @@ int cf_check iommu_context_init(struct domain *d, struct iommu_context *ctx,
     return iommu_call(dom_iommu(d)->platform_ops, context_init, d, ctx, flags);
 }
 
+#ifdef CONFIG_PV_IOMMU
 int iommu_context_alloc(struct domain *d, uint16_t *ctx_id, unsigned int flags)
 {
     unsigned int i;
@@ -945,6 +950,7 @@ int iommu_context_alloc(struct domain *d, uint16_t *ctx_id, unsigned int flags)
     rspin_unlock(&ctx->lock);
     return ret;
 }
+#endif /* CONFIG_PV_IOMMU */
 
 #ifdef CONFIG_HAS_PCI
 
@@ -1268,6 +1274,7 @@ unlock:
 
 #endif /* CONFIG_HAS_PCI */
 
+#ifdef CONFIG_PV_IOMMU
 int cf_check iommu_context_teardown(struct domain *d, struct iommu_context *ctx, u32 flags)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -1379,6 +1386,7 @@ int iommu_quarantine_dev_init(struct pci_dev *pdev)
     return ret;
 }
 #endif /* CONFIG_HAS_PCI */
+#endif /* CONFIG_PV_IOMMU */
 
 int __init iommu_quarantine_init(void)
 {
@@ -1480,7 +1488,7 @@ int iommu_do_domctl(
     ret = iommu_do_pci_domctl(domctl, d, u_domctl);
 #endif
 
-#ifdef CONFIG_HAS_DEVICE_TREE_DISCOVERY
+#ifdef CONFIG_DT_PASSTHROUGH
     if ( ret == -ENODEV )
         ret = iommu_do_dt_domctl(domctl, d, u_domctl);
 #endif
@@ -1536,6 +1544,7 @@ bool iommu_has_feature(struct domain *d, enum iommu_feature feature)
     return is_iommu_enabled(d) && test_bit(feature, dom_iommu(d)->features);
 }
 
+#ifdef CONFIG_PV_IOMMU
 uint64_t iommu_get_max_iova(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -1545,6 +1554,7 @@ uint64_t iommu_get_max_iova(struct domain *d)
 
     return iommu_call(hd->platform_ops, get_max_iova, d);
 }
+#endif /* CONFIG_PV_IOMMU */
 
 #define MAX_EXTRA_RESERVED_RANGES 20
 struct extra_reserved_range {

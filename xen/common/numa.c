@@ -61,6 +61,7 @@ void __init numa_set_processor_nodes_parsed(nodeid_t node)
     node_set(node, processor_nodes_parsed);
 }
 
+#ifdef CONFIG_HOTADD
 bool valid_numa_range(paddr_t start, paddr_t end, nodeid_t node)
 {
     unsigned int i;
@@ -76,6 +77,7 @@ bool valid_numa_range(paddr_t start, paddr_t end, nodeid_t node)
 
     return false;
 }
+#endif
 
 /*
  * Iterate the (start, end, nid) triples that describe the host's physical

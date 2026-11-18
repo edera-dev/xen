@@ -32,6 +32,8 @@
 
 #include "private.h"
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
+
 /************************************************/
 /*          HAP VRAM TRACKING SUPPORT           */
 /************************************************/
@@ -227,6 +229,8 @@ static void cf_check hap_clean_dirty_bitmap(struct domain *d)
     p2m_change_entry_type_global(d, p2m_ram_rw, p2m_ram_logdirty);
     guest_flush_tlb_mask(d, d->dirty_cpumask);
 }
+
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 /************************************************/
 /*             HAP SUPPORT FUNCTIONS            */
@@ -440,6 +444,7 @@ static bool cf_check flush_tlb(const unsigned long *vcpu_bitmap);
 
 void hap_domain_init(struct domain *d)
 {
+#ifdef CONFIG_PAGING_LOG_DIRTY
     static const struct log_dirty_ops hap_ops = {
         .enable  = hap_enable_log_dirty,
         .disable = hap_disable_log_dirty,
@@ -448,6 +453,7 @@ void hap_domain_init(struct domain *d)
 
     /* Use HAP logdirty mechanism. */
     paging_log_dirty_init(d, &hap_ops);
+#endif
 
     d->arch.paging.update_paging_modes = hap_update_paging_modes;
     d->arch.paging.flush_tlb           = flush_tlb;
@@ -457,7 +463,9 @@ void hap_domain_init(struct domain *d)
 int hap_enable(struct domain *d, u32 mode)
 {
     unsigned int old_pages;
+#if defined(CONFIG_NESTED_VIRT) || defined(CONFIG_ALTP2M)
     unsigned int i;
+#endif
     int rv = 0;
 
     if ( mode != (PG_external | PG_translate | PG_refcounts) )
@@ -492,12 +500,14 @@ int hap_enable(struct domain *d, u32 mode)
     if ( rv != 0 )
         goto out;
 
+#ifdef CONFIG_NESTED_VIRT
     for ( i = 0; i < MAX_NESTEDP2M; i++ )
     {
         rv = p2m_alloc_table(d->arch.nested_p2m[i]);
         if ( rv != 0 )
            goto out;
     }
+#endif
 
 #ifdef CONFIG_ALTP2M
     if ( hvm_altp2m_supported() )
@@ -542,7 +552,9 @@ int hap_enable(struct domain *d, u32 mode)
 
 void hap_final_teardown(struct domain *d)
 {
+#if defined(CONFIG_NESTED_VIRT) || defined(CONFIG_ALTP2M)
     unsigned int i;
+#endif
 
 #ifdef CONFIG_ALTP2M
     if ( hvm_altp2m_supported() )
@@ -550,10 +562,12 @@ void hap_final_teardown(struct domain *d)
             p2m_teardown(d->arch.altp2m_p2m[i], true, NULL);
 #endif
 
+#ifdef CONFIG_NESTED_VIRT
     /* Destroy nestedp2m's first */
     for (i = 0; i < MAX_NESTEDP2M; i++) {
         p2m_teardown(d->arch.nested_p2m[i], true, NULL);
     }
+#endif
 }
 
 void hap_vcpu_teardown(struct vcpu *v)
@@ -578,7 +592,9 @@ void hap_vcpu_teardown(struct vcpu *v)
 void hap_teardown(struct domain *d, bool *preempted)
 {
     struct vcpu *v;
+#if defined(CONFIG_NESTED_VIRT) || defined(CONFIG_ALTP2M)
     unsigned int i;
+#endif
 
     ASSERT(d->is_dying);
     ASSERT(d != current->domain);
@@ -609,6 +625,7 @@ void hap_teardown(struct domain *d, bool *preempted)
     }
 #endif
 
+#ifdef CONFIG_NESTED_VIRT
     /* Destroy nestedp2m's after altp2m. */
     for ( i = 0; i < MAX_NESTEDP2M; i++ )
     {
@@ -616,6 +633,7 @@ void hap_teardown(struct domain *d, bool *preempted)
         if ( preempted && *preempted )
             return;
     }
+#endif
 
     p2m_teardown(p2m_get_hostp2m(d), false, preempted);
     if ( preempted && *preempted )
@@ -633,14 +651,17 @@ void hap_teardown(struct domain *d, bool *preempted)
         ASSERT(d->arch.paging.total_pages == 0);
     }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
     d->arch.paging.mode &= ~PG_log_dirty;
 
     XFREE(d->arch.hvm.dirty_vram.hap);
+#endif
 
 out:
     paging_unlock(d);
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 int hap_domctl(struct domain *d, struct xen_domctl_shadow_op *sc,
                XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
@@ -671,6 +692,7 @@ int hap_domctl(struct domain *d, struct xen_domctl_shadow_op *sc,
         return -EINVAL;
     }
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 static const struct paging_mode hap_paging_real_mode;
 static const struct paging_mode hap_paging_protected_mode;
@@ -811,6 +833,7 @@ static void cf_check hap_update_paging_modes(struct vcpu *v)
     put_gfn(d, cr3_gfn);
 }
 
+#ifdef CONFIG_P2M_PT
 static void cf_check
 hap_write_p2m_entry_post(struct p2m_domain *p2m, unsigned int oflags)
 {
@@ -842,6 +865,7 @@ void hap_p2m_init(struct p2m_domain *p2m)
     p2m->write_p2m_entry_post = hap_write_p2m_entry_post;
     p2m->tlb_flush = hap_p2m_tlb_flush;
 }
+#endif /* CONFIG_P2M_PT */
 
 static unsigned long cf_check hap_gva_to_gfn_real_mode(
     struct vcpu *v, struct p2m_domain *p2m, unsigned long gva, uint32_t *pfec)

@@ -568,6 +568,7 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
     return rc;
 }
 
+#ifdef CONFIG_PV_IOMMU
 static int cf_check amd_iommu_context_teardown(struct domain *d,
                                         struct iommu_context *ctx, u32 flags)
 {
@@ -594,6 +595,7 @@ static int cf_check amd_iommu_context_teardown(struct domain *d,
     pcidevs_unlock();
     return arch_iommu_context_teardown(d, ctx, flags);
 }
+#endif /* CONFIG_PV_IOMMU */
 
 /*
  * Once an IOMMU can no longer confirm invalidations, nothing it caches can be
@@ -794,6 +796,7 @@ static int cf_check amd_iommu_group_id(u16 seg, u8 bus, u8 devfn)
 
 #include <asm/io_apic.h>
 
+#ifdef CONFIG_DEBUG_KEYS
 static void amd_dump_page_table_level(struct page_info *pg, int level,
                                       paddr_t gpa, int indent)
 {
@@ -864,7 +867,9 @@ static void cf_check amd_dump_page_tables(struct domain *d)
         }
     }
 }
+#endif
 
+#ifdef CONFIG_PV_IOMMU
 static uint64_t cf_check amd_iommu_get_max_iova(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -878,13 +883,16 @@ static uint64_t cf_check amd_iommu_get_max_iova(struct domain *d)
 
     return (1LLU << bits) - 1;
 }
+#endif
 
 static const struct iommu_ops __initconst_cf_clobber _iommu_ops = {
     .page_sizes = PAGE_SIZE_4K | PAGE_SIZE_2M | PAGE_SIZE_1G,
     .init = amd_iommu_domain_init,
     .hwdom_init = amd_iommu_hwdom_init,
     .context_init = amd_iommu_context_init,
+#ifdef CONFIG_PV_IOMMU
     .context_teardown = amd_iommu_context_teardown,
+#endif
     .attach = amd_iommu_attach,
     .detach = amd_iommu_detach,
     .reattach = amd_iommu_reattach,
@@ -907,11 +915,17 @@ static const struct iommu_ops __initconst_cf_clobber _iommu_ops = {
     .resume = amd_iommu_resume,
 #endif
     .crash_shutdown = amd_iommu_crash_shutdown,
+#ifdef CONFIG_PV_IOMMU
     .lookup_page = amd_iommu_lookup_page,
+#endif
     .get_reserved_device_memory = amd_iommu_get_reserved_device_memory,
+#ifdef CONFIG_DEBUG_KEYS
     .dump_page_tables = amd_dump_page_tables,
+#endif
     .quiesce = amd_iommu_quiesce,
+#ifdef CONFIG_PV_IOMMU
     .get_max_iova = amd_iommu_get_max_iova,
+#endif
 };
 
 static const struct iommu_init_ops __initconstrel _iommu_init_ops = {

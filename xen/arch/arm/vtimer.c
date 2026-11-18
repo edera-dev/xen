@@ -149,6 +149,7 @@ void vcpu_timer_destroy(struct vcpu *v)
     kill_timer(&v->arch.phys_timer.timer);
 }
 
+#ifdef CONFIG_ARM_VTIMER_WORKAROUND
 /*
  * How long a blocked vCPU may go with nothing armed.
  *
@@ -175,6 +176,7 @@ static void vtimer_arm_backstop(struct vcpu *v)
     perfc_incr(virt_timer_backstop);
     set_timer(&v->arch.virt_timer.timer, NOW() + VTIMER_BACKSTOP);
 }
+#endif
 
 void virt_timer_save(struct vcpu *v)
 {
@@ -184,6 +186,13 @@ void virt_timer_save(struct vcpu *v)
     WRITE_SYSREG(v->arch.virt_timer.ctl & ~CNTx_CTL_ENABLE, CNTV_CTL_EL0);
     v->arch.virt_timer.cval = READ_SYSREG64(CNTV_CVAL_EL0);
 
+#ifndef CONFIG_ARM_VTIMER_WORKAROUND
+    if ( (v->arch.virt_timer.ctl & CNTx_CTL_ENABLE) &&
+         !(v->arch.virt_timer.ctl & CNTx_CTL_MASK) )
+        set_timer(&v->arch.virt_timer.timer,
+                  v->domain->arch.virt_timer_base.nanoseconds +
+                  ticks_to_ns(v->arch.virt_timer.cval));
+#else
     /*
      * Arm on ENABLE alone.  IMASK in this register is Xen's, not the guest's:
      * vtimer_interrupt() sets it to quiesce a line whose interrupt has already
@@ -237,6 +246,7 @@ void virt_timer_save(struct vcpu *v)
         perfc_incr(virt_timer_sw_idle);
         vtimer_arm_backstop(v);
     }
+#endif
 }
 
 void virt_timer_restore(struct vcpu *v)
@@ -360,6 +370,7 @@ static bool vtimer_cntp_cval(struct cpu_user_regs *regs, uint64_t *r,
     return true;
 }
 
+#ifdef CONFIG_ARM64_AARCH32_EL0
 static bool vtimer_emulate_cp32(struct cpu_user_regs *regs, union hsr hsr)
 {
     struct hsr_cp32 cp32 = hsr.cp32;
@@ -400,6 +411,7 @@ static bool vtimer_emulate_cp64(struct cpu_user_regs *regs, union hsr hsr)
         return false;
     }
 }
+#endif
 
 #ifdef CONFIG_ARM_64
 static bool vtimer_emulate_sysreg(struct cpu_user_regs *regs, union hsr hsr)
@@ -431,10 +443,12 @@ bool vtimer_emulate(struct cpu_user_regs *regs, union hsr hsr)
 {
 
     switch (hsr.ec) {
+#ifdef CONFIG_ARM64_AARCH32_EL0
     case HSR_EC_CP15_32:
         return vtimer_emulate_cp32(regs, hsr);
     case HSR_EC_CP15_64:
         return vtimer_emulate_cp64(regs, hsr);
+#endif
 #ifdef CONFIG_ARM_64
     case HSR_EC_SYSREG:
         return vtimer_emulate_sysreg(regs, hsr);

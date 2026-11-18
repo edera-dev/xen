@@ -684,6 +684,7 @@ void amd_iommu_flush_all_caches(struct amd_iommu *iommu)
     flush_command_buffer(iommu, 0);
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 void cf_check amd_iommu_dump_flush_stats(unsigned char key)
 {
     uint64_t done = 0, ns = 0;
@@ -714,3 +715,4 @@ void cf_check amd_iommu_dump_flush_stats(unsigned char key)
            done, ns / 1000000, done ? ns / done : 0);
 #endif
 }
+#endif

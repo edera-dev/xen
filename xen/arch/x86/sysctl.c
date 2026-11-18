@@ -47,6 +47,7 @@ static void cf_check l3_cache_get(void *arg)
         l3_info->size = info.size / 1024; /* in KB unit */
 }
 
+#ifdef CONFIG_HOTPLUG_OPS
 static long cf_check smt_up_down_helper(void *data)
 {
     bool up = (bool)data;
@@ -91,6 +92,7 @@ static long cf_check smt_up_down_helper(void *data)
 
     return ret;
 }
+#endif
 
 void arch_do_physinfo(struct xen_sysctl_physinfo *pi)
 {
@@ -114,6 +116,7 @@ long arch_do_sysctl(
     switch ( sysctl->cmd )
     {
 
+#ifdef CONFIG_HOTPLUG_OPS
     case XEN_SYSCTL_cpu_hotplug:
     {
         unsigned int cpu = sysctl->u.cpu_hotplug.cpu;
@@ -161,6 +164,7 @@ long arch_do_sysctl(
             ret = continue_hypercall_on_cpu(0, fn, hcpu);
     }
     break;
+#endif
 
     case XEN_SYSCTL_psr_cmt_op:
         if ( !psr_cmt_enabled() )

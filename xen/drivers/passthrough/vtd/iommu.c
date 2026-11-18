@@ -1920,6 +1920,7 @@ static int __must_check cf_check intel_iommu_unmap_page(
     return 0;
 }
 
+#ifdef CONFIG_PV_IOMMU
 static int cf_check intel_iommu_lookup_page(
     struct domain *d, dfn_t dfn, mfn_t *mfn, unsigned int *flags,
     struct iommu_context *ctx)
@@ -1940,6 +1941,7 @@ static int cf_check intel_iommu_lookup_page(
 
     return 0;
 }
+#endif
 
 static bool __init vtd_ept_page_compatible(const struct vtd_iommu *iommu)
 {
@@ -2444,6 +2446,7 @@ static void cf_check vtd_resume(void)
 }
 #endif
 
+#ifdef CONFIG_DEBUG_KEYS
 static void vtd_dump_page_table_level(paddr_t pt_maddr, int level, paddr_t gpa,
                                       int indent)
 {
@@ -2511,7 +2514,9 @@ static void cf_check vtd_dump_page_tables(struct domain *d)
         }
     }
 }
+#endif
 
+#ifdef CONFIG_PV_IOMMU
 static int intel_iommu_cleanup_pte(uint64_t pte_maddr, bool preempt)
 {
     size_t i;
@@ -2653,6 +2658,7 @@ static int cf_check intel_iommu_context_teardown(struct domain *d,
     pcidevs_unlock();
     return arch_iommu_context_teardown(d, ctx, flags);
 }
+#endif /* CONFIG_PV_IOMMU */
 
 static int intel_iommu_dev_rmrr(struct domain *d, struct pci_dev *pdev,
                                 struct iommu_context *ctx, bool unmap)
@@ -2882,6 +2888,7 @@ static int cf_check intel_iommu_remove_devfn(struct domain *d, struct pci_dev *p
     return unapply_context_single(d, drhd->iommu, prev_ctx, pdev->bus, devfn);
 }
 
+#ifdef CONFIG_PV_IOMMU
 static uint64_t cf_check intel_iommu_get_max_iova(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -2908,6 +2915,7 @@ static uint64_t cf_check intel_iommu_get_max_iova(struct domain *d)
 
     return (1ULL << width) - 1;
 }
+#endif
 
 static void cf_check vtd_quiesce(void)
 {
@@ -2932,7 +2940,9 @@ static const struct iommu_ops __initconst_cf_clobber vtd_ops = {
     .init = intel_iommu_domain_init,
     .hwdom_init = intel_iommu_hwdom_init,
     .context_init = intel_iommu_context_init,
+#ifdef CONFIG_PV_IOMMU
     .context_teardown = intel_iommu_context_teardown,
+#endif
     .attach = intel_iommu_attach,
     .detach = intel_iommu_detach,
     .reattach = intel_iommu_reattach,
@@ -2943,7 +2953,9 @@ static const struct iommu_ops __initconst_cf_clobber vtd_ops = {
     .clear_root_pgtable = iommu_clear_root_pgtable,
     .map_page = intel_iommu_map_page,
     .unmap_page = intel_iommu_unmap_page,
+#ifdef CONFIG_PV_IOMMU
     .lookup_page = intel_iommu_lookup_page,
+#endif
     .get_device_group_id = intel_iommu_group_id,
     .enable_x2apic = intel_iommu_enable_eim,
     .disable_x2apic = intel_iommu_disable_eim,
@@ -2959,9 +2971,13 @@ static const struct iommu_ops __initconst_cf_clobber vtd_ops = {
     .crash_shutdown = vtd_crash_shutdown,
     .iotlb_flush = iommu_flush_iotlb,
     .get_reserved_device_memory = intel_iommu_get_reserved_device_memory,
+#ifdef CONFIG_DEBUG_KEYS
     .dump_page_tables = vtd_dump_page_tables,
+#endif
     .quiesce = vtd_quiesce,
+#ifdef CONFIG_PV_IOMMU
     .get_max_iova = intel_iommu_get_max_iova,
+#endif
 };
 
 const struct iommu_init_ops __initconstrel intel_iommu_init_ops = {

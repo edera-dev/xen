@@ -752,9 +752,11 @@ int __init acpi_boot_init(void)
 
 	acpi_table_parse(ACPI_SIG_HPET, acpi_parse_hpet);
 
+#ifdef CONFIG_ACPI_APEI
 	erst_init();
 
 	acpi_hest_init();
+#endif
 
 	acpi_table_parse(ACPI_SIG_BGRT, acpi_invalidate_bgrt);
 

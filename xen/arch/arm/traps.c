@@ -2055,6 +2055,7 @@ void asmlinkage do_trap_guest_sync(struct cpu_user_regs *regs)
         }
         advance_pc(regs, hsr);
         break;
+#ifdef CONFIG_ARM64_AARCH32_EL0
     case HSR_EC_CP15_32:
         GUEST_BUG_ON(!regs_mode_is_32bit(regs));
         perfc_incr(trap_cp15_32);
@@ -2090,6 +2091,8 @@ void asmlinkage do_trap_guest_sync(struct cpu_user_regs *regs)
         perfc_incr(trap_cp);
         do_cp(regs, hsr);
         break;
+#endif
+#if !defined(CONFIG_ARM_64) || defined(CONFIG_ARM64_AARCH32)
     case HSR_EC_SMC32:
         /*
          * HCR_EL2.TSC
@@ -2118,6 +2121,7 @@ void asmlinkage do_trap_guest_sync(struct cpu_user_regs *regs)
         regs->r12 = (uint32_t)nr;
         break;
     }
+#endif
 #ifdef CONFIG_ARM_64
     case HSR_EC_HVC64:
         GUEST_BUG_ON(regs_mode_is_32bit(regs));

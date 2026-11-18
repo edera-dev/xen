@@ -27,10 +27,19 @@ void  hap_final_teardown(struct domain *d);
 void  hap_vcpu_teardown(struct vcpu *v);
 void  hap_teardown(struct domain *d, bool *preempted);
 void  hap_vcpu_init(struct vcpu *v);
+#ifdef CONFIG_PAGING_LOG_DIRTY
 int   hap_track_dirty_vram(struct domain *d,
                            unsigned long begin_pfn,
                            unsigned int nr_frames,
                            XEN_GUEST_HANDLE(void) guest_dirty_bitmap);
+#else
+static inline int hap_track_dirty_vram(
+    struct domain *d, unsigned long begin_pfn, unsigned int nr_frames,
+    XEN_GUEST_HANDLE(void) guest_dirty_bitmap)
+{
+    return -EOPNOTSUPP;
+}
+#endif
 
 extern const struct paging_mode *hap_paging_get_mode(struct vcpu *v);
 int hap_set_allocation(struct domain *d, unsigned int pages, bool *preempted);

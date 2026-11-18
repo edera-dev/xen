@@ -2908,6 +2908,7 @@ static void cf_check csched2_unit_migrate(
         sched_set_res(unit, get_sched_res(new_cpu));
 }
 
+#ifdef CONFIG_SCHED_MGMT
 static int cf_check
 csched2_dom_cntl(
     const struct scheduler *ops,
@@ -3113,6 +3114,7 @@ csched2_dom_cntl(
 
     return rc;
 }
+#endif
 
 static void cf_check
 csched2_aff_cntl(const struct scheduler *ops, struct sched_unit *unit,
@@ -3130,7 +3132,7 @@ csched2_aff_cntl(const struct scheduler *ops, struct sched_unit *unit,
         __clear_bit(__CSFLAG_pinned, &svc->flags);
 }
 
-#ifdef CONFIG_SYSCTL
+#if defined(CONFIG_SYSCTL) && defined(CONFIG_SCHED_MGMT)
 static int cf_check csched2_sys_cntl(
     const struct scheduler *ops, struct xen_sysctl_scheduler_op *sc)
 {
@@ -3162,7 +3164,7 @@ static int cf_check csched2_sys_cntl(
 
     return 0;
 }
-#endif /* CONFIG_SYSCTL */
+#endif /* CONFIG_SYSCTL && CONFIG_SCHED_MGMT */
 
 static void *cf_check
 csched2_alloc_domdata(const struct scheduler *ops, struct domain *dom)
@@ -3780,6 +3782,7 @@ static void cf_check csched2_schedule(
     CSCHED2_UNIT_CHECK(currunit->next_task);
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 static void
 csched2_dump_unit(const struct csched2_private *prv,
                   const struct csched2_unit *svc)
@@ -3929,6 +3932,7 @@ csched2_dump(const struct scheduler *ops)
 
     read_unlock_irqrestore(&prv->lock, flags);
 }
+#endif
 
 static void *cf_check
 csched2_alloc_pdata(const struct scheduler *ops, int cpu)
@@ -4247,9 +4251,11 @@ static const struct scheduler sched_credit2_def = {
     .wake           = csched2_unit_wake,
     .yield          = csched2_unit_yield,
 
+#ifdef CONFIG_SCHED_MGMT
     .adjust         = csched2_dom_cntl,
+#endif
     .adjust_affinity= csched2_aff_cntl,
-#ifdef CONFIG_SYSCTL
+#if defined(CONFIG_SYSCTL) && defined(CONFIG_SCHED_MGMT)
     .adjust_global  = csched2_sys_cntl,
 #endif
 
@@ -4258,7 +4264,9 @@ static const struct scheduler sched_credit2_def = {
     .do_schedule    = csched2_schedule,
     .context_saved  = csched2_context_saved,
 
+#ifdef CONFIG_DEBUG_KEYS
     .dump_settings  = csched2_dump,
+#endif
     .init           = csched2_init,
     .deinit         = csched2_deinit,
     .alloc_udata    = csched2_alloc_udata,

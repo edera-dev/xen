@@ -87,7 +87,8 @@ fail:
     return rc;
 }
 
-static bool iommu_dt_device_is_assigned_locked(const struct dt_device_node *dev)
+static inline bool
+iommu_dt_device_is_assigned_locked(const struct dt_device_node *dev)
 {
     bool assigned = false;
 
@@ -320,6 +321,7 @@ int iommu_add_dt_device(struct dt_device_node *np)
     return rc;
 }
 
+#ifdef CONFIG_DT_PASSTHROUGH
 int iommu_do_dt_domctl(struct xen_domctl *domctl, struct domain *d,
                        XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
@@ -431,3 +433,4 @@ int iommu_do_dt_domctl(struct xen_domctl *domctl, struct domain *d,
 
     return ret;
 }
+#endif /* CONFIG_DT_PASSTHROUGH */

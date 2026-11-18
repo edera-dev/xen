@@ -1332,6 +1332,7 @@ void __cpu_die(unsigned int cpu)
     }
 }
 
+#ifdef CONFIG_HOTADD
 int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
 {
     int cpu = -1;
@@ -1400,6 +1401,7 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
     cpu_hotplug_done();
     return cpu;
 }
+#endif
 
 
 int __cpu_up(unsigned int cpu)

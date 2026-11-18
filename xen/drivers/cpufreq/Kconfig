@@ -1,3 +1,41 @@
 
 config HAS_CPUFREQ
 	bool
+
+config INTEL_HWP
+	bool "Intel Hardware P-States driver" if EXPERT
+	depends on INTEL && HAS_CPUFREQ
+	default y
+	help
+	  The cpufreq=hwp driver, which lets Intel CPUs pick their own
+	  performance state within limits Xen sets.  Without it, cpufreq=hwp
+	  is an invalid option and leaves Xen without a cpufreq driver, as
+	  any invalid cpufreq= value does.  The default ACPI P-state driver
+	  is unaffected.
+
+	  If unsure, say Y.
+
+config AMD_CPPC
+	bool "AMD CPPC driver" if EXPERT
+	depends on AMD && HAS_CPUFREQ
+	default y
+	help
+	  The cpufreq=amd-cppc driver, which drives AMD CPUs through ACPI
+	  CPPC with the _CPC data the hardware domain uploads.  Without it,
+	  cpufreq=amd-cppc is an invalid option and leaves Xen without a
+	  cpufreq driver, as any invalid cpufreq= value does, and uploaded
+	  CPPC data is ignored.  The default PowerNow! driver is unaffected.
+
+	  If unsure, say Y.
+
+config CPUFREQ_GOV_ONDEMAND
+	bool "Ondemand cpufreq governor" if EXPERT
+	depends on HAS_CPUFREQ
+	default y
+	help
+	  The ondemand governor, which scales each CPU's frequency with its
+	  load, and which is Xen's default governor.  Without it, the default
+	  governor is performance, and asking for ondemand, with
+	  cpufreq=xen:ondemand or at run time through XEN_SYSCTL_pm_op, fails.
+
+	  If unsure, say Y.

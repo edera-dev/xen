@@ -296,6 +296,10 @@ int compat_grant_table_op(
             break;
 
         case GNTTABOP_get_status_frames:
+#ifndef CONFIG_GRANT_TABLE_V2
+            rc = -EOPNOTSUPP;
+            break;
+#endif
             if ( count != 1)
             {
                 rc = -EINVAL;

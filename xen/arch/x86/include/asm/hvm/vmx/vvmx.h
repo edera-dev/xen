@@ -176,9 +176,21 @@ enum vmx_insn_errno set_vvmcs_real_safe(const struct vcpu *, u32 encoding,
    set_vvmcs_virtual_safe(vcpu_nestedhvm(vcpu).nv_vvmcx, encoding, val))
 
 void nvmx_destroy_vmcs(struct vcpu *v);
+#ifdef CONFIG_NESTED_VIRT
 int nvmx_handle_vmx_insn(struct cpu_user_regs *regs, unsigned int exit_reason);
 int nvmx_msr_read_intercept(unsigned int msr,
                                 u64 *msr_content);
+#else
+/* As for any domain without nested virtualization: #UD, and #GP on MSRs. */
+#define nvmx_handle_vmx_insn(regs, exit_reason) ({              \
+    hvm_inject_hw_exception(X86_EXC_UD, X86_EVENT_NO_EC);       \
+    X86EMUL_EXCEPTION;                                          \
+})
+static inline int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
+{
+    return 0;
+}
+#endif
 
 void nvmx_update_exec_control(struct vcpu *v, u32 value);
 void nvmx_update_secondary_exec_control(struct vcpu *v,
@@ -197,7 +209,12 @@ int nept_translate_l2ga(struct vcpu *v, paddr_t l2ga,
                         unsigned int *page_order, uint32_t rwx_acc,
                         unsigned long *l1gfn, uint8_t *p2m_acc,
                         uint64_t *exit_qual, uint32_t *exit_reason);
+#ifdef CONFIG_NESTED_VIRT
 int nvmx_cpu_up_prepare(unsigned int cpu);
 void nvmx_cpu_dead(unsigned int cpu);
+#else
+static inline int nvmx_cpu_up_prepare(unsigned int cpu) { return 0; }
+static inline void nvmx_cpu_dead(unsigned int cpu) {}
+#endif
 #endif /* __ASM_X86_HVM_VVMX_H__ */
 

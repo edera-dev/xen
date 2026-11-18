@@ -945,6 +945,7 @@ static void cf_check null_schedule(
     prev->next_task->migrated = false;
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 static inline void dump_unit(const struct null_private *prv,
                              const struct null_unit *nvc)
 {
@@ -1036,6 +1037,7 @@ static void cf_check null_dump(const struct scheduler *ops)
 
     spin_unlock_irqrestore(&prv->lock, flags);
 }
+#endif
 
 static const struct scheduler sched_null_def = {
     .name           = "null Scheduler",
@@ -1064,8 +1066,10 @@ static const struct scheduler sched_null_def = {
     .migrate        = null_unit_migrate,
     .do_schedule    = null_schedule,
 
+#ifdef CONFIG_DEBUG_KEYS
     .dump_cpu_state = null_dump_pcpu,
     .dump_settings  = null_dump,
+#endif
 };
 
 REGISTER_SCHEDULER(sched_null_def);

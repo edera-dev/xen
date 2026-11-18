@@ -1658,6 +1658,7 @@ static int copy_guest_area(struct guest_area *cd_area,
                           PAGE_SIZE - offset, cd_area, NULL);
 }
 
+#ifdef CONFIG_VPMU
 static int copy_vpmu(struct vcpu *d_vcpu, struct vcpu *cd_vcpu)
 {
     struct vpmu_struct *d_vpmu = vcpu_vpmu(d_vcpu);
@@ -1700,6 +1701,12 @@ static int copy_vpmu(struct vcpu *d_vcpu, struct vcpu *cd_vcpu)
 
     return 0;
 }
+#else
+static int copy_vpmu(struct vcpu *d_vcpu, struct vcpu *cd_vcpu)
+{
+    return 0;
+}
+#endif
 
 static int copy_vcpu_settings(struct domain *cd, const struct domain *d)
 {

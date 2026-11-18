@@ -342,11 +342,13 @@ void __init early_cpu_init(bool verbose)
 #ifdef CONFIG_AMD
 	case X86_VENDOR_AMD:      actual_cpu = amd_cpu_dev;      break;
 #endif
+#ifdef CONFIG_CENTAUR
 	case X86_VENDOR_CENTAUR:  actual_cpu = centaur_cpu_dev;  break;
-#ifdef CONFIG_INTEL
+#endif
+#ifdef CONFIG_SHANGHAI
 	case X86_VENDOR_SHANGHAI: actual_cpu = shanghai_cpu_dev; break;
 #endif
-#ifdef CONFIG_AMD
+#ifdef CONFIG_HYGON
 	case X86_VENDOR_HYGON:    actual_cpu = hygon_cpu_dev;    break;
 #endif
 	default:

@@ -50,6 +50,23 @@ config GRANT_TABLE
 
 	  If unsure, say Y.
 
+config GRANT_TABLE_V2
+	bool "Grant table version 2 support" if EXPERT
+	depends on GRANT_TABLE
+	default y
+	help
+	  Version 2 of the grant table interface adds separate status frames,
+	  sub-page and transitive grants, and frame numbers wider than 32 bits.
+	  Linux only switches to it when a guest has more than 16TiB of memory,
+	  or as a PV guest sees machine addresses wider than 44 bits.
+
+	  Without it Xen behaves as with "gnttab=max-ver:1": creating a domain
+	  with a maximum grant table version of 2 fails with -EINVAL,
+	  GNTTABOP_set_version accepts version 1 only, and
+	  GNTTABOP_get_status_frames fails with -EOPNOTSUPP.
+
+	  If unsure, say Y.
+
 config HAS_GRANT_CACHE_FLUSH
 	bool
 
@@ -64,6 +81,19 @@ config EVTCHN_FIFO
 	  Cons: They cause runtime anonymous memory allocations and expose
 	  an additional interface to the guest. For smaller systems, you
 	  might consider disabling this feature.
+
+	  If unsure, say Y.
+
+config MEM_EXCHANGE
+	bool "XENMEM_exchange support" if EXPERT
+	default y
+	help
+	  XENMEM_exchange lets a guest trade pages it owns for new pages that
+	  meet machine address constraints, such as machine-contiguous or
+	  below 4GiB.  PV guests use it (Linux's swiotlb-xen does on PV);
+	  guests with a translated physmap (HVM, PVH, Arm) do not.
+
+	  Without it, XENMEM_exchange returns -ENOSYS.
 
 	  If unsure, say Y.
 
@@ -378,6 +408,21 @@ config KEXEC
 
 	  If unsure, say Y.
 
+config SOFT_RESET
+	bool "Domain soft reset support" if EXPERT
+	default y
+	depends on HAS_SOFT_RESET
+	help
+	  Allows a toolstack to reset an HVM or PVH domain in place with
+	  XEN_DOMCTL_soft_reset after the guest shut down with
+	  SHUTDOWN_soft_reset, as libxl does to kexec into a new guest kernel
+	  without rebuilding the domain.
+
+	  Without it XEN_DOMCTL_soft_reset fails with -EOPNOTSUPP, and a guest
+	  that shuts down for a soft reset can only be destroyed.
+
+	  If unsure, say Y.
+
 config EFI_SET_VIRTUAL_ADDRESS_MAP
     bool "EFI: call SetVirtualAddressMap()" if EXPERT
     default y
@@ -659,8 +704,72 @@ config SYSTEM_SUSPEND
 
 	  If unsure, say Y on x86 and N elsewhere.
 
+menu "Compressed dom0 kernel formats"
+	depends on X86
+	visible if EXPERT
+
+config DECOMPRESS_BZIP2
+	bool "bzip2"
+	default y
+	help
+	  Decompress a dom0 kernel compressed with bzip2 (Linux
+	  CONFIG_KERNEL_BZIP2).  Without it, such a kernel cannot be booted.
+
+config DECOMPRESS_LZMA
+	bool "LZMA"
+	default y
+	help
+	  Decompress a dom0 kernel compressed with LZMA (Linux
+	  CONFIG_KERNEL_LZMA).  Without it, such a kernel cannot be booted.
+
+config DECOMPRESS_XZ
+	bool "XZ"
+	default y
+	help
+	  Decompress a dom0 kernel compressed with XZ (Linux CONFIG_KERNEL_XZ).
+	  Without it, such a kernel cannot be booted.
+
+config DECOMPRESS_LZO
+	bool "LZO"
+	default y
+	help
+	  Decompress a dom0 kernel compressed with LZO (Linux
+	  CONFIG_KERNEL_LZO).  Without it, such a kernel cannot be booted.
+
+config DECOMPRESS_LZ4
+	bool "LZ4"
+	default y
+	help
+	  Decompress a dom0 kernel compressed with LZ4 (Linux
+	  CONFIG_KERNEL_LZ4).  Without it, such a kernel cannot be booted.
+
+config DECOMPRESS_ZSTD
+	bool "Zstandard"
+	default y
+	help
+	  Decompress a dom0 kernel compressed with Zstandard (Linux
+	  CONFIG_KERNEL_ZSTD).  Without it, such a kernel cannot be booted.
+
+endmenu
+
 menu "Supported hypercall interfaces"
 	visible if EXPERT
+
+config SCHED_MGMT
+	bool "Scheduler and cpupool management"
+	default y
+	help
+	  Hypercalls that change scheduling at run time: creating and
+	  destroying cpupools, moving CPUs and domains between them
+	  (XEN_SYSCTL_cpupool_op), and reading or setting global and
+	  per-domain scheduler parameters (XEN_SYSCTL_scheduler_op,
+	  XEN_SYSCTL_sched_id, XEN_DOMCTL_scheduler_op), as used by
+	  "xl cpupool-*" and "xl sched-*".
+
+	  Without them the cpupools set up at boot cannot be changed, and the
+	  schedulers keep their boot-time parameters and per-domain defaults.
+
+	  If unsure, say Y.
 
 config SYSCTL
 	bool "Enable sysctl hypercall"
@@ -669,6 +778,22 @@ config SYSCTL
 	help
 	  This option shall only be disabled on some dom0less systems, or
 	  PV shim on x86, to reduce Xen footprint.
+
+config HOTPLUG_OPS
+	bool "CPU and memory offlining operations"
+	depends on SYSCTL
+	default y
+	help
+	  XEN_SYSCTL_page_offline_op and, on x86, XEN_SYSCTL_cpu_hotplug, which
+	  "xen-hptool" uses to offline, online or query host memory pages, to
+	  online or offline physical CPUs and to switch SMT on or off at run
+	  time.
+
+	  Without them these sub-ops return -ENOSYS.  Xen still offlines
+	  pages after machine checks, and the hardware domain can still
+	  online and offline CPUs with XENPF_cpu_online and XENPF_cpu_offline.
+
+	  If unsure, say Y.
 
 endmenu
 

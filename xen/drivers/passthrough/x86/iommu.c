@@ -213,6 +213,7 @@ int arch_iommu_context_init(struct domain *d, struct iommu_context *ctx, u32 fla
     return 0;
 }
 
+#ifdef CONFIG_PV_IOMMU
 int arch_iommu_context_teardown(struct domain *d, struct iommu_context *ctx, u32 flags)
 {
     /* Cleanup all page tables */
@@ -251,6 +252,7 @@ int arch_iommu_pviommu_teardown(struct domain *d)
 
     return 0;
 }
+#endif /* CONFIG_PV_IOMMU */
 
 void arch_iommu_domain_destroy(struct domain *d)
 {
@@ -500,6 +502,7 @@ void iommu_identity_map_teardown(struct domain *d, struct iommu_context *ctx)
     }
 }
 
+#ifdef CONFIG_PV_IOMMU
 bool iommu_identity_map_check(struct domain *d, struct iommu_context *ctx,
                               mfn_t mfn)
 {
@@ -512,6 +515,7 @@ bool iommu_identity_map_check(struct domain *d, struct iommu_context *ctx,
 
     return false;
 }
+#endif
 
 struct handle_iomemcap {
     struct rangeset *r;

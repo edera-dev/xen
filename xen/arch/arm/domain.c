@@ -499,6 +499,9 @@ int arch_vcpu_create(struct vcpu *v)
     }
 
     v->arch.hcr_el2 = get_default_hcr_flags();
+#if defined(CONFIG_ARM_64) && !defined(CONFIG_ARM64_AARCH32)
+    vcpu_switch_to_aarch64_mode(v);
+#endif
 
     v->arch.mdcr_el2 = HDCR_TDRA | HDCR_TDOSA | HDCR_TDA;
     if ( !is_vpmu_domain(v->domain) )
@@ -812,6 +815,7 @@ int arch_domain_teardown(struct domain *d)
     return 0;
 }
 
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
 static void resume_ctx_reset(struct resume_info *ctx)
 {
     if ( ctx->ctxt )
@@ -819,10 +823,13 @@ static void resume_ctx_reset(struct resume_info *ctx)
 
     memset(ctx, 0, sizeof(*ctx));
 }
+#endif
 
 void arch_domain_destroy(struct domain *d)
 {
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
     resume_ctx_reset(&d->arch.resume_ctx);
+#endif
 
     tee_free_domain_ctx(d);
     /* IOMMU page table is shared with P2M, always call
@@ -864,6 +871,7 @@ void arch_domain_creation_finished(struct domain *d)
     p2m_domain_creation_finished(d);
 }
 
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
 void arch_domain_resume(struct domain *d)
 {
     struct resume_info *ctx = &d->arch.resume_ctx;
@@ -885,6 +893,7 @@ void arch_domain_resume(struct domain *d)
 
     resume_ctx_reset(ctx);
 }
+#endif
 
 static int is_guest_pv32_psr(uint32_t psr)
 {

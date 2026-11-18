@@ -66,9 +66,11 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         ret = tb_control(&op->u.tbuf_op);
         break;
 
+#ifdef CONFIG_SCHED_MGMT
     case XEN_SYSCTL_sched_id:
         op->u.sched_id.sched_id = scheduler_id();
         break;
+#endif
 
     case XEN_SYSCTL_getdomaininfolist:
     { 
@@ -120,6 +122,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         ret = spinlock_profile_control(&op->u.lockprof_op);
         break;
 #endif
+#ifdef CONFIG_DEBUG_KEYS
     case XEN_SYSCTL_debug_keys:
     {
         char c;
@@ -136,6 +139,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         copyback = 0;
     }
     break;
+#endif
 
     case XEN_SYSCTL_getcpuinfo:
     {
@@ -180,6 +184,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         break;
 #endif
 
+#ifdef CONFIG_HOTPLUG_OPS
     case XEN_SYSCTL_page_offline_op:
     {
         uint32_t *status, *ptr;
@@ -236,7 +241,9 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         copyback = 0;
     }
     break;
+#endif
 
+#ifdef CONFIG_SCHED_MGMT
     case XEN_SYSCTL_cpupool_op:
         ret = cpupool_do_sysctl(&op->u.cpupool_op);
         break;
@@ -244,6 +251,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     case XEN_SYSCTL_scheduler_op:
         ret = sched_adjust_global(&op->u.scheduler_op);
         break;
+#endif
 
     case XEN_SYSCTL_physinfo:
     {

@@ -17,11 +17,13 @@
 #include <asm/msi.h>
 #include <public/hvm/params.h>
 
+#ifdef CONFIG_HVM_PIRQ
 bool hvm_domain_use_pirq(const struct domain *d, const struct pirq *pirq)
 {
     ASSERT(is_hvm_domain(d));
     return has_pirq(d) && pirq && pirq->arch.hvm.emuirq != IRQ_UNBOUND;
 }
+#endif
 
 /* Must be called with hvm_domain->irq_lock hold */
 static void assert_gsi(struct domain *d, unsigned ioapic_gsi)

@@ -250,7 +250,11 @@ extern bool cpufreq_governor_internal;
 
 extern int cpufreq_register_governor(struct cpufreq_governor *governor);
 extern struct cpufreq_governor *__find_governor(const char *governor);
+#ifdef CONFIG_CPUFREQ_GOV_ONDEMAND
 #define CPUFREQ_DEFAULT_GOVERNOR &cpufreq_gov_dbs
+#else
+#define CPUFREQ_DEFAULT_GOVERNOR &cpufreq_gov_performance
+#endif
 
 /*
  * Performance Policy
@@ -381,8 +385,13 @@ int write_ondemand_up_threshold(unsigned int up_threshold);
 
 int write_userspace_scaling_setspeed(unsigned int cpu, unsigned int freq);
 
+#ifdef CONFIG_CPUFREQ_GOV_ONDEMAND
 void cpufreq_dbs_timer_suspend(void);
 void cpufreq_dbs_timer_resume(void);
+#else
+static inline void cpufreq_dbs_timer_suspend(void) {}
+static inline void cpufreq_dbs_timer_resume(void) {}
+#endif
 
 void intel_feature_detect(struct cpufreq_policy *policy);
 
@@ -398,7 +407,7 @@ void intel_feature_detect(struct cpufreq_policy *policy);
 
 int hwp_cmdline_parse(const char *s, const char *e);
 int hwp_register_driver(void);
-#ifdef CONFIG_INTEL
+#ifdef CONFIG_INTEL_HWP
 bool hwp_active(void);
 #else
 static inline bool hwp_active(void) { return false; }

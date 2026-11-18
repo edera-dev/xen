@@ -8,6 +8,7 @@
 #ifndef __ASM_X86_HVM_VPT_H__
 #define __ASM_X86_HVM_VPT_H__
 
+#include <xen/errno.h>
 #include <xen/timer.h>
 #include <xen/list.h>
 #include <xen/rwlock.h>
@@ -179,24 +180,55 @@ void create_periodic_time(
 void destroy_periodic_time(struct periodic_time *pt);
 
 int pv_pit_handler(int port, int data, int write);
+#ifdef CONFIG_X86_HVM_PIT
 void pit_reset(struct domain *d);
 
 void pit_init(struct domain *d);
 void pit_stop_channel0_irq(PITState * pit);
 void pit_deinit(struct domain *d);
+#else
+static inline void pit_reset(struct domain *d) {}
+static inline void pit_init(struct domain *d) {}
+static inline void pit_stop_channel0_irq(PITState *pit) {}
+static inline void pit_deinit(struct domain *d) {}
+#endif
+
 void rtc_init(struct domain *d);
+#ifdef CONFIG_X86_HVM_RTC
 void rtc_migrate_timers(struct vcpu *v);
 void rtc_deinit(struct domain *d);
 void rtc_reset(struct domain *d);
 void rtc_update_clock(struct domain *d);
+#else
+static inline void rtc_migrate_timers(struct vcpu *v) {}
+static inline void rtc_deinit(struct domain *d) {}
+static inline void rtc_reset(struct domain *d) {}
+static inline void rtc_update_clock(struct domain *d) {}
+#endif
 
+#ifdef CONFIG_X86_HVM_PMTIMER
 void pmtimer_init(struct vcpu *v);
 void pmtimer_deinit(struct domain *d);
 void pmtimer_reset(struct domain *d);
 int pmtimer_change_ioport(struct domain *d, uint64_t version);
+#else
+static inline void pmtimer_init(struct vcpu *v) {}
+static inline void pmtimer_deinit(struct domain *d) {}
+static inline void pmtimer_reset(struct domain *d) {}
+static inline int pmtimer_change_ioport(struct domain *d, uint64_t version)
+{
+    return -ENODEV;
+}
+#endif
 
+#ifdef CONFIG_X86_HVM_HPET
 void hpet_init(struct domain *d);
 void hpet_deinit(struct domain *d);
 void hpet_reset(struct domain *d);
+#else
+static inline void hpet_init(struct domain *d) {}
+static inline void hpet_deinit(struct domain *d) {}
+static inline void hpet_reset(struct domain *d) {}
+#endif
 
 #endif /* __ASM_X86_HVM_VPT_H__ */

@@ -14,8 +14,13 @@
                                    PERDOMAIN_ALT_VIRT_START)
 #define COMPAT_ARG_XLAT_SIZE      (2*PAGE_SIZE)
 struct vcpu;
+#ifdef CONFIG_COMPAT
 int setup_compat_arg_xlat(struct vcpu *v);
 void free_compat_arg_xlat(struct vcpu *v);
+#else
+static inline int setup_compat_arg_xlat(struct vcpu *v) { return 0; }
+static inline void free_compat_arg_xlat(struct vcpu *v) {}
+#endif
 #define is_compat_arg_xlat_range(addr, size) ({                               \
     unsigned long __off;                                                      \
     __off = (unsigned long)(addr) - (unsigned long)COMPAT_ARG_XLAT_VIRT_BASE; \

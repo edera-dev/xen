@@ -643,7 +643,9 @@ static int cf_check vmx_vcpu_initialise(struct vcpu *v)
 
     INIT_LIST_HEAD(&v->arch.hvm.vmx.pi_blocking.list);
 
+#ifdef CONFIG_NESTED_VIRT
     vcpu_2_nvmx(v).vmxon_region_pa = INVALID_PADDR;
+#endif
 
     if ( (rc = vmx_create_vmcs(v)) != 0 )
     {
@@ -653,6 +655,7 @@ static int cf_check vmx_vcpu_initialise(struct vcpu *v)
         return rc;
     }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
     /*
      * It's rare but still possible that domain has already been in log-dirty
      * mode when vcpu is being created (commented by Tim), in which case we
@@ -675,6 +678,7 @@ static int cf_check vmx_vcpu_initialise(struct vcpu *v)
             return rc;
         }
     }
+#endif
 
     vmx_install_vlapic_mapping(v);
     vmx_init_ipt(v);
@@ -684,6 +688,7 @@ static int cf_check vmx_vcpu_initialise(struct vcpu *v)
 
 static void cf_check vmx_vcpu_destroy(struct vcpu *v)
 {
+#ifdef CONFIG_PAGING_LOG_DIRTY
     /*
      * There are cases that domain still remains in log-dirty mode when it is
      * about to be destroyed (ex, user types 'xl destroy <dom>'), in which case
@@ -692,6 +697,7 @@ static void cf_check vmx_vcpu_destroy(struct vcpu *v)
      * separately here.
      */
     vmx_vcpu_disable_pml(v);
+#endif
     vmx_destroy_vmcs(v);
 }
 
@@ -788,7 +794,7 @@ void vmx_update_tertiary_exec_control(const struct vcpu *v)
 
 void vmx_update_exception_bitmap(struct vcpu *v)
 {
-    u32 bitmap = unlikely(v->arch.hvm.vmx.vmx_realmode)
+    u32 bitmap = unlikely(vmx_vm86_realmode(v))
         ? 0xffffffffu : v->arch.hvm.vmx.exception_bitmap;
 
     if ( nestedhvm_vcpu_in_guestmode(v) )
@@ -1272,7 +1278,7 @@ static void cf_check vmx_get_segment_register(
         (!(attr & (1u << 16)) << 7) | (attr & 0x7f) | ((attr >> 4) & 0xf00);
 
     /* Adjust for virtual 8086 mode */
-    if ( v->arch.hvm.vmx.vmx_realmode && seg <= x86_seg_tr
+    if ( vmx_vm86_realmode(v) && seg <= x86_seg_tr
          && !(v->arch.hvm.vmx.vm86_segment_mask & (1u << seg)) )
     {
         struct segment_register *sreg = &v->arch.hvm.vmx.vm86_saved_seg[seg];
@@ -1312,7 +1318,7 @@ static void cf_check vmx_set_segment_register(
     base = reg->base;
 
     /* Adjust CS/SS/DS/ES/FS/GS/TR for virtual 8086 mode */
-    if ( v->arch.hvm.vmx.vmx_realmode && seg <= x86_seg_tr )
+    if ( vmx_vm86_realmode(v) && seg <= x86_seg_tr )
     {
         /* Remember the proper contents */
         v->arch.hvm.vmx.vm86_saved_seg[seg] = *reg;
@@ -1781,7 +1787,7 @@ static void cf_check vmx_update_guest_cr(
             nvmx_set_cr_read_shadow(v, 4);
 
         v->arch.hvm.hw_cr[4] |= v->arch.hvm.guest_cr[4];
-        if ( v->arch.hvm.vmx.vmx_realmode )
+        if ( vmx_vm86_realmode(v) )
             v->arch.hvm.hw_cr[4] |= X86_CR4_VME;
 
         if ( !hvm_paging_enabled(v) )
@@ -1834,7 +1840,7 @@ static void cf_check vmx_update_guest_cr(
                 (HVM_CR4_HOST_MASK | X86_CR4_PKE |
                  ~hvm_cr4_guest_valid_bits(v->domain));
 
-            v->arch.hvm.vmx.cr4_host_mask |= v->arch.hvm.vmx.vmx_realmode ?
+            v->arch.hvm.vmx.cr4_host_mask |= vmx_vm86_realmode(v) ?
                                              X86_CR4_VME : 0;
             v->arch.hvm.vmx.cr4_host_mask |= !hvm_paging_enabled(v) ?
                                              (X86_CR4_PSE | X86_CR4_SMEP |
@@ -1983,6 +1989,7 @@ static void nvmx_enqueue_n2_exceptions(struct vcpu *v,
                  nvmx->intr.intr_info, nvmx->intr.error_code);
 }
 
+#ifdef CONFIG_NESTED_VIRT
 static int cf_check nvmx_vmexit_event(
     struct vcpu *v, const struct x86_event *event)
 {
@@ -1990,6 +1997,7 @@ static int cf_check nvmx_vmexit_event(
                                hvm_intsrc_none);
     return NESTEDHVM_VMEXIT_DONE;
 }
+#endif
 
 static void __vmx_inject_exception(int trap, int type, int error_code)
 {
@@ -2018,7 +2026,7 @@ static void __vmx_inject_exception(int trap, int type, int error_code)
 
     /* Can't inject exceptions in virtual 8086 mode because they would 
      * use the protected-mode IDT.  Emulate at the next vmenter instead. */
-    if ( curr->arch.hvm.vmx.vmx_realmode )
+    if ( vmx_vm86_realmode(curr) )
         curr->arch.hvm.vmx.vmx_emulate = 1;
 }
 
@@ -2881,6 +2889,7 @@ static struct hvm_function_table __initdata_cf_clobber vmx_function_table = {
     .handle_cd            = vmx_handle_cd,
     .set_info_guest       = vmx_set_info_guest,
     .set_rdtsc_exiting    = vmx_set_rdtsc_exiting,
+#ifdef CONFIG_NESTED_VIRT
     .nhvm_vcpu_initialise = nvmx_vcpu_initialise,
     .nhvm_vcpu_destroy    = nvmx_vcpu_destroy,
     .nhvm_vcpu_reset      = nvmx_vcpu_reset,
@@ -2890,8 +2899,11 @@ static struct hvm_function_table __initdata_cf_clobber vmx_function_table = {
     .nhvm_vcpu_vmexit_event = nvmx_vmexit_event,
     .nhvm_intr_blocked    = nvmx_intr_blocked,
     .nhvm_domain_relinquish_resources = nvmx_domain_relinquish_resources,
+#endif
     .update_vlapic_mode = vmx_vlapic_msr_changed,
+#ifdef CONFIG_NESTED_VIRT
     .nhvm_hap_walk_L1_p2m = nvmx_hap_walk_L1_p2m,
+#endif
 #ifdef CONFIG_VM_EVENT
     .enable_msr_interception = vmx_enable_msr_interception,
 #endif
@@ -3932,9 +3944,11 @@ static void ept_handle_violation(ept_qual_t q, paddr_t gpa)
         break;
     case 1:         // This violation is handled completly
         return;
+#ifdef CONFIG_NESTED_VIRT
     case -1:        // This vioaltion should be injected to L1 VMM
         vcpu_nestedhvm(current).nv_vmexit_pending = 1;
         return;
+#endif
     }
 
     /* Everything else is an error. */
@@ -4010,6 +4024,7 @@ static void vmx_failed_vmentry(unsigned int exit_reason,
     domain_crash(curr->domain);
 }
 
+#ifdef CONFIG_VMX_REALMODE_EMUL
 void vmx_enter_realmode(struct cpu_user_regs *regs)
 {
     struct vcpu *v = current;
@@ -4020,6 +4035,7 @@ void vmx_enter_realmode(struct cpu_user_regs *regs)
     v->arch.hvm.vmx.vm86_saved_eflags = regs->eflags;
     regs->eflags |= (X86_EFLAGS_VM | X86_EFLAGS_IOPL);
 }
+#endif
 
 static int vmx_handle_eoi_write(void)
 {
@@ -4300,6 +4316,7 @@ void asmlinkage vmx_vmexit_handler(struct cpu_user_regs *regs)
         exit_reason &= ~VMX_EXIT_REASONS_BUS_LOCK;
     }
 
+#ifdef CONFIG_NESTED_VIRT
     /* XXX: This looks ugly, but we need a mechanism to ensure
      * any pending vmresume has really happened
      */
@@ -4310,11 +4327,12 @@ void asmlinkage vmx_vmexit_handler(struct cpu_user_regs *regs)
         if ( nvmx_n2_vmexit_handler(regs, exit_reason) )
             goto out;
     }
+#endif
 
     if ( unlikely(exit_reason & VMX_EXIT_REASONS_FAILED_VMENTRY) )
         return vmx_failed_vmentry(exit_reason, regs);
 
-    if ( v->arch.hvm.vmx.vmx_realmode )
+    if ( vmx_vm86_realmode(v) )
     {
         /* Put RFLAGS back the way the guest wants it */
         regs->eflags &= ~(X86_EFLAGS_VM | X86_EFLAGS_IOPL);
@@ -4809,6 +4827,7 @@ void asmlinkage vmx_vmexit_handler(struct cpu_user_regs *regs)
         vmx_handle_apic_write();
         break;
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
     case EXIT_REASON_PML_FULL:
         __vmread(EXIT_QUALIFICATION, &exit_qualification);
 
@@ -4818,6 +4837,7 @@ void asmlinkage vmx_vmexit_handler(struct cpu_user_regs *regs)
 
         ept_vcpu_flush_pml_buffer(v);
         break;
+#endif
 
     case EXIT_REASON_XSAVES:
         vmx_handle_xsaves();
@@ -4871,9 +4891,11 @@ void asmlinkage vmx_vmexit_handler(struct cpu_user_regs *regs)
         break;
     }
 
+#ifdef CONFIG_NESTED_VIRT
 out:
     if ( nestedhvm_vcpu_in_guestmode(v) )
         nvmx_idtv_handling();
+#endif
 }
 
 static void lbr_tsx_fixup(void)

@@ -101,7 +101,11 @@ void msixtbl_init(struct domain *d);
 static inline void msixtbl_init(struct domain *d) {}
 #endif
 
+#ifdef CONFIG_X86_HVM_STDVGA
 void stdvga_init(struct domain *d);
+#else
+static inline void stdvga_init(struct domain *d) {}
+#endif
 
 extern void hvm_dpci_msi_eoi(struct domain *d, int vector);
 

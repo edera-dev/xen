@@ -737,7 +737,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     case XEN_DOMCTL_soft_reset:
     case XEN_DOMCTL_soft_reset_cont:
-        if ( !IS_ENABLED(CONFIG_HAS_SOFT_RESET) )
+        if ( !IS_ENABLED(CONFIG_SOFT_RESET) )
         {
             ret = -EOPNOTSUPP;
             break;
@@ -788,10 +788,12 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         ret = vcpu_affinity_domctl(d, op->cmd, &op->u.vcpuaffinity);
         break;
 
+#ifdef CONFIG_SCHED_MGMT
     case XEN_DOMCTL_scheduler_op:
         ret = sched_adjust(d, &op->u.scheduler_op);
         copyback = 1;
         break;
+#endif
 
     case XEN_DOMCTL_getvcpucontext:
     {

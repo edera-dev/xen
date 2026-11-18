@@ -70,6 +70,7 @@ long cf_check cpu_frequency_change_helper(void *data)
 }
 #endif
 
+#ifdef CONFIG_RESOURCE_OP
 static bool msr_read_allowed(unsigned int msr)
 {
     switch ( msr )
@@ -239,6 +240,7 @@ void cf_check resource_access(void *info)
 
     ra->nr_done = i;
 }
+#endif /* CONFIG_RESOURCE_OP */
 #endif
 
 ret_t do_platform_op(
@@ -619,7 +621,8 @@ ret_t do_platform_op(
         }
 
         case XEN_PM_CPPC:
-            if ( !(xen_processor_pmbits & XEN_PROCESSOR_PM_CPPC) )
+            if ( !IS_ENABLED(CONFIG_AMD_CPPC) ||
+                 !(xen_processor_pmbits & XEN_PROCESSOR_PM_CPPC) )
             {
                 /*
                  * Neglect CPPC-info when registered cpufreq driver
@@ -790,6 +793,7 @@ ret_t do_platform_op(
         break;
     }
 
+#ifdef CONFIG_HOTADD
     case XENPF_cpu_hotadd:
         ret = cpu_add(op->u.cpu_add.apic_id,
                       op->u.cpu_add.acpi_id,
@@ -801,6 +805,12 @@ ret_t do_platform_op(
                       op->u.mem_add.epfn,
                       op->u.mem_add.pxm);
         break;
+#else
+    case XENPF_cpu_hotadd:
+    case XENPF_mem_hotadd:
+        ret = -EOPNOTSUPP;
+        break;
+#endif
 
     case XENPF_core_parking:
     {
@@ -833,6 +843,7 @@ ret_t do_platform_op(
         break;
     }
 
+#ifdef CONFIG_RESOURCE_OP
     case XENPF_resource_op:
     {
         struct resource_access ra;
@@ -899,6 +910,7 @@ ret_t do_platform_op(
         xfree(ra.entries);
         break;
     }
+#endif /* CONFIG_RESOURCE_OP */
 
     case XENPF_get_symbol:
     {

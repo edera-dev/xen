@@ -30,10 +30,21 @@
 struct domain;
 struct vcpu;
 
+#ifdef CONFIG_X86_HVM_PIC
 void vpic_irq_positive_edge(struct domain *d, int irq);
 void vpic_irq_negative_edge(struct domain *d, int irq);
 void vpic_init(struct domain *d);
 void vpic_reset(struct domain *d);
 int vpic_ack_pending_irq(struct vcpu *v);
+#else
+static inline void vpic_irq_positive_edge(struct domain *d, int irq) {}
+static inline void vpic_irq_negative_edge(struct domain *d, int irq) {}
+static inline void vpic_init(struct domain *d) {}
+static inline void vpic_reset(struct domain *d) {}
+static inline int vpic_ack_pending_irq(struct vcpu *v)
+{
+    return -1;
+}
+#endif
 
 #endif  /* __ASM_X86_HVM_VPIC_H__ */  

@@ -83,7 +83,9 @@ FUNC(vmx_asm_vmexit_handler)
 
 .Lvmx_do_vmentry:
         call vmx_intr_assist
+#ifdef CONFIG_NESTED_VIRT
         call nvmx_switch_guest
+#endif
         ASSERT_NOT_IN_ATOMIC
 
         mov  VCPU_processor(%rbx),%eax
@@ -94,6 +96,7 @@ FUNC(vmx_asm_vmexit_handler)
         cmp  %ecx,(%rdx,%rax,1)
         jnz  .Lvmx_process_softirqs
 
+#ifdef CONFIG_VMX_REALMODE_EMUL
         cmp  %cl,VCPU_vmx_emulate(%rbx)
         jne .Lvmx_goto_emulator
         cmp  %cl,VCPU_vmx_realmode(%rbx)
@@ -103,6 +106,7 @@ UNLIKELY_START(ne, realmode)
         mov  %rsp,%rdi
         call vmx_enter_realmode
 UNLIKELY_END(realmode)
+#endif
 
         mov  %rsp,%rdi
         call vmx_vmenter_helper
@@ -192,11 +196,13 @@ LABEL(vmx_asm_do_vmentry)
         sti
         jmp  .Lvmx_do_vmentry
 
+#ifdef CONFIG_VMX_REALMODE_EMUL
 .Lvmx_goto_emulator:
         sti
         mov  %rsp,%rdi
         call vmx_realmode
         jmp  .Lvmx_do_vmentry
+#endif
 
 .Lvmx_process_softirqs:
         sti

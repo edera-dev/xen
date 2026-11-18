@@ -166,6 +166,22 @@ config SHADOW_PAGING
 config PAGING
 	def_bool HVM || SHADOW_PAGING
 
+config PAGING_LOG_DIRTY
+	bool "Log-dirty page tracking" if EXPERT && !SHADOW_PAGING && !ALTP2M
+	depends on PAGING && !PV_SHIM_EXCLUSIVE
+	default y
+	help
+	  Tracking of the pages a domain writes to, used by the toolstack to
+	  save and live-migrate domains (XEN_DOMCTL_shadow_op), and by device
+	  models to track writes to emulated video memory.  It uses Intel PML
+	  where available.  Shadow paging and altp2m keep it enabled.
+
+	  Without it, XEN_DOMCTL_shadow_op and XEN_DMOP_track_dirty_vram
+	  return -EOPNOTSUPP: domains can't be saved or migrated, and the
+	  paging pool can only be sized with XEN_DOMCTL_set_paging_mempool_size.
+
+	  If unsure, say Y.
+
 config BIGMEM
 	bool "big memory support"
 	default n
@@ -197,6 +213,32 @@ config X86_PSR
 	  See xl-psr documentation for details.
 
 	  If unsure, stay with the default.
+
+config VPMU
+	bool "Virtual Performance Monitoring Unit support" if EXPERT
+	default y
+	help
+	  Support for exposing the CPU's Performance Monitoring Unit to guests
+	  (vPMU), enabled at boot with the "vpmu" command line option, and the
+	  XENPMU hypercall used by PV domains for profiling.
+
+	  Without it, guests see no PMU, as with "vpmu=0": the CPUID PMU leaf
+	  is empty, the performance counter MSRs read as zero and ignore
+	  writes, the XENPMU hypercall returns -ENOSYS and "vpmu" is an
+	  unknown option.
+
+	  If unsure, say Y.
+
+config RESOURCE_OP
+	bool "Host MSR access for the toolstack" if EXPERT
+	default y
+	help
+	  XENPF_resource_op, through which the toolstack reads or writes a
+	  few host MSRs on a chosen CPU: cache monitoring counters, the TSC,
+	  TSX and MCU controls, PPIN and thermal status, as xenpm get-core-temp
+	  and xl psr-cmt-show do.  Without it, the operation returns -ENOSYS.
+
+	  If unsure, say Y.
 
 choice
 	prompt "Alignment of Xen image"
@@ -265,6 +307,16 @@ config MCE_NONFATAL
 	
 	  Turn this option off if you plan on deploying real-time workloads
 	  on Xen.
+
+config HOTADD
+	bool "Physical CPU and memory hot-add" if EXPERT
+	default y
+	help
+	  Lets the hardware domain report CPUs and memory added to the running
+	  system, through XENPF_cpu_hotadd and XENPF_mem_hotadd.  Current Linux
+	  issues neither.  Without it, both operations return -EOPNOTSUPP.
+
+	  If unsure, say Y.
 
 config GUEST
 	bool

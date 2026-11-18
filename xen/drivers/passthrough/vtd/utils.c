@@ -154,6 +154,7 @@ void print_vtd_entries(struct vtd_iommu *iommu, int bus, int devfn, u64 gmfn)
     } while ( --level );
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 void cf_check vtd_dump_iommu_info(unsigned char key)
 {
     struct acpi_drhd_unit *drhd;
@@ -279,6 +280,7 @@ void cf_check vtd_dump_iommu_info(unsigned char key)
         }
     }
 }
+#endif
 
 /*
  * Local variables:

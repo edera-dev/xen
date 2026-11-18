@@ -14,7 +14,15 @@
 
 typedef int (*apei_hest_func_t)(const struct acpi_hest_header *hest_hdr,
                                 void *data);
+#ifdef CONFIG_ACPI_APEI
 int apei_hest_parse(apei_hest_func_t func, void *data);
+#else
+/* As when firmware has no HEST. */
+static inline int apei_hest_parse(apei_hest_func_t func, void *data)
+{
+	return -EINVAL;
+}
+#endif
 
 int erst_write(const struct cper_record_header *record);
 ssize_t erst_get_record_count(void);

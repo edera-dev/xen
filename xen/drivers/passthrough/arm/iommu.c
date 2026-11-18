@@ -181,6 +181,7 @@ void arch_iommu_domain_destroy(struct domain *d)
  * Arm has no secondary IOMMU contexts: every domain gets the single context
  * built out of its P2M, so there is no page table arena to set up either.
  */
+#ifdef CONFIG_PV_IOMMU
 int arch_iommu_pviommu_init(struct domain *d, uint16_t nb_ctx,
                             uint32_t arena_order)
 {
@@ -191,6 +192,7 @@ int arch_iommu_pviommu_teardown(struct domain *d)
 {
     return 0;
 }
+#endif
 
 void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
 {

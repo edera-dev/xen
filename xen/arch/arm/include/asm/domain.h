@@ -20,6 +20,11 @@ struct hvm_domain
 
 #define arch_needs_vpci(d) (!is_hardware_domain(d))
 
+#if defined(CONFIG_ARM_64) && !defined(CONFIG_HAS_DOMAIN_TYPE)
+#define is_32bit_domain(d) ((void)(d), false)
+#define is_64bit_domain(d) ((void)(d), true)
+#endif
+
 struct vtimer {
     struct vcpu *v;
     int irq;
@@ -99,7 +104,9 @@ struct arch_domain
     void *sci_data;
 #endif
 
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
     struct resume_info resume_ctx;
+#endif
 
 #ifdef CONFIG_MPU
     uint8_t v8r_el1_msa;

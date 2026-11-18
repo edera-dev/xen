@@ -221,7 +221,7 @@ long arch_do_domctl(
 
     case XEN_DOMCTL_shadow_op:
         ret = -EOPNOTSUPP;
-        if ( !IS_ENABLED(CONFIG_PAGING) )
+        if ( !IS_ENABLED(CONFIG_PAGING_LOG_DIRTY) )
             break;
 
         ret = paging_domctl(d, &domctl->u.shadow_op, u_domctl, 0);

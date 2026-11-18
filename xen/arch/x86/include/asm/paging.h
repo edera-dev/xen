@@ -55,7 +55,7 @@
 #define PG_translate   0
 #define PG_external    0
 #endif
-#if defined(CONFIG_PAGING) && !defined(CONFIG_PV_SHIM_EXCLUSIVE)
+#ifdef CONFIG_PAGING_LOG_DIRTY
 /* Enable log dirty mode */
 #define PG_log_dirty   (XEN_DOMCTL_SHADOW_ENABLE_LOG_DIRTY << PG_mode_shift)
 #else
@@ -174,6 +174,7 @@ static inline void paging_log_dirty_init(struct domain *d,
                                          const struct log_dirty_ops *ops) {}
 static inline void paging_mark_dirty(struct domain *d, mfn_t gmfn) {}
 static inline void paging_mark_pfn_dirty(struct domain *d, pfn_t pfn) {}
+static inline void paging_mark_pfn_clean(struct domain *d, pfn_t pfn) {}
 static inline bool paging_mfn_is_dirty(struct domain *d, mfn_t gmfn) { return false; }
 
 #endif /* PG_log_dirty */

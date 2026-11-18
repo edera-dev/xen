@@ -16,6 +16,9 @@
 #define mode_is(d, name) \
     ((d)->arch.hvm.params[HVM_PARAM_TIMER_MODE] == HVMPTM_##name)
 
+/* Without the emulated PIT, RTC and HPET only vLAPIC timers exist. */
+#define pt_lapic_only() (!X86_EMU_PIT && !X86_EMU_RTC && !X86_EMU_HPET)
+
 void hvm_init_guest_time(struct domain *d)
 {
     struct pl_time *pl = d->arch.hvm.pl_time;
@@ -71,7 +74,7 @@ static int pt_irq_vector(struct periodic_time *pt, enum hvm_intsrc src)
     unsigned int gsi, isa_irq;
     int vector;
 
-    if ( pt->source == PTSRC_lapic )
+    if ( pt_lapic_only() || pt->source == PTSRC_lapic )
         return pt->irq;
 
     isa_irq = pt->irq;
@@ -99,7 +102,7 @@ static int pt_irq_masked(struct periodic_time *pt)
     struct vcpu *v = pt->vcpu;
     unsigned int gsi = pt->irq;
 
-    switch ( pt->source )
+    switch ( pt_lapic_only() ? PTSRC_lapic : pt->source )
     {
     case PTSRC_lapic:
     {
@@ -362,7 +365,7 @@ int pt_update_irq(struct vcpu *v)
 
     pt_vcpu_unlock(v);
 
-    switch ( earliest_pt->source )
+    switch ( pt_lapic_only() ? PTSRC_lapic : earliest_pt->source )
     {
     case PTSRC_lapic:
         /*

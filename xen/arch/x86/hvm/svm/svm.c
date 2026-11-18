@@ -1621,11 +1621,13 @@ static void svm_do_nested_pgfault(struct vcpu *v,
     {
     case 1:
         return;
+#ifdef CONFIG_NESTED_VIRT
     case -1:
         ASSERT(nestedhvm_enabled(v->domain) && nestedhvm_vcpu_in_guestmode(v));
         /* inject #VMEXIT(NPF) into guest. */
         nestedsvm_vmexit_defer(v, VMEXIT_NPF, pfec, gpa);
         return;
+#endif
     }
 
     /* Everything else is an error. */
@@ -2438,6 +2440,7 @@ static struct hvm_function_table __initdata_cf_clobber svm_function_table = {
     .set_rdtsc_exiting    = svm_set_rdtsc_exiting,
     .get_insn_bytes       = svm_get_insn_bytes,
 
+#ifdef CONFIG_NESTED_VIRT
     .nhvm_vcpu_initialise = nsvm_vcpu_initialise,
     .nhvm_vcpu_destroy = nsvm_vcpu_destroy,
     .nhvm_vcpu_reset = nsvm_vcpu_reset,
@@ -2448,6 +2451,7 @@ static struct hvm_function_table __initdata_cf_clobber svm_function_table = {
     .nhvm_intr_blocked = nsvm_intr_blocked,
     .nhvm_hap_walk_L1_p2m = nsvm_hap_walk_L1_p2m,
     .nhvm_domain_relinquish_resources = nsvm_domain_relinquish_resources,
+#endif
 
     .get_reg = svm_get_reg,
     .set_reg = svm_set_reg,

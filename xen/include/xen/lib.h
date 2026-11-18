@@ -163,7 +163,12 @@ extern char *print_tainted(char *str);
 extern void add_taint(unsigned int taint);
 
 struct cpu_user_regs;
+#ifdef CONFIG_DEBUG_KEYS
 void cf_check dump_execstate(const struct cpu_user_regs *regs);
+#else
+/* Only the debug keys send the state dump IPI that calls it. */
+static inline void cf_check dump_execstate(const struct cpu_user_regs *regs) {}
+#endif
 
 void init_constructors(void);
 
