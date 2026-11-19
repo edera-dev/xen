@@ -331,6 +331,10 @@ jobs:
             variant: hvm64
           - test: gnttab-copy-ops
             variant: pv64
+          - test: sched-credit2-cap-refused
+            variant: hvm64
+          - test: sched-credit2-cap-refused
+            variant: pv64
     name: xtf (${{ matrix.test }}, ${{ matrix.variant }})
     env:
       TEST: ${{ matrix.test }}
