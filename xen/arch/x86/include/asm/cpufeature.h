@@ -356,7 +356,17 @@ struct cpuid4_info {
     unsigned long size;
 };
 
+#ifdef CONFIG_INTEL
 int cpuid4_cache_lookup(int index, struct cpuid4_info *this_leaf);
+#else
+#include <xen/errno.h>
+
+/* As on CPUs without CPUID leaf 4, whose cache type reads as NULL. */
+static inline int cpuid4_cache_lookup(int index, struct cpuid4_info *this_leaf)
+{
+    return -EIO;
+}
+#endif
 #endif /* !__ASSEMBLER__ */
 
 #endif /* __ASM_I386_CPUFEATURE_H */

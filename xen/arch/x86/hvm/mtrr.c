@@ -511,6 +511,7 @@ bool mtrr_pat_not_equal(const struct vcpu *vd, const struct vcpu *vs)
     return vd->arch.hvm.pat_cr != vs->arch.hvm.pat_cr;
 }
 
+#ifdef CONFIG_IOREQ_SERVER /* Only XEN_DMOP_pin_memory_cacheattr pins ranges. */
 struct hvm_mem_pinned_cacheattr_range {
     struct list_head list;
     uint64_t start, end;
@@ -694,6 +695,7 @@ int hvm_set_mem_pinned_cacheattr(struct domain *d, uint64_t gfn_start,
 
     return rc;
 }
+#endif /* CONFIG_IOREQ_SERVER */
 
 static int cf_check hvm_save_mtrr_msr(struct vcpu *v, hvm_domain_context_t *h)
 {

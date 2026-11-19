@@ -56,6 +56,7 @@ enum rtc_mode {
 #define mode_is(d, m) ((void)(d), rtc_mode_##m == rtc_mode_no_ack)
 #define rtc_mode_is(s, m) mode_is(vrtc_domain(s), m)
 
+#ifdef CONFIG_X86_HVM_RTC
 static void rtc_copy_date(RTCState *s);
 static void rtc_set_time(RTCState *s);
 
@@ -819,6 +820,7 @@ void rtc_reset(struct domain *d)
     s->period = 0;
     s->pt.source = PTSRC_isa;
 }
+#endif /* CONFIG_X86_HVM_RTC */
 
 /* RTC mediator for HVM hardware domain. */
 static int cf_check hw_rtc_io(
@@ -843,7 +845,9 @@ static int cf_check hw_rtc_io(
 
 void rtc_init(struct domain *d)
 {
+#ifdef CONFIG_X86_HVM_RTC
     RTCState *s = domain_vrtc(d);
+#endif
 
     if ( !has_vrtc(d) )
     {
@@ -863,6 +867,7 @@ void rtc_init(struct domain *d)
         return;
     }
 
+#ifdef CONFIG_X86_HVM_RTC
     spin_lock_init(&s->lock);
 
     init_timer(&s->update_timer, rtc_update_timer, s, smp_processor_id());
@@ -887,8 +892,10 @@ void rtc_init(struct domain *d)
 
     check_update_timer(s);
     spin_unlock(&s->lock);
+#endif
 }
 
+#ifdef CONFIG_X86_HVM_RTC
 void rtc_deinit(struct domain *d)
 {
     RTCState *s = domain_vrtc(d);
@@ -917,6 +924,7 @@ void rtc_update_clock(struct domain *d)
     s->current_tm = gmtime(get_localtime(d));
     spin_unlock(&s->lock);
 }
+#endif /* CONFIG_X86_HVM_RTC */
 
 /*
  * Local variables:

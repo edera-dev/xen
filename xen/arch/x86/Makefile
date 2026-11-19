@@ -29,7 +29,7 @@ obj-y += domain.o
 obj-bin-y += dom0_build.init.o
 obj-y += domain_page.o
 obj-y += e820.o
-obj-y += emul-i8254.o
+obj-$(CONFIG_X86_HVM_PIT) += emul-i8254.o
 obj-y += extable.o
 obj-y += flushtlb.o
 obj-$(CONFIG_GDBSX) += gdbsx.o
@@ -86,7 +86,7 @@ hostprogs-y += efi/mkreloc
 
 $(obj)/efi/mkreloc: HOSTCFLAGS += -I$(srctree)/include
 
-ifneq ($(CONFIG_HVM),y)
+ifneq ($(CONFIG_HVM_EMUL_SIMD),y)
 $(obj)/x86_emulate.o: CFLAGS-y += -Wno-unused-label
 endif
 ifeq ($(CONFIG_CONDITION_COVERAGE)$(CONFIG_CC_IS_GCC),yy)

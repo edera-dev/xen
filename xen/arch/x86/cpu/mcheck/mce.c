@@ -936,7 +936,7 @@ void x86_mcinfo_dump(struct mc_info *mi)
             printk(" at %16"PRIx64, mc_bank->mc_addr);
         printk("\n");
 
-        if ( is_mc_panic )
+        if ( IS_ENABLED(CONFIG_ACPI_APEI) && is_mc_panic )
             x86_mcinfo_apei_save(mc_global, mc_bank);
 
  next:

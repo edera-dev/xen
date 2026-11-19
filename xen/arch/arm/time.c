@@ -253,6 +253,7 @@ static void htimer_interrupt(int irq, void *dev_id)
     WRITE_SYSREG(0, CNTHP_CTL_EL2);
 }
 
+#ifdef CONFIG_ARM_VTIMER_WORKAROUND
 /*
  * How long the virtual timer's PPI stays masked once it has been caught
  * asserting with nothing left to deliver.  It is a floor under every guest
@@ -418,6 +419,7 @@ static void vtimer_note(const char *what)
 
     this_cpu(vtimer_noise_window) = now;
 }
+#endif /* CONFIG_ARM_VTIMER_WORKAROUND */
 
 static void vtimer_interrupt(int irq, void *dev_id)
 {
@@ -443,9 +445,11 @@ static void vtimer_interrupt(int irq, void *dev_id)
      */
     if ( unlikely(is_idle_vcpu(current)) )
     {
+#ifdef CONFIG_ARM_VTIMER_WORKAROUND
         perfc_incr(virt_timer_no_guest);
         vtimer_note("asserted with no guest on the pCPU");
         vtimer_ppi_set_enabled(false);
+#endif
 
         return;
     }
@@ -454,6 +458,7 @@ static void vtimer_interrupt(int irq, void *dev_id)
 
     ctl = READ_SYSREG(CNTV_CTL_EL0);
 
+#ifdef CONFIG_ARM_VTIMER_WORKAROUND
     /*
      * IMASK is set here by Xen and by nobody else: a guest that wants its
      * timer quiet clears ENABLE, and a guest that has taken the interrupt
@@ -479,6 +484,7 @@ static void vtimer_interrupt(int irq, void *dev_id)
 
         return;
     }
+#endif
 
     current->arch.virt_timer.ctl = ctl;
     WRITE_SYSREG(ctl | CNTx_CTL_MASK, CNTV_CTL_EL0);

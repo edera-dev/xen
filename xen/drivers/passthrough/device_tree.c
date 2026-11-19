@@ -87,7 +87,8 @@ fail:
     return rc;
 }
 
-static bool iommu_dt_device_is_assigned_locked(const struct dt_device_node *dev)
+static inline bool
+iommu_dt_device_is_assigned_locked(const struct dt_device_node *dev)
 {
     bool assigned = false;
 
@@ -210,6 +211,7 @@ int iommu_add_dt_pci_sideband_ids(struct pci_dev *pdev)
 }
 #endif /* CONFIG_HAS_PCI */
 
+#ifdef CONFIG_OVERLAY_DTB
 int iommu_remove_dt_device(struct dt_device_node *np)
 {
     const struct iommu_ops *ops = iommu_get_ops();
@@ -254,6 +256,7 @@ int iommu_remove_dt_device(struct dt_device_node *np)
     spin_unlock(&dtdevs_lock);
     return rc;
 }
+#endif /* CONFIG_OVERLAY_DTB */
 
 int iommu_add_dt_device(struct dt_device_node *np)
 {
@@ -318,6 +321,7 @@ int iommu_add_dt_device(struct dt_device_node *np)
     return rc;
 }
 
+#ifdef CONFIG_DT_PASSTHROUGH
 int iommu_do_dt_domctl(struct xen_domctl *domctl, struct domain *d,
                        XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
@@ -429,3 +433,4 @@ int iommu_do_dt_domctl(struct xen_domctl *domctl, struct domain *d,
 
     return ret;
 }
+#endif /* CONFIG_DT_PASSTHROUGH */

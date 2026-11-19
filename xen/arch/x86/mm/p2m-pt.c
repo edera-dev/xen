@@ -312,6 +312,7 @@ p2m_next_level(struct p2m_domain *p2m, void **table,
     return rc;
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 /*
  * Mark (via clearing the U flag) as needing P2M type re-calculation all valid
  * present entries at the targeted level for the passed in GFN range, which is
@@ -380,6 +381,7 @@ static int p2m_pt_set_recalc_range(struct p2m_domain *p2m,
 
     return err;
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 /*
  * Handle possibly necessary P2M type re-calculation (U flag clear for a
@@ -973,6 +975,7 @@ static void cf_check p2m_pt_change_entry_type_global(
          guest_flush_tlb_mask(d, d->dirty_cpumask);
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 static int cf_check p2m_pt_change_entry_type_range(
     struct p2m_domain *p2m, p2m_type_t ot, p2m_type_t nt,
     unsigned long first_gfn, unsigned long last_gfn)
@@ -1012,6 +1015,7 @@ static int cf_check p2m_pt_change_entry_type_range(
 
     return err;
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 #if P2M_AUDIT
 static long cf_check p2m_pt_audit_p2m(struct p2m_domain *p2m)
@@ -1170,7 +1174,9 @@ void p2m_pt_init(struct p2m_domain *p2m)
     p2m->get_entry = p2m_pt_get_entry;
     p2m->recalc = do_recalc;
     p2m->change_entry_type_global = p2m_pt_change_entry_type_global;
+#ifdef CONFIG_PAGING_LOG_DIRTY
     p2m->change_entry_type_range = p2m_pt_change_entry_type_range;
+#endif
 
     /* Still too early to use paging_mode_hap(). */
     if ( hap_enabled(p2m->domain) )

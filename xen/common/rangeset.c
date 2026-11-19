@@ -582,6 +582,7 @@ void rangeset_swap(struct rangeset *a, struct rangeset *b)
     write_unlock(&b->lock);
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 /*****************************
  * Pretty-printing functions
  */
@@ -642,6 +643,7 @@ void rangeset_domain_printk(
 
     spin_unlock(&d->rangesets_lock);
 }
+#endif
 
 /*
  * Local variables:

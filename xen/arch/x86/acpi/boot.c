@@ -348,6 +348,7 @@ static int __init cf_check acpi_invalidate_bgrt(struct acpi_table_header *table)
 	return 0;
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 #define acpi_fadt_copy_address(dst, src, len) do {			\
 	if (fadt->header.revision >= FADT2_REVISION_ID &&		\
 	    fadt->header.length >= ACPI_FADT_V2_SIZE)			\
@@ -479,6 +480,7 @@ acpi_fadt_parse_sleep_info(const struct acpi_table_fadt *fadt)
 	       "            wakeup_vec[%"PRIx64"], vec_size[%x]\n",
 	       acpi_sinfo.wakeup_vector, acpi_sinfo.vector_width);
 }
+#endif /* CONFIG_SYSTEM_SUSPEND */
 
 static int __init cf_check acpi_parse_fadt(struct acpi_table_header *table)
 {
@@ -522,7 +524,9 @@ static int __init cf_check acpi_parse_fadt(struct acpi_table_header *table)
 	acpi_enable_value  = fadt->acpi_enable;
 	acpi_disable_value = fadt->acpi_disable;
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 	acpi_fadt_parse_sleep_info(fadt);
+#endif
 
 	return 0;
 }
@@ -748,9 +752,11 @@ int __init acpi_boot_init(void)
 
 	acpi_table_parse(ACPI_SIG_HPET, acpi_parse_hpet);
 
+#ifdef CONFIG_ACPI_APEI
 	erst_init();
 
 	acpi_hest_init();
+#endif
 
 	acpi_table_parse(ACPI_SIG_BGRT, acpi_invalidate_bgrt);
 

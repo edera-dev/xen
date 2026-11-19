@@ -201,6 +201,7 @@ struct hvm_function_table {
     void (*enable_msr_interception)(struct domain *d, uint32_t msr);
 #endif
 
+#ifdef CONFIG_NESTED_VIRT
     /* Nested HVM */
     int (*nhvm_vcpu_initialise)(struct vcpu *v);
     void (*nhvm_vcpu_destroy)(struct vcpu *v);
@@ -214,6 +215,7 @@ struct hvm_function_table {
 
     enum hvm_intblk (*nhvm_intr_blocked)(struct vcpu *v);
     void (*nhvm_domain_relinquish_resources)(struct domain *d);
+#endif
 
     /* Virtual interrupt delivery */
     void (*update_eoi_exit_bitmap)(struct vcpu *v, uint8_t vector, bool set);
@@ -226,10 +228,12 @@ struct hvm_function_table {
                           uint8_t gvec);
     void (*update_vlapic_mode)(struct vcpu *v);
 
+#ifdef CONFIG_NESTED_VIRT
     /*Walk nested p2m  */
     int (*nhvm_hap_walk_L1_p2m)(struct vcpu *v, paddr_t L2_gpa,
                                 paddr_t *L1_gpa, unsigned int *page_order,
                                 uint8_t *p2m_acc, struct npfec npfec);
+#endif
 
 #ifdef CONFIG_ALTP2M
     /* Alternate p2m */
@@ -650,6 +654,7 @@ static inline void hvm_sanitize_regs_fields(struct cpu_user_regs *regs,
  * Nested HVM
  */
 
+#ifdef CONFIG_NESTED_VIRT
 /* inject vmexit into l1 guest. l1 guest will see a VMEXIT due to
  * 'trapnr' exception.
  */ 
@@ -694,6 +699,18 @@ static inline int nhvm_hap_walk_L1_p2m(
     return alternative_call(hvm_funcs.nhvm_hap_walk_L1_p2m,
         v, L2_gpa, L1_gpa, page_order, p2m_acc, npfec);
 }
+#else
+/* Only declarations: DCE removes all calls without CONFIG_NESTED_VIRT. */
+int nhvm_vcpu_vmexit_event(struct vcpu *v, const struct x86_event *event);
+uint64_t nhvm_vcpu_p2m_base(struct vcpu *v);
+bool nhvm_vmcx_guest_intercepts_event(
+    struct vcpu *v, unsigned int vector, int errcode);
+bool nhvm_vmcx_hap_enabled(struct vcpu *v);
+enum hvm_intblk nhvm_interrupt_blocked(struct vcpu *v);
+int nhvm_hap_walk_L1_p2m(
+    struct vcpu *v, paddr_t L2_gpa, paddr_t *L1_gpa, unsigned int *page_order,
+    uint8_t *p2m_acc, struct npfec npfec);
+#endif
 
 static inline bool hvm_is_singlestep_supported(void)
 {
@@ -714,7 +731,7 @@ static inline bool hvm_altp2m_supported(void)
 /* Returns true if we have the minimum hardware requirements for nested virt */
 static inline bool hvm_nested_virt_supported(void)
 {
-    return hvm_funcs.caps.nested_virt;
+    return IS_ENABLED(CONFIG_NESTED_VIRT) && hvm_funcs.caps.nested_virt;
 }
 
 #ifdef CONFIG_ALTP2M

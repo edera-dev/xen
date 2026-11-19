@@ -102,7 +102,11 @@ extern void setup_force_cpu_cap(unsigned int cap);
 extern bool is_forced_cpu_cap(unsigned int cap);
 extern void print_cpu_info(unsigned int cpu);
 extern void init_intel_cacheinfo(struct cpuinfo_x86 *c);
+#ifdef CONFIG_INTEL
 extern void intel_init_arat(void);
+#else
+static inline void intel_init_arat(void) {}
+#endif
 
 #define cpu_to_core(_cpu)   (cpu_data[_cpu].cpu_core_id)
 #define cpu_to_socket(_cpu) (cpu_data[_cpu].phys_proc_id)
@@ -421,17 +425,23 @@ static inline uint8_t get_cpu_family(uint32_t raw, uint8_t *model,
 extern int8_t opt_tsx;
 extern bool rtm_disabled;
 void tsx_init(void);
-#else
-#define opt_tsx      0     /* explicitly indicate TSX is off */
-#define rtm_disabled false /* RTM was not force-disabled */
-static inline void tsx_init(void) {}
-#endif
 
 void update_mcu_opt_ctrl(void);
 void set_in_mcu_opt_ctrl(uint32_t mask, uint32_t val);
 
 void update_pb_opt_ctrl(void);
 void set_in_pb_opt_ctrl(uint32_t mask, uint32_t val);
+#else
+#define opt_tsx      0     /* explicitly indicate TSX is off */
+#define rtm_disabled false /* RTM was not force-disabled */
+static inline void tsx_init(void) {}
+
+static inline void update_mcu_opt_ctrl(void) {}
+static inline void set_in_mcu_opt_ctrl(uint32_t mask, uint32_t val) {}
+
+static inline void update_pb_opt_ctrl(void) {}
+static inline void set_in_pb_opt_ctrl(uint32_t mask, uint32_t val) {}
+#endif
 
 enum ap_boot_method {
     AP_BOOT_NORMAL,

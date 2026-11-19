@@ -347,7 +347,7 @@ static int hvmemul_do_io(
         struct ioreq_server *s = NULL;
         p2m_type_t p2mt = p2m_invalid;
 
-        if ( is_mmio )
+        if ( IS_ENABLED(CONFIG_IOREQ_SERVER) && is_mmio )
         {
             unsigned long gmfn = paddr_to_pfn(addr);
 
@@ -2512,6 +2512,7 @@ static int cf_check hvmemul_cache_op(
     return X86EMUL_OKAY;
 }
 
+#ifdef CONFIG_HVM_EMUL_SIMD
 static int cf_check hvmemul_get_fpu(
     enum x86_emulate_fpu_type type,
     struct x86_emulate_ctxt *ctxt)
@@ -2619,6 +2620,7 @@ static void cf_check hvmemul_put_fpu(
     if ( backout == X86EMUL_FPU_fpu )
         vcpu_restore_fpu(curr);
 }
+#endif /* CONFIG_HVM_EMUL_SIMD */
 
 static int cf_check hvmemul_tlb_op(
     enum x86emul_tlb_op op,
@@ -2720,8 +2722,10 @@ static const struct x86_emulate_ops hvm_emulate_ops = {
     .cache_op      = hvmemul_cache_op,
     .tlb_op        = hvmemul_tlb_op,
     .cpuid         = x86emul_cpuid,
+#ifdef CONFIG_HVM_EMUL_SIMD
     .get_fpu       = hvmemul_get_fpu,
     .put_fpu       = hvmemul_put_fpu,
+#endif
     .vmfunc        = hvmemul_vmfunc,
 };
 
@@ -2858,8 +2862,10 @@ static const struct x86_emulate_ops hvm_emulate_ops_no_write = {
     .cache_op      = hvmemul_cache_op_discard,
     .tlb_op        = hvmemul_tlb_op,
     .cpuid         = x86emul_cpuid,
+#ifdef CONFIG_HVM_EMUL_SIMD
     .get_fpu       = hvmemul_get_fpu,
     .put_fpu       = hvmemul_put_fpu,
+#endif
     .vmfunc        = hvmemul_vmfunc,
 };
 

@@ -837,6 +837,7 @@ bool is_memory_hole(mfn_t start, mfn_t end)
     return true;
 }
 
+#if defined(CONFIG_PV) || defined(CONFIG_SHADOW_PAGING)
 #ifndef NDEBUG
 struct mmio_emul_range_ctxt {
     const struct domain *d;
@@ -1078,6 +1079,7 @@ get_page_from_l1e(
         put_page(page);
     return -EBUSY;
 }
+#endif /* CONFIG_PV || CONFIG_SHADOW_PAGING */
 
 /*
  * The following flags are used to specify behavior of various get and
@@ -1229,6 +1231,7 @@ get_page_from_l4e(
 static int _put_page_type(struct page_info *page, unsigned int flags,
                           struct page_info *ptpg);
 
+#if defined(CONFIG_PV) || defined(CONFIG_SHADOW_PAGING)
 void put_page_from_l1e(l1_pgentry_t l1e, struct domain *l1e_owner)
 {
     unsigned long     pfn = l1e_get_pfn(l1e);
@@ -1280,6 +1283,7 @@ void put_page_from_l1e(l1_pgentry_t l1e, struct domain *l1e_owner)
     else
         put_page(page);
 }
+#endif /* CONFIG_PV || CONFIG_SHADOW_PAGING */
 
 #ifdef CONFIG_PV
 static int put_pt_page(struct page_info *pg, struct page_info *ptpg,
@@ -1769,6 +1773,7 @@ void init_xen_l4_slots(l4_pgentry_t *l4t, mfn_t l4mfn,
     }
 }
 
+#if defined(CONFIG_PV) || defined(CONFIG_SHADOW_PAGING)
 bool fill_ro_mpt(mfn_t mfn)
 {
     l4_pgentry_t *l4tab = map_domain_page(mfn);
@@ -1792,6 +1797,7 @@ void zap_ro_mpt(mfn_t mfn)
     l4tab[l4_table_offset(RO_MPT_VIRT_START)] = l4e_empty();
     unmap_domain_page(l4tab);
 }
+#endif /* CONFIG_PV || CONFIG_SHADOW_PAGING */
 
 #ifdef CONFIG_PV
 static int promote_l4_table(struct page_info *page)
@@ -4904,6 +4910,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
     }
 
+#ifdef CONFIG_PV
     case XENMEM_machphys_mapping:
     {
         struct xen_machphys_mapping mapping = {
@@ -4919,6 +4926,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         return 0;
     }
+#endif
 
 #ifdef CONFIG_HVM
     case XENMEM_set_pod_target:

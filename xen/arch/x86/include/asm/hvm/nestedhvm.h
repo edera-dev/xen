@@ -25,14 +25,26 @@ enum nestedhvm_vmexits {
 /* Nested HVM on/off per domain */
 static inline bool nestedhvm_enabled(const struct domain *d)
 {
+#ifdef CONFIG_NESTED_VIRT
     return IS_ENABLED(CONFIG_HVM) && (d->options & XEN_DOMCTL_CDF_nested_virt);
+#else
+    return false;
+#endif
 }
 
 /* Nested VCPU */
 int nestedhvm_vcpu_initialise(struct vcpu *v);
-void nestedhvm_vcpu_destroy(struct vcpu *v);
 void nestedhvm_vcpu_reset(struct vcpu *v);
+#ifdef CONFIG_NESTED_VIRT
+void nestedhvm_vcpu_destroy(struct vcpu *v);
 bool nestedhvm_vcpu_in_guestmode(struct vcpu *v);
+#else
+static inline void nestedhvm_vcpu_destroy(struct vcpu *v) {}
+static inline bool nestedhvm_vcpu_in_guestmode(struct vcpu *v)
+{
+    return false;
+}
+#endif
 #define nestedhvm_vcpu_enter_guestmode(v) \
     vcpu_nestedhvm(v).nv_guestmode = 1
 #define nestedhvm_vcpu_exit_guestmode(v)  \
@@ -54,8 +66,12 @@ unsigned long *nestedhvm_vcpu_iomap_get(bool ioport_80, bool ioport_ed);
 
 /* Misc */
 #define nestedhvm_paging_mode_hap(v) (!!nhvm_vmcx_hap_enabled(v))
+#ifdef CONFIG_NESTED_VIRT
 #define nestedhvm_vmswitch_in_progress(v)   \
     (!!vcpu_nestedhvm((v)).nv_vmswitch_in_progress)
+#else
+#define nestedhvm_vmswitch_in_progress(v) ((void)(v), false)
+#endif
 
 void nestedhvm_vmcx_flushtlb(struct p2m_domain *p2m);
 

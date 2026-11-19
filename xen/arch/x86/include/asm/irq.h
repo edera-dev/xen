@@ -6,6 +6,7 @@
 #include <asm/atomic.h>
 #include <asm/numa.h>
 #include <xen/cpumask.h>
+#include <xen/errno.h>
 #include <xen/percpu.h>
 #include <xen/smp.h>
 #include <asm/hvm/irq.h>
@@ -167,7 +168,15 @@ int get_free_pirq(struct domain *d, int type);
 int get_free_pirqs(struct domain *d, unsigned int nr);
 void free_domain_pirqs(struct domain *d);
 int map_domain_emuirq_pirq(struct domain *d, int pirq, int emuirq);
+#ifdef CONFIG_HVM_PIRQ
 int unmap_domain_pirq_emuirq(struct domain *d, int pirq);
+#else
+/* Without HVM_PIRQ no emulated IRQ is ever bound to a PIRQ. */
+static inline int unmap_domain_pirq_emuirq(struct domain *d, int pirq)
+{
+    return -EINVAL;
+}
+#endif
 
 /* Evacuate interrupts assigned to CPUs not present in the CPU online map. */
 void fixup_irqs(void);

@@ -214,6 +214,11 @@ static int __init create_domain_cpuinfo(void)
     /* Hide MTE support as Xen does not support it */
     domain_cpuinfo.pfr64.mte = 0;
 
+#ifndef CONFIG_ARM64_AARCH32_EL0
+    /* Hide AArch32 at EL0 as Xen does not emulate its register traps */
+    domain_cpuinfo.pfr64.el0 = 1;
+#endif
+
     /* Hide PAC support as Xen does not support it */
     domain_cpuinfo.isa64.apa = 0;
     domain_cpuinfo.isa64.api = 0;

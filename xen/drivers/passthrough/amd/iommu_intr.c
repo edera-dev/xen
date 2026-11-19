@@ -715,6 +715,7 @@ int __init cf_check amd_setup_hpet_msi(struct msi_desc *msi_desc)
     return rc;
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 static void dump_intremap_table(const struct amd_iommu *iommu,
                                 union irte_cptr tbl,
                                 const struct ivrs_mappings *ivrs_mapping)
@@ -788,3 +789,4 @@ void cf_check amd_iommu_dump_intremap_tables(unsigned char key)
         spin_unlock_irqrestore(&shared_intremap_lock, flags);
     }
 }
+#endif

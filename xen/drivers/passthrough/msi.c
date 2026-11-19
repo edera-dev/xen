@@ -79,6 +79,7 @@ void pdev_msi_deinit(struct pci_dev *pdev)
     XFREE(pdev->msix);
 }
 
+#if defined(CONFIG_DEBUG_KEYS) || defined(CONFIG_PCI_DEVICE_DEBUG)
 void pdev_dump_msi(const struct pci_dev *pdev)
 {
     const struct msi_desc *msi;
@@ -91,6 +92,7 @@ void pdev_dump_msi(const struct pci_dev *pdev)
         printk("%d ", msi->irq);
     printk(">");
 }
+#endif
 
 /*
  * Local variables:

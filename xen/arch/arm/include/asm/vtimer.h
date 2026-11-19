@@ -30,7 +30,11 @@ extern bool vtimer_emulate(struct cpu_user_regs *regs, union hsr hsr);
  * platforms nothing Xen can write to the timer will quiet the line; switching
  * a guest in is what makes it wanted again.
  */
+#ifdef CONFIG_ARM_VTIMER_WORKAROUND
 void vtimer_ppi_unmask(void);
+#else
+static inline void vtimer_ppi_unmask(void) {}
+#endif
 
 extern void virt_timer_save(struct vcpu *v);
 extern void virt_timer_restore(struct vcpu *v);

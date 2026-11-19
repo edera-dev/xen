@@ -404,6 +404,7 @@ static bool ept_invalidate_emt_subtree(struct p2m_domain *p2m, mfn_t mfn,
     return changed;
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 /*
  * Just like ept_invalidate_emt_subtree() except that
  * - not all entries at the targeted level may need processing,
@@ -479,6 +480,7 @@ static int ept_invalidate_emt_range(struct p2m_domain *p2m,
 
     return rc;
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
                        unsigned int order, bool *ipat, p2m_type_t type)
@@ -1184,6 +1186,7 @@ static void cf_check ept_change_entry_type_global(
         ept_sync_domain(p2m);
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 static int cf_check ept_change_entry_type_range(
     struct p2m_domain *p2m, p2m_type_t ot, p2m_type_t nt,
     unsigned long first_gfn, unsigned long last_gfn)
@@ -1229,6 +1232,7 @@ static int cf_check ept_change_entry_type_range(
 
     return rc < 0 ? rc : 0;
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 static void cf_check ept_memory_type_changed(struct p2m_domain *p2m)
 {
@@ -1295,6 +1299,7 @@ static void cf_check ept_tlb_flush(struct p2m_domain *p2m)
     ept_sync_domain_mask(p2m, p2m->domain->dirty_cpumask);
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 static void ept_set_ad_sync(struct domain *d, bool value)
 {
     struct p2m_domain *hostp2m = p2m_get_hostp2m(d);
@@ -1445,6 +1450,7 @@ void ept_vcpu_flush_pml_buffer(struct vcpu *v)
     vmx_vmcs_exit(v);
 
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 int ept_p2m_init(struct p2m_domain *p2m)
 {
@@ -1454,7 +1460,9 @@ int ept_p2m_init(struct p2m_domain *p2m)
     p2m->get_entry = ept_get_entry;
     p2m->recalc = resolve_misconfig;
     p2m->change_entry_type_global = ept_change_entry_type_global;
+#ifdef CONFIG_PAGING_LOG_DIRTY
     p2m->change_entry_type_range = ept_change_entry_type_range;
+#endif
     p2m->memory_type_changed = ept_memory_type_changed;
 #if P2M_AUDIT
     p2m->audit_p2m = NULL;
@@ -1467,12 +1475,14 @@ int ept_p2m_init(struct p2m_domain *p2m)
     /* set EPT page-walk length, now it's actual walk length - 1, i.e. 3 */
     ept->wl = 3;
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
     if ( cpu_has_vmx_pml )
     {
         p2m->enable_hardware_log_dirty = ept_enable_hardware_log_dirty;
         p2m->disable_hardware_log_dirty = ept_disable_hardware_log_dirty;
         p2m->flush_hardware_cached_dirty = ept_flush_pml_buffers;
     }
+#endif
 
     if ( !zalloc_cpumask_var(&ept->invalidate) )
         return -ENOMEM;

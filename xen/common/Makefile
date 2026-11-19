@@ -21,7 +21,7 @@ obj-$(CONFIG_HYPFS) += hypfs.o
 obj-$(CONFIG_IOREQ_SERVER) += ioreq.o
 obj-y += irq.o
 obj-y += kernel.o
-obj-y += keyhandler.o
+obj-$(CONFIG_DEBUG_KEYS) += keyhandler.o
 obj-$(CONFIG_KEXEC) += kexec.o
 obj-$(CONFIG_KEXEC) += kimage.o
 obj-$(CONFIG_LIVEPATCH) += livepatch.o livepatch_elf.o
@@ -38,7 +38,7 @@ obj-y += percpu.o
 obj-$(CONFIG_PERF_COUNTERS) += perfc.o
 obj-bin-$(CONFIG_HAS_PMAP) += pmap.init.o
 obj-y += preempt.o
-obj-y += pv-iommu.o
+obj-$(CONFIG_PV_IOMMU) += pv-iommu.o
 obj-y += random.o
 obj-y += rangeset.o
 obj-y += radix-tree.o
@@ -65,7 +65,13 @@ obj-$(CONFIG_VM_EVENT) += wait.o
 obj-bin-y += warning.init.o
 obj-y += xmalloc_tlsf.o
 
-obj-bin-$(CONFIG_X86) += $(foreach n,decompress bunzip2 unxz unlzma lzo unlzo unlz4 unzstd,$(n).init.o)
+obj-bin-$(CONFIG_X86) += decompress.init.o
+obj-bin-$(CONFIG_DECOMPRESS_BZIP2) += bunzip2.init.o
+obj-bin-$(CONFIG_DECOMPRESS_XZ) += unxz.init.o
+obj-bin-$(CONFIG_DECOMPRESS_LZMA) += unlzma.init.o
+obj-bin-$(CONFIG_DECOMPRESS_LZO) += lzo.init.o unlzo.init.o
+obj-bin-$(CONFIG_DECOMPRESS_LZ4) += unlz4.init.o
+obj-bin-$(CONFIG_DECOMPRESS_ZSTD) += unzstd.init.o
 
 obj-$(CONFIG_COMPAT) += $(addprefix compat/,domain.o memory.o multicall.o xlat.o)
 

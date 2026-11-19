@@ -1,9 +1,11 @@
 #ifndef __HVM_CACHEATTR_H__
 #define __HVM_CACHEATTR_H__
 
+#include <xen/errno.h>
 #include <xen/mm.h>
 
 struct domain;
+#ifdef CONFIG_IOREQ_SERVER
 void hvm_init_cacheattr_region_list(struct domain *d);
 void hvm_destroy_cacheattr_region_list(struct domain *d);
 
@@ -19,5 +21,15 @@ int hvm_get_mem_pinned_cacheattr(struct domain *d, gfn_t gfn,
 /* Set pinned caching type for a domain. */
 int hvm_set_mem_pinned_cacheattr(struct domain *d, uint64_t gfn_start,
                                  uint64_t gfn_end, uint32_t type);
+#else
+static inline void hvm_init_cacheattr_region_list(struct domain *d) {}
+static inline void hvm_destroy_cacheattr_region_list(struct domain *d) {}
+
+static inline int hvm_get_mem_pinned_cacheattr(struct domain *d, gfn_t gfn,
+                                               unsigned int order)
+{
+    return -ENXIO;
+}
+#endif
 
 #endif /* __HVM_CACHEATTR_H__ */

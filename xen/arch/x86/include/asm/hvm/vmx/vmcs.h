@@ -366,9 +366,13 @@ extern struct vmx_caps vmx_caps;
 #define cpu_has_vmx_unrestricted_guest \
     (IS_ENABLED(CONFIG_INTEL_VMX) && \
      (vmx_caps.secondary_exec_control & SECONDARY_EXEC_UNRESTRICTED_GUEST))
-#define vmx_unrestricted_guest(v)               \
-    ((v)->arch.hvm.vmx.secondary_exec_control & \
-     SECONDARY_EXEC_UNRESTRICTED_GUEST)
+/* Without real mode emulation, VT-x is only used with unrestricted guest. */
+#define vmx_unrestricted_guest(v)                   \
+    (!IS_ENABLED(CONFIG_VMX_REALMODE_EMUL) ||       \
+     ((v)->arch.hvm.vmx.secondary_exec_control &    \
+      SECONDARY_EXEC_UNRESTRICTED_GUEST))
+#define vmx_vm86_realmode(v)                        \
+    (IS_ENABLED(CONFIG_VMX_REALMODE_EMUL) && (v)->arch.hvm.vmx.vmx_realmode)
 #define cpu_has_vmx_ple \
     (IS_ENABLED(CONFIG_INTEL_VMX) && \
      (vmx_caps.secondary_exec_control & SECONDARY_EXEC_PAUSE_LOOP_EXITING))
@@ -744,6 +748,7 @@ enum vmx_insn_errno virtual_vmcs_vmwrite_safe(const struct vcpu *v,
 
 DECLARE_PER_CPU(bool, vmxon);
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 bool vmx_vcpu_pml_enabled(const struct vcpu *v);
 int vmx_vcpu_enable_pml(struct vcpu *v);
 void vmx_vcpu_disable_pml(struct vcpu *v);
@@ -753,6 +758,12 @@ void vmx_domain_disable_pml(struct domain *d);
 void vmx_domain_flush_pml_buffers(struct domain *d);
 
 void vmx_domain_update_eptp(struct domain *d);
+#else
+static inline bool vmx_domain_pml_enabled(const struct domain *d)
+{
+    return false;
+}
+#endif
 
 #endif /* ASM_X86_HVM_VMX_VMCS_H__ */
 

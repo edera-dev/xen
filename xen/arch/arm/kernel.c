@@ -49,6 +49,9 @@ kernel_zimage_place_in_bank(const struct kernel_info *info,
 #ifdef CONFIG_HAS_DOMAIN_TYPE
     if ( (info->type == DOMAIN_64BIT) && (info->image.start == 0) )
         return bank_start + info->image.text_offset;
+#elif defined(CONFIG_ARM_64)
+    if ( info->image.start == 0 )
+        return bank_start + info->image.text_offset;
 #endif
 
     /*
@@ -371,7 +374,15 @@ int __init kernel_uimage_probe(struct kernel_info *info,
         printk(XENLOG_ERR "Unsupported uImage arch type %d\n", uimage.arch);
         return -EINVAL;
     }
+#elif defined(CONFIG_ARM_64)
+    if ( uimage.arch != IH_ARCH_ARM64 )
+    {
+        printk(XENLOG_ERR "Unsupported uImage arch type %d\n", uimage.arch);
+        return -EINVAL;
+    }
+#endif
 
+#ifdef CONFIG_ARM_64
     /*
      * If there is a uImage header, then we do not parse zImage or zImage64
      * header. In other words if the user provides a uImage header on top of
@@ -435,7 +446,9 @@ static int __init kernel_zimage64_probe(struct kernel_info *info,
 
     info->load = kernel_zimage_load;
 
+#ifdef CONFIG_HAS_DOMAIN_TYPE
     info->type = DOMAIN_64BIT;
+#endif
 
     return 0;
 }
@@ -500,7 +513,7 @@ int __init kernel_image_probe(struct kernel_info *info, paddr_t addr,
 
 #ifdef CONFIG_ARM_64
     rc = kernel_zimage64_probe(info, addr, size);
-    if (rc < 0)
+    if ( rc < 0 && IS_ENABLED(CONFIG_ARM64_AARCH32) )
 #endif
         rc = kernel_zimage32_probe(info, addr, size);
 

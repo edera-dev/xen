@@ -2,6 +2,21 @@
 config HAS_PASSTHROUGH
 	bool
 
+config DT_PASSTHROUGH
+	bool "Device tree device passthrough" if EXPERT
+	depends on HAS_DEVICE_TREE_DISCOVERY && HAS_PASSTHROUGH
+	default y
+	help
+	  Lets the toolstack assign devices described in the host device tree
+	  to guests with XEN_DOMCTL_assign_device.
+
+	  If disabled, assigning, testing or deassigning such a device fails
+	  with -ENODEV, as it does on x86. Devices given to domains at boot
+	  (the hardware domain, dom0less domains) and PCI devices are not
+	  affected.
+
+	  If unsure, say Y.
+
 if ARM
 config ARM_SMMU
 	bool "ARM SMMUv1 and v2 driver"
@@ -27,6 +42,7 @@ config ARM_SMMU_V3
 config IPMMU_VMSA
 	bool "Renesas IPMMU-VMSA found in R-Car Gen3/Gen4 SoCs"
 	depends on ARM_64
+	select PCI_HOST_RCAR4 if HAS_PCI
 	help
 	  Support for implementations of the Renesas IPMMU-VMSA found
 	  in R-Car Gen3/Gen4 SoCs.
@@ -63,6 +79,25 @@ config INTEL_IOMMU
 
 config IOMMU_FORCE_PT_SHARE
 	bool
+
+config PV_IOMMU
+	bool "PV-IOMMU interface" if EXPERT
+	depends on HAS_PASSTHROUGH
+	default y
+	help
+	  The iommu_op hypercall, through which a domain sets up IOMMU
+	  contexts besides its default one for its own devices and maps
+	  memory into them, as Linux's xen-iommu driver does.  Only x86
+	  guests can call it: on Arm it is not in the hypercall table, and
+	  this only builds unreachable code.
+
+	  Without it iommu_op fails with -ENOSYS, and Linux's xen-iommu
+	  driver does not register.  Devices then do DMA through their
+	  domain's default context, which maps all of the domain's memory,
+	  so a guest kernel has no IOMMU to isolate its own devices from
+	  each other or to back VFIO.
+
+	  If unsure, say Y.
 
 choice
 	prompt "IOMMU device quarantining default behavior"

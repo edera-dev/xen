@@ -337,6 +337,7 @@ static int cf_check init_msi(struct pci_dev *pdev)
 }
 REGISTER_VPCI_CAP(MSI, init_msi, cleanup_msi);
 
+#ifdef CONFIG_DEBUG_KEYS
 void vpci_dump_msi(void)
 {
     struct domain *d;
@@ -422,6 +423,7 @@ void vpci_dump_msi(void)
     }
     rcu_read_unlock(&domlist_read_lock);
 }
+#endif
 
 /*
  * Local variables:

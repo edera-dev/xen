@@ -1549,6 +1549,7 @@ void desc_guest_eoi(struct irq_desc *desc, struct pirq *pirq)
         on_selected_cpus(&cpu_eoi_map, set_eoi_ready, desc, 0);
 }
 
+#ifdef CONFIG_PV
 int pirq_guest_unmask(struct domain *d)
 {
     unsigned int pirq = 0, n, i;
@@ -1568,6 +1569,7 @@ int pirq_guest_unmask(struct domain *d)
 
     return 0;
 }
+#endif
 
 static int irq_acktype(const struct irq_desc *desc)
 {
@@ -1608,6 +1610,7 @@ static int irq_acktype(const struct irq_desc *desc)
     return 0;
 }
 
+#if defined(CONFIG_PV) || defined(CONFIG_HVM_PIRQ)
 int pirq_shared(struct domain *d, int pirq)
 {
     struct irq_desc    *desc;
@@ -1626,6 +1629,7 @@ int pirq_shared(struct domain *d, int pirq)
 
     return shared;
 }
+#endif
 
 int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
 {
@@ -2805,6 +2809,7 @@ void fixup_eoi(void)
     flush_ready_eoi();
 }
 
+#ifdef CONFIG_HVM_PIRQ
 int map_domain_emuirq_pirq(struct domain *d, int pirq, int emuirq)
 {
     int old_emuirq = IRQ_UNBOUND, old_pirq = IRQ_UNBOUND;
@@ -2903,7 +2908,9 @@ int unmap_domain_pirq_emuirq(struct domain *d, int pirq)
  done:
     return ret;
 }
+#endif /* CONFIG_HVM_PIRQ */
 
+#if defined(CONFIG_PV) || defined(CONFIG_HVM_PIRQ)
 void arch_evtchn_bind_pirq(struct domain *d, int pirq)
 {
     int irq = domain_pirq_to_irq(d, pirq);
@@ -2913,7 +2920,7 @@ void arch_evtchn_bind_pirq(struct domain *d, int pirq)
     if ( irq <= 0 )
         return;
 
-    if ( is_hvm_domain(d) )
+    if ( IS_ENABLED(CONFIG_HVM_PIRQ) && is_hvm_domain(d) )
         map_domain_emuirq_pirq(d, pirq, IRQ_PT);
 
     desc = irq_to_desc(irq);
@@ -2922,6 +2929,7 @@ void arch_evtchn_bind_pirq(struct domain *d, int pirq)
         guest_mask_msi_irq(desc, 0);
     spin_unlock_irqrestore(&desc->lock, flags);
 }
+#endif
 
 static int allocate_pirq(struct domain *d, int index, int pirq, int irq,
                          int type, int *nr)

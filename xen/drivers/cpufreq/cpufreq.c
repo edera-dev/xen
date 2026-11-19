@@ -159,14 +159,14 @@ static int __init cf_check setup_cpufreq_option(const char *str)
             if ( !ret && arg[0] && arg[1] )
                 ret = cpufreq_cmdline_parse(arg + 1, end);
         }
-        else if ( IS_ENABLED(CONFIG_INTEL) && choice < 0 &&
+        else if ( IS_ENABLED(CONFIG_INTEL_HWP) && choice < 0 &&
                   !cmdline_strcmp(str, "hwp") )
         {
             ret = handle_cpufreq_cmdline(CPUFREQ_hwp);
             if ( !ret && arg[0] && arg[1] )
                 ret = hwp_cmdline_parse(arg + 1, end);
         }
-        else if ( IS_ENABLED(CONFIG_AMD) && choice < 0 &&
+        else if ( IS_ENABLED(CONFIG_AMD_CPPC) && choice < 0 &&
                   !cmdline_strcmp(str, "amd-cppc") )
         {
             ret = handle_cpufreq_cmdline(CPUFREQ_amd_cppc);
@@ -710,6 +710,7 @@ int acpi_set_pdc_bits(unsigned int acpi_id, XEN_GUEST_HANDLE(uint32) pdc)
     return ret;
 }
 
+#ifdef CONFIG_AMD_CPPC
 static void print_CPPC(const struct xen_processor_cppc *cppc_data)
 {
     printk("\t_CPC: highest_perf=%u, lowest_perf=%u, "
@@ -833,6 +834,7 @@ int set_cppc_pminfo(unsigned int acpi_id,
  out:
     return ret;
 }
+#endif /* CONFIG_AMD_CPPC */
 
 static void cpufreq_cmdline_common_para(struct cpufreq_policy *new_policy)
 {
@@ -868,7 +870,9 @@ static int __init cpufreq_cmdline_parse(const char *s, const char *e)
     {
         CPUFREQ_DEFAULT_GOVERNOR,
         &cpufreq_gov_userspace,
+#ifdef CONFIG_CPUFREQ_GOV_ONDEMAND
         &cpufreq_gov_dbs,
+#endif
         &cpufreq_gov_performance,
         &cpufreq_gov_powersave
     };

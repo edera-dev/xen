@@ -623,10 +623,12 @@ int paging_domain_init(struct domain *d)
     INIT_PAGE_LIST_HEAD(&d->arch.paging.freelist);
     mm_lock_init(&d->arch.paging.lock);
 
+#if PG_log_dirty
     /* This must be initialized separately from the rest of the
      * log-dirty init code as that can be called more than once and we
      * don't want to leak any active log-dirty bitmaps */
     d->arch.paging.log_dirty.top = INVALID_MFN;
+#endif
 
     /*
      * Shadow pagetables are the default, but we will use
@@ -929,6 +931,7 @@ void paging_dump_vcpu_info(struct vcpu *v)
 }
 
 #ifdef CONFIG_HVM
+#ifdef CONFIG_NESTED_VIRT
 void paging_update_nestedmode(struct vcpu *v)
 {
     ASSERT(nestedhvm_enabled(v->domain));
@@ -940,6 +943,7 @@ void paging_update_nestedmode(struct vcpu *v)
         v->arch.paging.nestedmode = NULL;
     hvm_asid_flush_vcpu(v);
 }
+#endif
 
 int __init paging_set_allocation(struct domain *d, unsigned int pages,
                                  bool *preempted)

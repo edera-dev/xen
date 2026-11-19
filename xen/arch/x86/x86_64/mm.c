@@ -111,6 +111,7 @@ void *do_page_walk(struct vcpu *v, unsigned long addr)
     return map_domain_page(_mfn(mfn)) + (addr & ~PAGE_MASK);
 }
 
+#ifdef CONFIG_HOTADD
 /*
  * Allocate page table pages for m2p table
  */
@@ -496,6 +497,7 @@ error:
     unmap_domain_page(l3_ro_mpt);
     return ret;
 }
+#endif /* CONFIG_HOTADD */
 
 void __init paging_init(void)
 {
@@ -730,6 +732,7 @@ void __init zap_low_mappings(void)
                      1, __PAGE_HYPERVISOR_RX);
 }
 
+#ifdef CONFIG_COMPAT
 int setup_compat_arg_xlat(struct vcpu *v)
 {
     return create_perdomain_mapping(v->domain, ARG_XLAT_START(v),
@@ -742,7 +745,9 @@ void free_compat_arg_xlat(struct vcpu *v)
     destroy_perdomain_mapping(v->domain, ARG_XLAT_START(v),
                               PFN_UP(COMPAT_ARG_XLAT_SIZE));
 }
+#endif
 
+#ifdef CONFIG_HOTADD
 static void cleanup_frame_table(struct mem_hotadd_info *info)
 {
     unsigned long sva, eva;
@@ -861,6 +866,7 @@ static int extend_frame_table(struct mem_hotadd_info *info)
            (unsigned long)mfn_to_page(epfn) - (unsigned long)mfn_to_page(spfn));
     return 0;
 }
+#endif /* CONFIG_HOTADD */
 
 void __init subarch_init_memory(void)
 {
@@ -936,16 +942,19 @@ void __init subarch_init_memory(void)
 
 long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
+#ifdef CONFIG_PV
     struct xen_machphys_mfn_list xmml;
     l3_pgentry_t l3e;
     l2_pgentry_t l2e;
     unsigned long v, limit;
     xen_pfn_t mfn, last_mfn;
     unsigned int i;
+#endif
     long rc = 0;
 
     switch ( cmd )
     {
+#ifdef CONFIG_PV
     case XENMEM_machphys_mfn_list:
         if ( copy_from_guest(&xmml, arg, 1) )
             return -EFAULT;
@@ -1016,6 +1025,7 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             rc = -EFAULT;
 
         break;
+#endif
 
     case XENMEM_get_sharing_freed_pages:
         return mem_sharing_get_nr_saved_mfns();
@@ -1041,6 +1051,7 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     return rc;
 }
 
+#ifdef CONFIG_HOTADD
 int pagefault_by_memadd(unsigned long addr, struct cpu_user_regs *regs)
 {
     struct domain *d = current->domain;
@@ -1341,6 +1352,7 @@ destroy_frametable:
 
     return ret;
 }
+#endif /* CONFIG_HOTADD */
 
 void set_gpfn_from_mfn(unsigned long mfn, unsigned long pfn)
 {

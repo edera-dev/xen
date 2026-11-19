@@ -27,7 +27,13 @@ unsigned int arch_domain_struct_memflags(void);
     (is_hvm_domain(d_) && paging_mode_shadow(d_) ? MEMF_bits(32) : 0);  \
 })
 
+#ifdef CONFIG_COMPAT
 #define has_32bit_shinfo(d)    ((d)->arch.has_32bit_shinfo)
+#define vcpu_is_hcall_compat(v) ((v)->hcall_compat)
+#else
+#define has_32bit_shinfo(d)    ((void)(d), false)
+#define vcpu_is_hcall_compat(v) ((void)(v), false)
+#endif
 
 /*
  * Set to true if either the global vector-type callback or per-vCPU
@@ -379,8 +385,10 @@ struct arch_domain
     /* NB. protected by d->event_lock and by irq_desc[irq].lock */
     struct radix_tree_root irq_pirq;
 
+#ifdef CONFIG_COMPAT
     /* Is shared-info page in 32-bit format? */
     bool has_32bit_shinfo;
+#endif
 
     /* Is PHYSDEVOP_eoi to automatically unmask the event channel? */
     bool auto_unmask;
@@ -490,29 +498,53 @@ struct arch_domain
 
 #ifdef CONFIG_HVM
 #define X86_EMU_LAPIC    XEN_X86_EMU_LAPIC
-#define X86_EMU_HPET     XEN_X86_EMU_HPET
-#define X86_EMU_PM       XEN_X86_EMU_PM
-#define X86_EMU_RTC      XEN_X86_EMU_RTC
 #define X86_EMU_IOAPIC   XEN_X86_EMU_IOAPIC
-#define X86_EMU_PIC      XEN_X86_EMU_PIC
-#define X86_EMU_VGA      XEN_X86_EMU_VGA
 #define X86_EMU_IOMMU    XEN_X86_EMU_IOMMU
 #define X86_EMU_USE_PIRQ XEN_X86_EMU_USE_PIRQ
 #else
 #define X86_EMU_LAPIC    0
-#define X86_EMU_HPET     0
-#define X86_EMU_PM       0
-#define X86_EMU_RTC      0
 #define X86_EMU_IOAPIC   0
-#define X86_EMU_PIC      0
-#define X86_EMU_VGA      0
 #define X86_EMU_IOMMU    0
 #define X86_EMU_USE_PIRQ 0
 #endif
 
-#define X86_EMU_PIT     XEN_X86_EMU_PIT
+#ifdef CONFIG_X86_HVM_HPET
+#define X86_EMU_HPET     XEN_X86_EMU_HPET
+#else
+#define X86_EMU_HPET     0
+#endif
 
-/* This must match XEN_X86_EMU_ALL in xen.h */
+#ifdef CONFIG_X86_HVM_PMTIMER
+#define X86_EMU_PM       XEN_X86_EMU_PM
+#else
+#define X86_EMU_PM       0
+#endif
+
+#ifdef CONFIG_X86_HVM_RTC
+#define X86_EMU_RTC      XEN_X86_EMU_RTC
+#else
+#define X86_EMU_RTC      0
+#endif
+
+#ifdef CONFIG_X86_HVM_PIC
+#define X86_EMU_PIC      XEN_X86_EMU_PIC
+#else
+#define X86_EMU_PIC      0
+#endif
+
+#ifdef CONFIG_X86_HVM_STDVGA
+#define X86_EMU_VGA      XEN_X86_EMU_VGA
+#else
+#define X86_EMU_VGA      0
+#endif
+
+#ifdef CONFIG_X86_HVM_PIT
+#define X86_EMU_PIT      XEN_X86_EMU_PIT
+#else
+#define X86_EMU_PIT      0
+#endif
+
+/* This must match XEN_X86_EMU_ALL in xen.h, but for compiled out emulators */
 #define X86_EMU_ALL             (X86_EMU_LAPIC | X86_EMU_HPET |         \
                                  X86_EMU_PM | X86_EMU_RTC |             \
                                  X86_EMU_IOAPIC | X86_EMU_PIC |         \
@@ -528,7 +560,8 @@ struct arch_domain
 #define has_vvga(d)        (!!((d)->arch.emulation_flags & X86_EMU_VGA))
 #define has_viommu(d)      (!!((d)->arch.emulation_flags & X86_EMU_IOMMU))
 #define has_vpit(d)        (!!((d)->arch.emulation_flags & X86_EMU_PIT))
-#define has_pirq(d)        (!!((d)->arch.emulation_flags & X86_EMU_USE_PIRQ))
+#define has_pirq(d)        (IS_ENABLED(CONFIG_HVM_PIRQ) && \
+                            !!((d)->arch.emulation_flags & X86_EMU_USE_PIRQ))
 
 /* TODO: re-visit when vPCI is enabled for PVH domUs. */
 #define arch_needs_vpci(d) ({                       \
@@ -703,8 +736,13 @@ struct guest_memory_policy
     bool nested_guest_mode;
 };
 
+#ifdef CONFIG_NESTED_VIRT
 void update_guest_memory_policy(struct vcpu *v,
                                 struct guest_memory_policy *policy);
+#else
+static inline void update_guest_memory_policy(
+    struct vcpu *v, struct guest_memory_policy *policy) {}
+#endif
 
 void domain_cpu_policy_changed(struct domain *d);
 

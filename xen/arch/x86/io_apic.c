@@ -161,6 +161,7 @@ static void add_pin_to_irq(unsigned int irq, int apic, int pin)
     share_vector_maps(irq_2_pin[irq].apic, apic);
 }
 
+#ifdef CONFIG_PV
 static void remove_pin_from_irq(unsigned int irq, int apic, int pin)
 {
     struct irq_pin_list *entry, *prev;
@@ -191,6 +192,7 @@ static void remove_pin_from_irq(unsigned int irq, int apic, int pin)
     entry->next = irq_2_pin_free_entry;
     irq_2_pin_free_entry = entry - irq_2_pin;
 }
+#endif
 
 static struct irq_pin_list *pin_list_next(const struct irq_pin_list *entry)
 {
@@ -2007,6 +2009,7 @@ static void __init check_timer(void)
  */
 #define PIC_IRQS	(1 << PIC_CASCADE_IR)
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static struct IO_APIC_route_entry *ioapic_pm_state;
 
 static void __init ioapic_pm_state_alloc(void)
@@ -2020,6 +2023,7 @@ static void __init ioapic_pm_state_alloc(void)
                                sizeof(struct IO_APIC_route_entry));
     BUG_ON(ioapic_pm_state == NULL);
 }
+#endif
 
 void __init setup_IO_APIC(void)
 {
@@ -2040,11 +2044,14 @@ void __init setup_IO_APIC(void)
     init_IO_APIC_traps();
     check_timer();
     print_IO_APIC();
+#ifdef CONFIG_SYSTEM_SUSPEND
     ioapic_pm_state_alloc();
+#endif
 
     register_keyhandler('z', _print_IO_APIC_keyhandler, "dump IOAPIC info", 1);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 void ioapic_suspend(void)
 {
     struct IO_APIC_route_entry *entry = ioapic_pm_state;
@@ -2082,6 +2089,7 @@ void ioapic_resume(void)
     }
     spin_unlock_irqrestore(&ioapic_lock, flags);
 }
+#endif /* CONFIG_SYSTEM_SUSPEND */
 
 int __init io_apic_get_version (int ioapic)
 {
@@ -2180,6 +2188,7 @@ int io_apic_set_pci_routing (int ioapic, int pin, int irq, int edge_level, int a
     return 0;
 }
 
+#ifdef CONFIG_PV
 static int ioapic_physbase_to_id(unsigned long physbase)
 {
     int apic;
@@ -2192,6 +2201,7 @@ static int ioapic_physbase_to_id(unsigned long physbase)
     }
     return -EINVAL;
 }
+#endif
 
 static int apic_pin_2_gsi_irq(int apic, int pin)
 {
@@ -2206,6 +2216,7 @@ static int apic_pin_2_gsi_irq(int apic, int pin)
                     : io_apic_gsi_base(apic) + pin;
 }
 
+#ifdef CONFIG_PV
 int ioapic_guest_read(unsigned long physbase, unsigned int reg, u32 *pval)
 {
     int apic;
@@ -2364,6 +2375,7 @@ int ioapic_guest_write(unsigned long physbase, unsigned int reg, u32 val)
 
     return 0;
 }
+#endif
 
 static const char * delivery_mode_2_str(
     const enum ioapic_irq_destination_types mode)

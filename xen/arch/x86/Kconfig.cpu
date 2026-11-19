@@ -19,4 +19,34 @@ config INTEL
 	  May be turned off in builds targetting other vendors.  Otherwise,
 	  must be enabled for Xen to work suitably on Intel platforms.
 
+config HYGON
+	bool "Support Hygon CPUs"
+	depends on AMD
+	default y
+	help
+	  Detection, tunings and quirks for Hygon platforms.
+
+	  May be turned off in builds targetting other vendors.  Otherwise,
+	  must be enabled for Xen to work suitably on Hygon platforms.
+
+config CENTAUR
+	bool "Support Centaur CPUs"
+	depends on INTEL
+	default y
+	help
+	  Detection, tunings and quirks for Centaur platforms.
+
+	  May be turned off in builds targetting other vendors.  Otherwise,
+	  must be enabled for Xen to work suitably on Centaur platforms.
+
+config SHANGHAI
+	bool "Support Shanghai CPUs"
+	depends on INTEL
+	default y
+	help
+	  Detection, tunings and quirks for Shanghai platforms.
+
+	  May be turned off in builds targetting other vendors.  Otherwise,
+	  must be enabled for Xen to work suitably on Shanghai platforms.
+
 endmenu

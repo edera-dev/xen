@@ -191,12 +191,15 @@ int cf_check physdev_check_pci_extcfg(struct pci_dev *pdev, void *arg)
 
 ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
+#if defined(CONFIG_PV) || defined(CONFIG_HVM_PIRQ)
     int irq;
+#endif
     ret_t ret;
     struct domain *d, *currd = current->domain;
 
     switch ( cmd )
     {
+#if defined(CONFIG_PV) || defined(CONFIG_HVM_PIRQ)
     case PHYSDEVOP_eoi: {
         struct physdev_eoi eoi;
         struct pirq *pirq;
@@ -233,7 +236,9 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         ret = 0;
         break;
     }
+#endif
 
+#ifdef CONFIG_PV
     case PHYSDEVOP_pirq_eoi_gmfn_v2:
     case PHYSDEVOP_pirq_eoi_gmfn_v1: {
         struct physdev_pirq_eoi_gmfn info;
@@ -281,7 +286,9 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         ret = pirq_guest_unmask(currd);
         break;
     }
+#endif
 
+#if defined(CONFIG_PV) || defined(CONFIG_HVM_PIRQ)
     case PHYSDEVOP_irq_status_query: {
         struct physdev_irq_status_query irq_status_query;
         ret = -EFAULT;
@@ -314,6 +321,7 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         ret = __copy_to_guest(arg, &irq_status_query, 1) ? -EFAULT : 0;
         break;
     }
+#endif
 
     case PHYSDEVOP_map_pirq: {
         physdev_map_pirq_t map;
@@ -380,6 +388,7 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
     }
 
+#ifdef CONFIG_PV
     case PHYSDEVOP_apic_read: {
         struct physdev_apic apic;
         ret = -EFAULT;
@@ -509,6 +518,7 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
                              &pdev_info, NUMA_NO_NODE);
         break;
     }
+#endif
 
     case PHYSDEVOP_prepare_msix:
     case PHYSDEVOP_release_msix: {
@@ -559,6 +569,7 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
     }
 
+#ifdef CONFIG_PV
     case PHYSDEVOP_restore_msi: {
         struct physdev_restore_msi restore_msi;
         struct pci_dev *pdev;
@@ -589,6 +600,7 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         pcidevs_unlock();
         break;
     }
+#endif
 
     case PHYSDEVOP_setup_gsi: {
         struct physdev_setup_gsi setup_gsi;
@@ -609,6 +621,7 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
                               setup_gsi.polarity);
         break; 
     }
+#if defined(CONFIG_PV) || defined(CONFIG_HVM_PIRQ)
     case PHYSDEVOP_get_free_pirq: {
         struct physdev_get_free_pirq out;
 
@@ -639,6 +652,7 @@ ret_t do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         break;
     }
+#endif
 
     case PHYSDEVOP_hyperv_vpci_vector: {
         struct physdev_hyperv_vpci_vector out;

@@ -55,6 +55,7 @@ int compat_set_px_pminfo(uint32_t acpi_id,
     return set_px_pminfo(acpi_id, xen_perf);
 }
 
+#ifdef CONFIG_AMD_CPPC
 int compat_set_cppc_pminfo(unsigned int acpi_id,
                            const struct compat_processor_cppc *cppc_data)
 
@@ -73,3 +74,4 @@ int compat_set_cppc_pminfo(unsigned int acpi_id,
 
     return set_cppc_pminfo(acpi_id, xen_cppc);
 }
+#endif

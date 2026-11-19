@@ -10,11 +10,16 @@
 #ifndef __ASM_X86_HVM_VPMU_H_
 #define __ASM_X86_HVM_VPMU_H_
 
+#include <asm/msr-index.h>
 #include <public/pmu.h>
 
 #define vcpu_vpmu(vcpu)   (&(vcpu)->arch.vpmu)
 #define vpmu_vcpu(vpmu)   container_of((vpmu), struct vcpu, arch.vpmu)
+#ifdef CONFIG_VPMU
 #define vpmu_available(vcpu) vpmu_is_set(vcpu_vpmu(vcpu), VPMU_AVAILABLE)
+#else
+#define vpmu_available(vcpu) false
+#endif
 
 #define MSR_TYPE_COUNTER            0
 #define MSR_TYPE_CTRL               1
@@ -97,15 +102,41 @@ static inline bool vpmu_are_all_set(const struct vpmu_struct *vpmu,
     return !!((vpmu->flags & mask) == mask);
 }
 
+/* Without CONFIG_VPMU, DCE removes all callers of these three. */
+void vpmu_save(struct vcpu *v);
+void cf_check vpmu_save_force(void *arg);
+int vpmu_load(struct vcpu *v, bool from_guest);
+
+#ifdef CONFIG_VPMU
 void vpmu_lvtpc_update(uint32_t val);
 int vpmu_do_msr(unsigned int msr, uint64_t *msr_content, bool is_write);
 void vpmu_do_interrupt(void);
 void vpmu_initialise(struct vcpu *v);
 void vpmu_destroy(struct vcpu *v);
-void vpmu_save(struct vcpu *v);
-void cf_check vpmu_save_force(void *arg);
-int vpmu_load(struct vcpu *v, bool from_guest);
 void vpmu_dump(struct vcpu *v);
+
+extern unsigned int vpmu_mode;
+extern unsigned int vpmu_features;
+#else
+static inline void vpmu_lvtpc_update(uint32_t val) {}
+
+/* As with the vPMU off at runtime: PMU MSRs read as 0 and ignore writes. */
+static inline int vpmu_do_msr(unsigned int msr, uint64_t *msr_content,
+                              bool is_write)
+{
+    if ( !is_write && msr != MSR_IA32_MISC_ENABLE )
+        *msr_content = 0;
+
+    return 0;
+}
+
+static inline void vpmu_do_interrupt(void) {}
+static inline void vpmu_initialise(struct vcpu *v) {}
+static inline void vpmu_destroy(struct vcpu *v) {}
+static inline void vpmu_dump(struct vcpu *v) {}
+
+#define vpmu_mode XENPMU_MODE_OFF
+#endif
 
 static inline int vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content)
 {
@@ -115,9 +146,6 @@ static inline int vpmu_do_rdmsr(unsigned int msr, uint64_t *msr_content)
 {
     return vpmu_do_msr(msr, msr_content, false /* read */);
 }
-
-extern unsigned int vpmu_mode;
-extern unsigned int vpmu_features;
 
 /* Context switch */
 static inline void vpmu_switch_from(struct vcpu *prev)

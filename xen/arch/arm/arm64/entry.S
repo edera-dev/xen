@@ -498,9 +498,11 @@ FUNC_LOCAL(guest_error_compat)
         guest_vector compat=1, iflags=IFLAGS__AI_, trap=guest_serror
 END(guest_error_compat)
 
+#ifdef CONFIG_ARM64_AARCH32
 FUNC(return_to_new_vcpu32)
         exit    hyp=0, compat=1
 END(return_to_new_vcpu32)
+#endif
 
 FUNC(return_to_new_vcpu64)
         exit    hyp=0, compat=0

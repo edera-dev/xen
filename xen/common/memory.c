@@ -655,6 +655,7 @@ static bool propagate_node(unsigned int xmf, unsigned int *memflags)
     return true;
 }
 
+#ifdef CONFIG_MEM_EXCHANGE
 static long memory_exchange(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
 {
     struct xen_memory_exchange exch;
@@ -951,6 +952,7 @@ static long memory_exchange(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
         rc = -EFAULT;
     return rc;
 }
+#endif
 
 int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
                           unsigned int start)
@@ -1895,12 +1897,14 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         break;
 
+#ifdef CONFIG_MEM_EXCHANGE
     case XENMEM_exchange:
         if ( unlikely(start_extent) )
             return -EINVAL;
 
         rc = memory_exchange(guest_handle_cast(arg, xen_memory_exchange_t));
         break;
+#endif
 
     case XENMEM_maximum_ram_page:
         if ( unlikely(start_extent) )

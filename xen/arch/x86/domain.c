@@ -262,6 +262,7 @@ void dump_pageframe_info(struct domain *d)
     nrspin_unlock(&d->page_alloc_lock);
 }
 
+#ifdef CONFIG_NESTED_VIRT
 void update_guest_memory_policy(struct vcpu *v,
                                 struct guest_memory_policy *policy)
 {
@@ -286,6 +287,7 @@ void update_guest_memory_policy(struct vcpu *v,
         policy->nested_guest_mode = old_guest_mode;
     }
 }
+#endif
 
 /*
  * Called during vcpu construction, and each time the toolstack changes the
@@ -533,7 +535,9 @@ int arch_vcpu_create(struct vcpu *v)
     else if ( (rc = xstate_alloc_save_area(v)) != 0 )
         return rc;
 
+#ifdef CONFIG_VPMU
     spin_lock_init(&v->arch.vpmu.vpmu_lock);
+#endif
 
     if ( is_hvm_domain(d) )
         rc = hvm_vcpu_initialise(v);
@@ -792,14 +796,16 @@ static bool emulation_flags_ok(const struct domain *d, unsigned int emflags,
             .opt_cdf = GENMASK(31, 0),
         },
 
+#if X86_EMU_ALL == XEN_X86_EMU_ALL /* None compiled out. */
         /* HVM domU */
         {
             .caps   = CAP_HVM | CAP_DOMU,
             .min    = X86_EMU_ALL & ~X86_EMU_USE_PIRQ,
             /* HVM PIRQ feature is user-selectable. */
-            .opt    = X86_EMU_USE_PIRQ,
+            .opt    = IS_ENABLED(CONFIG_HVM_PIRQ) ? X86_EMU_USE_PIRQ : 0,
             .opt_cdf = GENMASK(31, 0) & ~XEN_DOMCTL_CDF_vpci,
         },
+#endif
 #endif /* #ifdef CONFIG_HVM */
     };
     unsigned int i;
@@ -808,7 +814,9 @@ static bool emulation_flags_ok(const struct domain *d, unsigned int emflags,
 
 #ifdef CONFIG_HVM
     /* This doesn't catch !CONFIG_HVM case but it is better than nothing */
-    BUILD_BUG_ON(X86_EMU_ALL != XEN_X86_EMU_ALL);
+    BUILD_BUG_ON((X86_EMU_ALL ^ XEN_X86_EMU_ALL) &
+                 ~(XEN_X86_EMU_HPET | XEN_X86_EMU_PM | XEN_X86_EMU_RTC |
+                   XEN_X86_EMU_PIC | XEN_X86_EMU_VGA | XEN_X86_EMU_PIT));
 #endif
 
     for ( i = 0; i < ARRAY_SIZE(configs); i++ )
@@ -1012,7 +1020,7 @@ void arch_domain_unpause(struct domain *d)
         viridian_time_domain_thaw(d);
 }
 
-#ifdef CONFIG_HAS_SOFT_RESET
+#ifdef CONFIG_SOFT_RESET
 int arch_domain_soft_reset(struct domain *d)
 {
     struct page_info *page = virt_to_page(d->shared_info), *new_page;
@@ -1114,7 +1122,7 @@ int arch_domain_soft_reset(struct domain *d)
 
     return ret;
 }
-#endif /* CONFIG_HAS_SOFT_RESET */
+#endif /* CONFIG_SOFT_RESET */
 
 void arch_domain_creation_finished(struct domain *d)
 {

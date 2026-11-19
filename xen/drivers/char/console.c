@@ -1222,6 +1222,7 @@ int __init console_has(const char *device)
     return 0;
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 void console_start_log_everything(void)
 {
     serial_start_log_everything(sercon_handle);
@@ -1233,6 +1234,7 @@ void console_end_log_everything(void)
     serial_end_log_everything(sercon_handle);
     atomic_dec(&print_everything);
 }
+#endif
 
 unsigned long console_lock_recursive_irqsave(void)
 {

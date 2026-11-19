@@ -7,7 +7,7 @@ config ARM_64
 	def_bool y
 	depends on !ARM_32
 	select 64BIT
-	select HAS_DOMAIN_TYPE
+	select HAS_DOMAIN_TYPE if ARM64_AARCH32
 	select HAS_FAST_MULTIPLY
 	select HAS_VPCI_GUEST_SUPPORT if PCI_PASSTHROUGH
 	select HAS_PCI_MSI if PCI_PASSTHROUGH
@@ -223,6 +223,21 @@ config HWDOM_VUART
 	  and status register) which takes information from dtuart. Note that this
 	  UART is not intended to be exposed (e.g. via device-tree) to a domain.
 
+config VPSCI_SYSTEM_SUSPEND
+	bool "Guest suspend through PSCI SYSTEM_SUSPEND" if EXPERT
+	default y
+	help
+	  Lets a guest other than the hardware domain suspend itself with the
+	  PSCI 1.0 SYSTEM_SUSPEND call. Xen shuts the domain down with the
+	  suspend reason, and resuming it restarts the calling vCPU at the
+	  entry point the guest passed.
+
+	  If disabled, PSCI_FEATURES reports SYSTEM_SUSPEND as not supported
+	  and the call fails with NOT_SUPPORTED. Guests can still suspend
+	  through SCHEDOP_shutdown.
+
+	  If unsure, say Y.
+
 config ARM_SSBD
 	bool "Speculative Store Bypass Disable" if EXPERT
 	depends on HAS_ALTERNATIVE
@@ -283,6 +298,36 @@ config ARM64_BTI
 	  Branch Target Identification support.
 	  This feature is not supported in Xen.
 
+config ARM64_AARCH32
+	bool "AArch32 (EL1) guest support" if EXPERT
+	depends on ARM_64
+	default y
+	help
+	  Support domains whose kernel runs in AArch32 state, including 32-bit
+	  zImage and uImage kernels for the hardware domain.
+
+	  If disabled, every domain runs AArch64 at EL1: setting a 32-bit
+	  address size (XEN_DOMCTL_set_address_size) fails with -EINVAL and a
+	  32-bit hardware domain kernel is rejected at boot. 32-bit user space
+	  in AArch64 guests is covered by ARM64_AARCH32_EL0.
+
+	  If unsure, say Y.
+
+config ARM64_AARCH32_EL0
+	bool "AArch32 user space in AArch64 guests" if EXPERT && ARM_64 && !ARM64_AARCH32
+	default y
+	help
+	  Emulate the cp10, cp14 and cp15 registers that 32-bit (AArch32) user
+	  space accesses and Xen traps.
+
+	  If disabled, guests are told that EL0 does not implement AArch32 and
+	  such an access that still traps gets an undefined instruction
+	  exception. Only disable this on CPUs that do not implement AArch32 at
+	  EL0 (for instance Neoverse V2), or when no guest runs 32-bit user
+	  space.
+
+	  If unsure, say Y.
+
 source "arch/arm/tee/Kconfig"
 
 config PARTIAL_EMULATION
@@ -294,6 +339,23 @@ config PARTIAL_EMULATION
 	  not been emulated to their complete functionality. Enabling this might
 	  result in unwanted/non-spec compliant behavior.
 
+config ARM_VTIMER_WORKAROUND
+	bool "Workaround for virtual timers that ignore CNTV_CTL_EL0" if EXPERT
+	default y
+	help
+	  Some hosts drive the virtual timer interrupt whatever CNTV_CTL_EL0
+	  says, for instance Apple's Virtualization.framework when Xen runs
+	  nested at EL2. This workaround masks that interrupt at the interrupt
+	  controller while the line cannot be quieted, polls for the guest to
+	  re-arm its timer, and wakes a descheduled vCPU whose timer is enabled
+	  at least once a second.
+
+	  CPUs that implement the generic timer as specified, as bare-metal
+	  hosts do, do not need it: without it Xen handles the virtual timer
+	  as upstream Xen does.
+
+	  If unsure, say Y.
+
 source "arch/arm/firmware/Kconfig"
 
 config PCI_PASSTHROUGH
@@ -301,6 +363,36 @@ config PCI_PASSTHROUGH
 	depends on ARM_64 && HAS_PASSTHROUGH
 	help
 	  This option enables PCI device passthrough
+
+config PCI_HOST_ZYNQMP
+	bool "Xilinx ZynqMP PCIe host bridge driver"
+	depends on HAS_PCI
+	default y
+	help
+	  Driver for the Xilinx ZynqMP (NWL) PCIe root complex described by the
+	  device tree. Without it Xen does not register such a host bridge.
+
+config PCI_HOST_VERSAL
+	bool "Xilinx Versal PCIe host bridge driver"
+	depends on HAS_PCI
+	default y
+	help
+	  Driver for the Xilinx Versal CPM PCIe root complex described by the
+	  device tree. Without it Xen does not register such a host bridge.
+
+config PCI_HOST_RCAR4
+	bool "Renesas R-Car Gen4 PCIe host bridge driver"
+	depends on HAS_PCI
+	default y
+	select PCI_HOST_DESIGNWARE
+	help
+	  Driver for the Renesas R-Car Gen4 PCIe root complex, a Synopsys
+	  DesignWare core, described by the device tree. Without it Xen does not
+	  register such a host bridge. The IPMMU-VMSA driver needs it for PCI
+	  devices.
+
+config PCI_HOST_DESIGNWARE
+	bool
 
 endmenu
 

@@ -636,6 +636,12 @@ static int evtchn_bind_pirq(evtchn_bind_pirq_t *bind)
     if ( is_hvm_domain(d) && !has_pirq(d) )
         return -EOPNOTSUPP;
 
+#ifndef CONFIG_HVM_PIRQ
+    /* Without HVM_PIRQ only PV guests have PIRQs. */
+    if ( !is_pv_domain(d) )
+        return -EOPNOTSUPP;
+#endif
+
     if ( pirq >= d->nr_pirqs )
         return -EINVAL;
 
