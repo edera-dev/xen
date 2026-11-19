@@ -2941,6 +2941,15 @@ csched2_dom_cntl(
         break;
     case XEN_DOMCTL_SCHEDOP_putinfo:
         write_lock_irqsave(&prv->lock, flags);
+
+        /* Cap is only valid if it's below 100 * nr_of_units */
+        if ( op->u.credit2.cap > 100 * sdom->nr_units )
+        {
+            rc = -EINVAL;
+            write_unlock_irqrestore(&prv->lock, flags);
+            break;
+        }
+
         /* Weight */
         if ( op->u.credit2.weight != 0 )
         {
@@ -2969,14 +2978,6 @@ csched2_dom_cntl(
         {
             struct csched2_unit *svc;
             spinlock_t *lock;
-
-            /* Cap is only valid if it's below 100 * nr_of_units */
-            if ( op->u.credit2.cap > 100 * sdom->nr_units )
-            {
-                rc = -EINVAL;
-                write_unlock_irqrestore(&prv->lock, flags);
-                break;
-            }
 
             spin_lock(&sdom->budget_lock);
             sdom->tot_budget = (CSCHED2_BDGT_REPL_PERIOD * op->u.credit2.cap);
