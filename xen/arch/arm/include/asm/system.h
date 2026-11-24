@@ -58,7 +58,9 @@ static inline int local_abort_is_enabled(void)
     return !(flags & PSR_ABT_MASK);
 }
 
+#ifdef CONFIG_ARM_32
 #define arch_fetch_and_add(x, v) __sync_fetch_and_add(x, v)
+#endif
 
 extern struct vcpu *__context_switch(struct vcpu *prev, struct vcpu *next);
 
