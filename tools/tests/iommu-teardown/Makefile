@@ -37,6 +37,7 @@ vtd.c: $(XEN_ROOT)/xen/drivers/passthrough/vtd/iommu.c
 	{ echo '#include "harness.h"'; \
 	  sed -n -e '/^static void intel_iommu_free_dids(/,/^}/{s/^static //;p;}' \
 	         -e '/^static int __must_check cf_check iommu_flush_iotlb(/,/^}/{s/^static //;p;}' \
+	         -e '/^static int cf_check intel_iommu_context_init(/,/^}/{s/^static //;p;}' \
 	         -e '/^static void cf_check iommu_domain_teardown(/,/^}/{s/^static //;p;}' <$<; \
 	} >$@.tmp
 	mv -f $@.tmp $@
@@ -44,6 +45,7 @@ vtd.c: $(XEN_ROOT)/xen/drivers/passthrough/vtd/iommu.c
 amd.c: $(XEN_ROOT)/xen/drivers/passthrough/amd/pci_amd_iommu.c
 	{ echo '#include "harness.h"'; \
 	  sed -n -e '/^static void amd_iommu_free_dids(/,/^}/{s/^static //;p;}' \
+	         -e '/^static int cf_check amd_iommu_context_init(/,/^}/{s/^static //;p;}' \
 	         -e '/^static void cf_check amd_iommu_domain_destroy(/,/^}/{s/^static //;p;}' <$<; \
 	} >$@.tmp
 	mv -f $@.tmp $@
@@ -56,7 +58,8 @@ amd-cmd.c: $(XEN_ROOT)/xen/drivers/passthrough/amd/iommu_cmd.c
 
 x86.c: $(XEN_ROOT)/xen/drivers/passthrough/x86/iommu.c
 	{ echo '#include "harness.h"'; \
-	  sed -n -e '/^void iommu_identity_map_teardown(/,/^}/p' <$<; \
+	  sed -n -e '/^int arch_iommu_context_init(/,/^}/p' \
+	         -e '/^void iommu_identity_map_teardown(/,/^}/p' <$<; \
 	} >$@.tmp
 	mv -f $@.tmp $@
 
