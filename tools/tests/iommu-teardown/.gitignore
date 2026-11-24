@@ -1,0 +1,8 @@
+*.tmp
+/amd-cmd.c
+/amd.c
+/identity_map.h
+/list.h
+/test-iommu-teardown
+/vtd.c
+/x86.c

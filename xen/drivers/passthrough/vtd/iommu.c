@@ -575,6 +575,14 @@ static int __must_check cf_check iommu_flush_iotlb(struct domain *d,
     }
 
     /*
+     * A dying domain's default context loses its arrays in
+     * iommu_domain_teardown(), before the p2m is torn down. It has no
+     * devices by then, so there is nothing to flush.
+     */
+    if ( !ctx->arch.vtd.iommu_dev_cnt )
+        return 0;
+
+    /*
      * No need pcideves_lock here because we have flush
      * when assign/deassign device
      */
@@ -1253,6 +1261,15 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
     unsigned int i;
     int rc;
 
+    /*
+     * Set up the lists before anything that can fail: domain teardown walks
+     * the default context's even when this fails, and iommu_alloc_pgtable()
+     * puts the new tables on them.
+     */
+    rc = arch_iommu_context_init(d, ctx, flags);
+    if ( rc )
+        return rc;
+
     ctx->arch.vtd.didmap = xmalloc_array(domid_t, nr_iommus);
     if ( !ctx->arch.vtd.didmap )
         return -ENOMEM;
@@ -1264,7 +1281,7 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
     ctx->arch.vtd.iommu_dev_cnt = xzalloc_array(unsigned long, nr_iommus);
     if ( !ctx->arch.vtd.iommu_dev_cnt )
     {
-        xfree(ctx->arch.vtd.didmap);
+        XFREE(ctx->arch.vtd.didmap);
         return -ENOMEM;
     }
 
@@ -1305,14 +1322,6 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
             return -ENOSPC;
         }
     }
-
-    /*
-     * Set up the page table list first: iommu_alloc_pgtable() puts the new
-     * tables on it, and teardown frees what is on it.
-     */
-    rc = arch_iommu_context_init(d, ctx, flags);
-    if ( rc )
-        goto fail;
 
     if ( !ctx->opaque )
     {
@@ -1723,14 +1732,23 @@ static void cf_check iommu_domain_teardown(struct domain *d)
     if ( list_empty(&acpi_drhd_units) )
         return;
 
-    ASSERT(!ctx->arch.vtd.pgd_maddr);
+    /*
+     * Relinquishing the domain's resources freed the default context's page
+     * tables and cleared its root, unless the domain is being destroyed
+     * because its creation failed after the context was set up.
+     */
+    while ( iommu_free_pgtables(d, ctx) == -ERESTART )
+        /* nothing */;
+
+    iommu_identity_map_teardown(d, ctx);
 
     /*
      * Its devices have been moved to dom_io by now. Return the default
-     * context's DIDs so they can be reused, but keep the arrays: the
-     * domain's p2m is only torn down after this.
+     * context's DIDs so they can be reused, and free its arrays.
      */
     intel_iommu_free_dids(ctx);
+    XFREE(ctx->arch.vtd.didmap);
+    XFREE(ctx->arch.vtd.iommu_dev_cnt);
 }
 
 static int __must_check cf_check intel_iommu_map_page(
