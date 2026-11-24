@@ -835,7 +835,8 @@ int arch_domain_create(struct domain *d,
                        struct xen_domctl_createdomain *config,
                        unsigned int flags)
 {
-    bool paging_initialised = false;
+    bool paging_initialised = false, hvm_initialised = false;
+    bool pv_initialised = false;
     uint32_t emflags;
     int rc;
 
@@ -912,6 +913,7 @@ int arch_domain_create(struct domain *d,
     {
         if ( (rc = hvm_domain_initialise(d, config)) != 0 )
             goto fail;
+        hvm_initialised = true;
     }
     else if ( is_pv_domain(d) )
     {
@@ -920,10 +922,16 @@ int arch_domain_create(struct domain *d,
 
         if ( (rc = pv_domain_initialise(d)) != 0 )
             goto fail;
+        pv_initialised = true;
     }
     else
         ASSERT_UNREACHABLE(); /* Not HVM and not PV? */
 
+    /*
+     * After the HVM or PV setup, unlike upstream, because a default context
+     * that shares the p2m takes the p2m's root, which paging_enable() sets
+     * up. A failure from here on has to undo that setup.
+     */
     if ( (rc = iommu_domain_init(d, config->iommu_opts)) != 0 )
         goto fail;
 
@@ -950,6 +958,9 @@ int arch_domain_create(struct domain *d,
 
  fail:
     d->is_dying = DOMDYING_dead;
+    /* The HVM and PV setup is undone where arch_domain_destroy() does it. */
+    if ( hvm_initialised )
+        hvm_domain_destroy(d);
     psr_domain_free(d);
     iommu_domain_destroy(d);
     cleanup_domain_irq_mapping(d);
@@ -957,6 +968,8 @@ int arch_domain_create(struct domain *d,
     XFREE(d->arch.cpu_policy);
     if ( paging_initialised )
         paging_final_teardown(d);
+    if ( pv_initialised )
+        pv_domain_destroy(d);
     free_perdomain_mappings(d);
 
     return rc;
