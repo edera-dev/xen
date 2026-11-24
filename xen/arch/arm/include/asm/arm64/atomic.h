@@ -22,6 +22,8 @@
 #ifndef __ARCH_ARM_ARM64_ATOMIC
 #define __ARCH_ARM_ARM64_ATOMIC
 
+#include <asm/arm64/lse.h>
+
 /*
  * AArch64 UP and SMP safe atomic ops.  We use load exclusive and
  * store exclusive to ensure that these are atomic.  We may loop
@@ -31,6 +33,14 @@ static inline void atomic_add(int i, atomic_t *v)
 {
 	unsigned long tmp;
 	int result;
+
+	if (system_uses_lse_atomics()) {
+		asm volatile(__LSE_PREAMBLE
+"	stadd	%w1, %0"
+		: "+Q" (v->counter)
+		: "r" (i));
+		return;
+	}
 
 	asm volatile("// atomic_add\n"
 "1:	ldxr	%w0, %2\n"
@@ -45,6 +55,16 @@ static inline int atomic_add_return(int i, atomic_t *v)
 {
 	unsigned long tmp;
 	int result;
+
+	if (system_uses_lse_atomics()) {
+		asm volatile(__LSE_PREAMBLE
+"	ldaddal	%w2, %w0, %1"
+		: "=&r" (result), "+Q" (v->counter)
+		: "r" (i)
+		: "memory");
+		smp_mb();
+		return (int)((unsigned int)result + i);
+	}
 
 	asm volatile("// atomic_add_return\n"
 "1:	ldxr	%w0, %2\n"
@@ -64,6 +84,14 @@ static inline void atomic_sub(int i, atomic_t *v)
 	unsigned long tmp;
 	int result;
 
+	if (system_uses_lse_atomics()) {
+		asm volatile(__LSE_PREAMBLE
+"	stadd	%w1, %0"
+		: "+Q" (v->counter)
+		: "r" (-(unsigned int)i));
+		return;
+	}
+
 	asm volatile("// atomic_sub\n"
 "1:	ldxr	%w0, %2\n"
 "	sub	%w0, %w0, %w3\n"
@@ -77,6 +105,16 @@ static inline int atomic_sub_return(int i, atomic_t *v)
 {
 	unsigned long tmp;
 	int result;
+
+	if (system_uses_lse_atomics()) {
+		asm volatile(__LSE_PREAMBLE
+"	ldaddal	%w2, %w0, %1"
+		: "=&r" (result), "+Q" (v->counter)
+		: "r" (-(unsigned int)i)
+		: "memory");
+		smp_mb();
+		return (int)((unsigned int)result - i);
+	}
 
 	asm volatile("// atomic_sub_return\n"
 "1:	ldxr	%w0, %2\n"
@@ -96,6 +134,14 @@ static inline void atomic_and(int m, atomic_t *v)
 	unsigned long tmp;
 	int result;
 
+	if (system_uses_lse_atomics()) {
+		asm volatile(__LSE_PREAMBLE
+"	stclr	%w1, %0"
+		: "+Q" (v->counter)
+		: "r" (~m));
+		return;
+	}
+
 	asm volatile("// atomic_and\n"
 "1:	ldxr	%w0, %2\n"
 "	and	%w0, %w0, %w3\n"
@@ -111,6 +157,15 @@ static inline int atomic_cmpxchg(atomic_t *v, int old, int new)
 	int oldval;
 
 	smp_mb();
+
+	if (system_uses_lse_atomics()) {
+		asm volatile(__LSE_PREAMBLE
+"	cas	%w0, %w2, %1"
+		: "+r" (old), "+Q" (v->counter)
+		: "r" (new));
+		smp_mb();
+		return old;
+	}
 
 	asm volatile("// atomic_cmpxchg\n"
 "1:	ldxr	%w1, %2\n"
