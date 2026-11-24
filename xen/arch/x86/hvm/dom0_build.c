@@ -502,6 +502,69 @@ static void __init trim_emit_ram_slice(struct e820_trim_state *st,
     }
 }
 
+/*
+ * TEST ONLY: upstream Xen's dom0 E820 trim, verbatim, selected by
+ * numa-ab=inorder-trim.  Fills dom0's RAM from the lowest addresses up,
+ * which on a multi-node host puts it all on the lowest-address node(s).
+ */
+static __init void pvh_setup_e820_inorder(struct domain *d,
+                                          unsigned long nr_pages)
+{
+    struct e820entry *entry, *entry_guest;
+    unsigned int i;
+    unsigned long pages, cur_pages = 0;
+    uint64_t start, end;
+
+    d->arch.e820 = xzalloc_array(struct e820entry, e820.nr_map + 1);
+    if ( !d->arch.e820 )
+        panic("Unable to allocate memory for Dom0 e820 map\n");
+    entry_guest = d->arch.e820;
+
+    for ( i = 0, entry = e820.map; i < e820.nr_map; i++, entry++ )
+    {
+        *entry_guest = *entry;
+
+        if ( entry->type != E820_RAM )
+            goto next;
+
+        if ( nr_pages == cur_pages )
+        {
+            entry_guest->type = E820_UNUSABLE;
+            goto next;
+        }
+
+        start = ROUNDUP(entry->addr, PAGE_SIZE << PAGE_ORDER_4K);
+        end = (entry->addr + entry->size) &
+              ~((PAGE_SIZE << PAGE_ORDER_4K) - 1);
+        if ( start >= end )
+            continue;
+
+        entry_guest->type = E820_RAM;
+        entry_guest->addr = start;
+        entry_guest->size = end - start;
+        pages = PFN_DOWN(entry_guest->size);
+        if ( (cur_pages + pages) > nr_pages )
+        {
+            entry_guest->size = (nr_pages - cur_pages) << PAGE_SHIFT;
+            entry_guest++;
+            d->arch.nr_e820++;
+            entry_guest->type = E820_UNUSABLE;
+            entry_guest->addr = start + ((nr_pages - cur_pages) << PAGE_SHIFT);
+            entry_guest->size = end - entry_guest->addr;
+            cur_pages = nr_pages;
+        }
+        else
+        {
+            cur_pages += pages;
+        }
+ next:
+        d->arch.nr_e820++;
+        entry_guest++;
+        ASSERT(d->arch.nr_e820 <= e820.nr_map + 1);
+    }
+    ASSERT(cur_pages == nr_pages);
+}
+
 static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
 {
     struct e820entry *entry;
@@ -509,6 +572,12 @@ static __init void pvh_setup_e820(struct domain *d, unsigned long nr_pages)
     unsigned int i, nr_memblks = numa_get_nr_memblks();
     unsigned long low_ram_pages = 0, low_grant;
     uint64_t start, end;
+
+    if ( opt_numa_ab_inorder_trim )
+    {
+        pvh_setup_e820_inorder(d, nr_pages);
+        return;
+    }
 
     /*
      * Pass 1: sum the host's E820_RAM, page-aligned the same way pass 2

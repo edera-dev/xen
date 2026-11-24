@@ -134,6 +134,9 @@
 #include <asm/traps.h>
 #include <asm/x86_emulate.h>
 
+/* TEST ONLY: set by numa-ab=no-mfn-pxms, see dom0_build.c. */
+bool __read_mostly opt_numa_ab_no_mfn_pxms;
+
 #include <public/memory.h>
 #include <public/sched.h>
 
@@ -4997,6 +5000,9 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
          * of headroom and keeps the temporary buffers under 16 KiB.
          */
         const unsigned int max_nr = 1024;
+
+        if ( opt_numa_ab_no_mfn_pxms )
+            return -ENOSYS;
 
         if ( !is_hardware_domain(current->domain) )
             return -EPERM;

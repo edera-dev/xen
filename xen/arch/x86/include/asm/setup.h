@@ -79,6 +79,14 @@ extern bool opt_dom0_pvh_auto;
 
 bool dom0_vnuma_enabled(unsigned int max_vcpus);
 
+/*
+ * TEST ONLY: "numa-ab=" switches that turn individual pieces of the dom0
+ * NUMA work back off, so before/after measurements can run on one binary.
+ */
+extern bool opt_numa_ab_no_dom0_vnuma;
+extern bool opt_numa_ab_inorder_trim;
+extern bool opt_numa_ab_no_mfn_pxms;
+
 #define max_init_domid (0)
 
 #endif

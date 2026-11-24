@@ -329,8 +329,48 @@ struct vcpu *__init alloc_dom0_vcpu0(struct domain *dom0)
  * Under these conditions there are no layout decisions to make: the
  * topology directly mirrors the host.
  */
+bool __initdata opt_numa_ab_no_dom0_vnuma;
+bool __initdata opt_numa_ab_inorder_trim;
+
+/*
+ * TEST ONLY.  numa-ab=<switch>[,<switch>...] where each switch is one of
+ *   no-dom0-vnuma  dom0 gets no vNUMA topology (no SRAT/SLIT), even when
+ *                  dom0_vnuma_enabled() would otherwise allow it
+ *   inorder-trim   trim dom0's E820 RAM in address order, as upstream
+ *                  does, instead of proportionally across NUMA memblks
+ *   no-mfn-pxms    XENMEM_get_mfn_pxms returns -ENOSYS, so dom0's PV
+ *                  backends fall back to NUMA-oblivious placement
+ */
+static int __init cf_check parse_numa_ab(const char *s)
+{
+    const char *ss;
+    int rc = 0;
+
+    do {
+        ss = strchr(s, ',');
+        if ( !ss )
+            ss = strchr(s, '\0');
+
+        if ( !cmdline_strcmp(s, "no-dom0-vnuma") )
+            opt_numa_ab_no_dom0_vnuma = true;
+        else if ( !cmdline_strcmp(s, "inorder-trim") )
+            opt_numa_ab_inorder_trim = true;
+        else if ( !cmdline_strcmp(s, "no-mfn-pxms") )
+            opt_numa_ab_no_mfn_pxms = true;
+        else
+            rc = -EINVAL;
+
+        s = ss + 1;
+    } while ( *ss );
+
+    return rc;
+}
+custom_param("numa-ab", parse_numa_ab);
+
 bool __init dom0_vnuma_enabled(unsigned int max_vcpus)
 {
+    if ( opt_numa_ab_no_dom0_vnuma )
+        return false;
     if ( !opt_dom0_pvh )
         return false;
     if ( !opt_dom0_vcpus_pin )
