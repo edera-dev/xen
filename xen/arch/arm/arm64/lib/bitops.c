@@ -15,6 +15,7 @@
  */
 
 #include <xen/bitops.h>
+#include <asm/arm64/lse.h>
 #include <asm/system.h>
 
 /*
@@ -28,7 +29,7 @@
  * XXX: Rework the interface to use unsigned int.
  */
 
-#define bitop(name, instr)                                                  \
+#define bitop(name, instr, lse_op)                                          \
 static always_inline bool int_##name(int nr, volatile void *p, bool timeout,\
                                      unsigned int max_try)                  \
 {                                                                           \
@@ -36,6 +37,15 @@ static always_inline bool int_##name(int nr, volatile void *p, bool timeout,\
                              BITOP_WORD((unsigned int)nr);                  \
     const uint32_t mask = BITOP_MASK((unsigned int)nr);                     \
     unsigned long res, tmp;                                                 \
+                                                                            \
+    if ( system_uses_lse_atomics() )                                        \
+    {                                                                       \
+        asm volatile ( __LSE_PREAMBLE                                       \
+                       "   st" #lse_op "   %w1, %0\n"                       \
+                       : "+Q" (*ptr)                                        \
+                       : "r" (mask) );                                      \
+        return true;                                                        \
+    }                                                                       \
                                                                             \
     do                                                                      \
     {                                                                       \
@@ -64,7 +74,7 @@ bool name##_timeout(int nr, volatile void *p, unsigned int max_try)         \
     return int_##name(nr, p, true, max_try);                                \
 }
 
-#define testop(name, instr)                                                 \
+#define testop(name, instr, lse_op)                                         \
 static always_inline bool int_##name(int nr, volatile void *p, int *oldbit, \
                                      bool timeout, unsigned int max_try)    \
 {                                                                           \
@@ -73,6 +83,18 @@ static always_inline bool int_##name(int nr, volatile void *p, int *oldbit, \
     unsigned int bit = (unsigned int)nr % BITOP_BITS_PER_WORD;              \
     const uint32_t mask = BITOP_MASK(bit);                                  \
     unsigned long res, tmp;                                                 \
+                                                                            \
+    if ( system_uses_lse_atomics() )                                        \
+    {                                                                       \
+        asm volatile ( __LSE_PREAMBLE                                       \
+                       "   ld" #lse_op "al %w2, %w0, %1\n"                  \
+                       : "=&r" (tmp), "+Q" (*ptr)                           \
+                       : "r" (mask)                                         \
+                       : "memory" );                                        \
+        dmb(ish);                                                           \
+        *oldbit = (tmp >> bit) & 1;                                         \
+        return true;                                                        \
+    }                                                                       \
                                                                             \
     do                                                                      \
     {                                                                       \
@@ -112,18 +134,27 @@ bool name##_timeout(int nr, volatile void *p,                               \
     return int_##name(nr, p, oldbit, true, max_try);                        \
 }
 
-bitop(change_bit, eor)
-bitop(clear_bit, bic)
-bitop(set_bit, orr)
+bitop(change_bit, eor, eor)
+bitop(clear_bit, bic, clr)
+bitop(set_bit, orr, set)
 
-testop(test_and_change_bit, eor)
-testop(test_and_clear_bit, bic)
-testop(test_and_set_bit, orr)
+testop(test_and_change_bit, eor, eor)
+testop(test_and_clear_bit, bic, clr)
+testop(test_and_set_bit, orr, set)
 
 static always_inline bool int_clear_mask16(uint16_t mask, volatile uint16_t *p,
                                            bool timeout, unsigned int max_try)
 {
     unsigned long res, tmp;
+
+    if ( system_uses_lse_atomics() )
+    {
+        asm volatile ( __LSE_PREAMBLE
+                       "   stclrh  %w1, %0\n"
+                       : "+Q" (*p)
+                       : "r" (mask) );
+        return true;
+    }
 
     do
     {
