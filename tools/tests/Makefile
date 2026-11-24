@@ -5,6 +5,7 @@ SUBDIRS-y :=
 SUBDIRS-y += domain-copy-range
 SUBDIRS-y += domid
 SUBDIRS-y += iommu
+SUBDIRS-y += iommu-teardown
 SUBDIRS-y += log-q16
 SUBDIRS-y += mem-claim
 SUBDIRS-y += numa

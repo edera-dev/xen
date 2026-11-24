@@ -584,7 +584,13 @@ static void _amd_iommu_flush_pages(struct domain *d, struct iommu_context *ctx,
     /* send INVALIDATE_IOMMU_PAGES command */
     for_each_amd_iommu ( iommu )
     {
-        if ( ctx->arch.amd.iommu_dev_cnt[iommu->index] )
+        /*
+         * A dying domain's default context loses its arrays in
+         * amd_iommu_domain_destroy(), before the p2m is torn down. It has
+         * no devices by then, so there is nothing to invalidate.
+         */
+        if ( ctx->arch.amd.iommu_dev_cnt &&
+             ctx->arch.amd.iommu_dev_cnt[iommu->index] )
         {
             domid_t dom_id = ctx->arch.amd.didmap[iommu->index];
 
