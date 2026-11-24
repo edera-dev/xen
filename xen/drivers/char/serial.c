@@ -416,6 +416,7 @@ void serial_end_sync(int handle)
     spin_unlock_irqrestore(&port->tx_lock, flags);
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 void serial_start_log_everything(int handle)
 {
     struct serial_port *port;
@@ -446,6 +447,7 @@ void serial_end_log_everything(int handle)
     port->tx_log_everything--;
     spin_unlock_irqrestore(&port->tx_lock, flags);
 }
+#endif
 
 void __init serial_init_preirq(void)
 {

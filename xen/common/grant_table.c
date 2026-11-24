@@ -182,9 +182,17 @@ static int cf_check parse_gnttab_max_maptrack_frames(const char *arg)
                               opt_max_maptrack_frames_val);
 }
 
-#ifndef GNTTAB_MAX_VERSION
+#ifndef CONFIG_GRANT_TABLE_V2
+#define GNTTAB_MAX_VERSION 1
+#elif !defined(GNTTAB_MAX_VERSION)
 #define GNTTAB_MAX_VERSION 2
 #endif
+
+/* Highest version "gnttab=max-ver:" accepts. */
+#define GNTTAB_MAX_VER_OPT (IS_ENABLED(CONFIG_GRANT_TABLE_V2) ? 2 : 1)
+
+#define gt_version(gt) \
+    (IS_ENABLED(CONFIG_GRANT_TABLE_V2) ? (gt)->gt_version : 1)
 
 unsigned int __read_mostly opt_gnttab_max_version = GNTTAB_MAX_VERSION;
 static bool __read_mostly opt_transitive_grants = true;
@@ -209,7 +217,7 @@ static int __init cf_check parse_gnttab(const char *s)
         {
             long ver = simple_strtol(s + 8, &e, 10);
 
-            if ( e == ss && ver >= 1 && ver <= 2 )
+            if ( e == ss && ver >= 1 && ver <= GNTTAB_MAX_VER_OPT )
                 opt_gnttab_max_version = ver;
             else
                 rc = -EINVAL;
@@ -295,7 +303,7 @@ static inline unsigned int nr_grant_frames(const struct grant_table *gt)
 /* Number of status grant table frames. Caller must hold d's gr. table lock.*/
 static inline unsigned int nr_status_frames(const struct grant_table *gt)
 {
-    return gt->nr_status_frames;
+    return IS_ENABLED(CONFIG_GRANT_TABLE_V2) ? gt->nr_status_frames : 0;
 }
 
 #define MAPTRACK_PER_PAGE (PAGE_SIZE / sizeof(struct grant_mapping))
@@ -323,7 +331,7 @@ nr_maptrack_frames(struct grant_table *t)
 static grant_entry_header_t *
 shared_entry_header(struct grant_table *t, grant_ref_t ref)
 {
-    switch ( t->gt_version )
+    switch ( gt_version(t) )
     {
     case 1:
         /* Returned values should be independent of speculative execution */
@@ -713,7 +721,7 @@ get_maptrack_handle(
 /* Number of grant table entries. Caller must hold d's grant table lock. */
 static unsigned int nr_grant_entries(struct grant_table *gt)
 {
-    switch ( gt->gt_version )
+    switch ( gt_version(gt) )
     {
 #define f2e(nr, ver) (((nr) << PAGE_SHIFT) / sizeof(grant_entry_v##ver##_t))
     case 1:
@@ -1106,21 +1114,21 @@ map_grant_ref(
     }
 
     /* Make sure we do not access memory speculatively */
-    status = evaluate_nospec(rgt->gt_version == 1) ? &shah->flags
+    status = evaluate_nospec(gt_version(rgt) == 1) ? &shah->flags
                                                    : &status_entry(rgt, ref);
 
     if ( !act->pin ||
          (!(op->flags & GNTMAP_readonly) &&
           !(act->pin & (GNTPIN_hstw_mask|GNTPIN_devw_mask))) )
     {
-        if ( (rc = _set_status(shah, status, rd, rgt->gt_version, act,
+        if ( (rc = _set_status(shah, status, rd, gt_version(rgt), act,
                                op->flags & GNTMAP_readonly, 1,
                                ld->domain_id)) != GNTST_okay )
             goto act_release_out;
 
         if ( !act->pin )
         {
-            unsigned long gfn = evaluate_nospec(rgt->gt_version == 1) ?
+            unsigned long gfn = evaluate_nospec(gt_version(rgt) == 1) ?
                                 shared_entry_v1(rgt, ref).frame :
                                 shared_entry_v2(rgt, ref).full_page.frame;
 
@@ -1362,7 +1370,7 @@ map_grant_ref(
      * bounds.  While after a v2 -> v1 -> v2 change "ref" would still be
      * suitably bounded, the underlying status page may have moved.
      */
-    if ( evaluate_nospec(rgt->gt_version == 1
+    if ( evaluate_nospec(gt_version(rgt) == 1
                          ? status != &shah->flags
                          : (ref >= nr_grant_entries(rgt) ||
                             status != &status_entry(rgt, ref))) )
@@ -1372,7 +1380,7 @@ map_grant_ref(
          * have been cleared anyway by the version change(s).
          */
         if ( ref < GNTTAB_NR_RESERVED_ENTRIES )
-            status = evaluate_nospec(rgt->gt_version == 1)
+            status = evaluate_nospec(gt_version(rgt) == 1)
                      ? &shah->flags
                      : &status_entry(rgt, ref);
         else
@@ -1640,7 +1648,7 @@ unmap_common_complete(struct gnttab_unmap_common *op)
 
     act = active_entry_acquire(rgt, op->ref);
 
-    if ( evaluate_nospec(rgt->gt_version == 1) )
+    if ( evaluate_nospec(gt_version(rgt) == 1) )
         status = &shared_entry_v1(rgt, op->ref).flags;
     else if ( evaluate_nospec(op->ref < nr_grant_entries(rgt)) )
         status = &status_entry(rgt, op->ref);
@@ -1971,7 +1979,7 @@ gnttab_grow_table(struct domain *d, unsigned int req_nr_frames)
     }
 
     /* Status pages - version 2 */
-    if ( evaluate_nospec(gt->gt_version > 1) )
+    if ( evaluate_nospec(gt_version(gt) > 1) )
     {
         if ( gnttab_populate_status_frames(d, gt, req_nr_frames) )
             goto shared_alloc_failed;
@@ -2074,11 +2082,13 @@ int grant_table_init(struct domain *d, int max_grant_frames,
     if ( gt->shared_raw == NULL )
         goto out;
 
+#ifdef CONFIG_GRANT_TABLE_V2
     /* Status pages for grant table - for version 2 */
     gt->status = xvzalloc_array(grant_status_t *,
                                 grant_to_status_frames(gt->max_grant_frames));
     if ( gt->status == NULL )
         goto out;
+#endif
 
     grant_write_lock(gt);
 
@@ -2146,7 +2156,7 @@ gnttab_setup_table(
     }
 
     if ( (op.nr_frames > nr_grant_frames(gt) ||
-          ((gt->gt_version > 1) &&
+          ((gt_version(gt) > 1) &&
            (grant_to_status_frames(op.nr_frames) > nr_status_frames(gt)))) &&
          gnttab_grow_table(d, op.nr_frames) )
     {
@@ -2288,7 +2298,7 @@ gnttab_prepare_for_transfer(
         scombo = prev;
     }
 
-    ver = rgt->gt_version;
+    ver = gt_version(rgt);
 
     grant_read_unlock(rgt);
 
@@ -2398,7 +2408,7 @@ gnttab_transfer(
         }
 
         max_bitsize = domain_clamp_alloc_bitsize(
-            e, e->grant_table->gt_version > 1 || paging_mode_translate(e)
+            e, gt_version(e->grant_table) > 1 || paging_mode_translate(e)
                ? BITS_PER_LONG + PAGE_SHIFT : 32 + PAGE_SHIFT);
         if ( max_bitsize < BITS_PER_LONG + PAGE_SHIFT &&
              (mfn_x(mfn) >> (max_bitsize - PAGE_SHIFT)) )
@@ -2496,7 +2506,7 @@ gnttab_transfer(
         grant_read_lock(e->grant_table);
         act = active_entry_acquire(e->grant_table, gop.ref);
 
-        if ( unlikely(evaluate_nospec(e->grant_table->gt_version != ver)) )
+        if ( unlikely(evaluate_nospec(gt_version(e->grant_table) != ver)) )
         {
             rc = -EILSEQ;
             goto release;
@@ -2562,7 +2572,7 @@ release_grant_for_copy(
     act = active_entry_acquire(rgt, gref);
     mfn = act->mfn;
 
-    if ( evaluate_nospec(rgt->gt_version == 1) )
+    if ( evaluate_nospec(gt_version(rgt) == 1) )
     {
         status = &shared_entry_v1(rgt, gref).flags;
         td = rd;
@@ -2663,7 +2673,7 @@ acquire_grant_for_copy(
         goto unlock_out;
     }
 
-    if ( evaluate_nospec(rgt->gt_version == 1) )
+    if ( evaluate_nospec(gt_version(rgt) == 1) )
     {
         sha2 = NULL;
         status = &shah->flags;
@@ -2754,7 +2764,7 @@ acquire_grant_for_copy(
          * change, and that nobody else tried to pin/unpin it. If anything
          * changed, just give up and tell the caller to retry.
          */
-        if ( rgt->gt_version != 2 ||
+        if ( gt_version(rgt) != 2 ||
              act->pin != old_pin ||
              (old_pin && (act->domid != ldom ||
                           !mfn_eq(act->mfn, grant_mfn) ||
@@ -2812,7 +2822,7 @@ acquire_grant_for_copy(
     else if ( !old_pin ||
               (!readonly && !(old_pin & (GNTPIN_devw_mask|GNTPIN_hstw_mask))) )
     {
-        if ( (rc = _set_status(shah, status, rd, rgt->gt_version, act,
+        if ( (rc = _set_status(shah, status, rd, gt_version(rgt), act,
                                readonly, 0, ldom)) != GNTST_okay )
              goto unlock_out;
 
@@ -3307,6 +3317,12 @@ gnttab_set_version(XEN_GUEST_HANDLE_PARAM(gnttab_set_version_t) uop)
     if ( op.version == 2 && gt->max_version == 1 )
         goto out; /* Behave as before set_version was introduced. */
 
+#ifndef CONFIG_GRANT_TABLE_V2
+    /* Every table has max_version 1, so this is version 1, already in use. */
+    res = 0;
+    goto out;
+#endif
+
     grant_write_lock(gt);
 
     res = 0;
@@ -3458,6 +3474,10 @@ gnttab_get_status_frames(XEN_GUEST_HANDLE_PARAM(gnttab_get_status_frames_t) uop,
     int i;
     int rc;
 
+#ifndef CONFIG_GRANT_TABLE_V2
+    return -EOPNOTSUPP;
+#endif
+
     if ( count != 1 )
         return -EINVAL;
 
@@ -3599,7 +3619,7 @@ swap_grant_ref(grant_ref_t ref_a, grant_ref_t ref_b)
         goto out;
     }
 
-    if ( evaluate_nospec(gt->gt_version == 1) )
+    if ( evaluate_nospec(gt_version(gt) == 1) )
     {
         grant_entry_v1_t shared;
 
@@ -4037,7 +4057,7 @@ int gnttab_release_mappings(struct domain *d)
 
         act = active_entry_acquire(rgt, ref);
         sha = shared_entry_header(rgt, ref);
-        if ( rgt->gt_version == 1 )
+        if ( gt_version(rgt) == 1 )
             status = &sha->flags;
         else
             status = &status_entry(rgt, ref);
@@ -4115,7 +4135,7 @@ int gnttab_release_mappings(struct domain *d)
     return 0;
 }
 
-#ifdef CONFIG_HAS_SOFT_RESET
+#ifdef CONFIG_SOFT_RESET
 void grant_table_warn_active_grants(struct domain *d)
 {
     struct grant_table *gt = d->grant_table;
@@ -4160,7 +4180,7 @@ void grant_table_warn_active_grants(struct domain *d)
 
 #undef WARN_GRANT_MAX
 }
-#endif /* CONFIG_HAS_SOFT_RESET */
+#endif /* CONFIG_SOFT_RESET */
 
 void
 grant_table_destroy(
@@ -4208,11 +4228,11 @@ int mem_sharing_gref_to_gfn(struct grant_table *gt, grant_ref_t ref,
 
     grant_read_lock(gt);
 
-    if ( gt->gt_version < 1 )
+    if ( gt_version(gt) < 1 )
         rc = -EINVAL;
     else if ( ref >= nr_grant_entries(gt) )
         rc = -ENOENT;
-    else if ( evaluate_nospec(gt->gt_version == 1) )
+    else if ( evaluate_nospec(gt_version(gt) == 1) )
     {
         const grant_entry_v1_t *sha1 = &shared_entry_v1(gt, ref);
 
@@ -4234,7 +4254,7 @@ int mem_sharing_gref_to_gfn(struct grant_table *gt, grant_ref_t ref,
         rc = -ENXIO;
     else if ( !rc && status )
     {
-        if ( evaluate_nospec(gt->gt_version == 1) )
+        if ( evaluate_nospec(gt_version(gt) == 1) )
             *status = flags;
         else
             *status = status_entry(gt, ref);
@@ -4365,7 +4385,7 @@ int gnttab_acquire_resource(
         break;
 
     case XENMEM_resource_grant_table_id_status:
-        if ( gt->gt_version != 2 )
+        if ( gt_version(gt) != 2 )
             break;
 
         /* Check that void ** is a suitable representation for gt->status. */
@@ -4417,7 +4437,7 @@ int gnttab_map_frame_begin(
 
     grant_write_lock(gt);
 
-    if ( evaluate_nospec(gt->gt_version == 2) && (idx & XENMAPIDX_grant_table_status) )
+    if ( evaluate_nospec(gt_version(gt) == 2) && (idx & XENMAPIDX_grant_table_status) )
     {
         idx &= ~XENMAPIDX_grant_table_status;
         rc = gnttab_get_status_frame_mfn(d, idx, mfn);
@@ -4485,7 +4505,7 @@ static void gnttab_usage_print(struct domain *rd)
 
         sha = shared_entry_header(gt, ref);
 
-        if ( gt->gt_version == 1 )
+        if ( gt_version(gt) == 1 )
         {
             status = sha->flags;
             frame = shared_entry_v1(gt, ref).frame;

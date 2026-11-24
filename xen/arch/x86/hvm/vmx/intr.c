@@ -100,6 +100,7 @@ static void vmx_enable_intr_window(struct vcpu *v, struct hvm_intack intack)
     }
 }
 
+#ifdef CONFIG_NESTED_VIRT
 /*
  * Injecting interrupts for nested virtualization
  *
@@ -209,6 +210,7 @@ static int nvmx_intr_intercept(struct vcpu *v, struct hvm_intack intack)
 
     return 0;
 }
+#endif /* CONFIG_NESTED_VIRT */
 
 void vmx_sync_exit_bitmap(struct vcpu *v)
 {
@@ -258,8 +260,10 @@ void asmlinkage vmx_intr_assist(void)
         if ( likely(intack.source == hvm_intsrc_none) )
             goto out;
 
+#ifdef CONFIG_NESTED_VIRT
         if ( unlikely(nvmx_intr_intercept(v, intack)) )
             goto out;
+#endif
 
         intblk = hvm_interrupt_blocked(v, intack);
         if ( cpu_has_vmx_virtual_intr_delivery )

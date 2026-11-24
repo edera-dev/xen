@@ -72,13 +72,22 @@
 #define is_zen6_uarch()   boot_cpu_has(X86_FEATURE_FRED)
 
 struct cpuinfo_x86;
+#ifdef CONFIG_AMD
 int cpu_has_amd_erratum(const struct cpuinfo_x86 *cpu, int osvw_id, ...);
+#else
+static inline int cpu_has_amd_erratum(const struct cpuinfo_x86 *cpu,
+                                      int osvw_id, ...)
+{
+    return 0;
+}
+#endif
 
 extern int8_t opt_allow_unsafe;
 
 void fam10h_check_enable_mmcfg(void);
 void check_enable_amd_mmconf_dmi(void);
 
+#ifdef CONFIG_AMD
 extern bool amd_acpi_c1e_quirk;
 void amd_check_disable_c1e(unsigned int port, u8 value);
 
@@ -87,6 +96,15 @@ extern bool amd_virt_spec_ctrl;
 bool amd_setup_legacy_ssbd(void);
 void amd_set_legacy_ssbd(bool enable);
 void amd_set_cpuid_user_dis(bool enable);
+#else
+#define amd_acpi_c1e_quirk false
+static inline void amd_check_disable_c1e(unsigned int port, u8 value) {}
+
+#define amd_legacy_ssbd false
+#define amd_virt_spec_ctrl false
+static inline void amd_set_legacy_ssbd(bool enable) {}
+static inline void amd_set_cpuid_user_dis(bool enable) {}
+#endif
 void amd_process_freq(const struct cpuinfo_x86 *c, unsigned int *low_mhz,
                       unsigned int *nom_mhz, unsigned int *hi_mhz);
 

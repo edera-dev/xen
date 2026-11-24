@@ -401,6 +401,7 @@ static void queue_free_pt(struct domain *d, struct iommu_context *ctx, mfn_t mfn
     iommu_queue_free_pgtable(d, ctx, mfn_to_page(mfn));
 }
 
+#ifdef CONFIG_PV_IOMMU
 /*
  * Drop the per-frame page references PV-IOMMU map operations took on the
  * frames a superpage leaf still maps.  Restartable: progress is kept in
@@ -494,6 +495,7 @@ int amd_iommu_cleanup_mappings(struct iommu_context *ctx, bool preempt)
     return amd_iommu_cleanup_pt(ctx, page_to_mfn(ctx->arch.amd.root_table),
                                 ctx->arch.amd.paging_mode, preempt);
 }
+#endif /* CONFIG_PV_IOMMU */
 
 int cf_check amd_iommu_map_page(
     struct domain *d, dfn_t dfn, mfn_t mfn, unsigned int flags,
@@ -763,6 +765,7 @@ int cf_check amd_iommu_flush_iotlb_pages(
     return 0;
 }
 
+#ifdef CONFIG_PV_IOMMU
 static int lookup_pagewalk(struct page_info *table, dfn_t dfn, unsigned long level,
                            mfn_t *mfn, unsigned int *flags)
 {
@@ -852,6 +855,7 @@ int cf_check amd_iommu_lookup_page(struct domain *d, dfn_t dfn, mfn_t *mfn,
     *flags |= IOMMUF_writable | IOMMUF_readable;
     return lookup_pagewalk(root_table, dfn, level, mfn, flags);
 }
+#endif
 
 int amd_iommu_reserve_domain_unity_map(struct domain *d, struct iommu_context *ctx,
                                        const struct ivrs_unity_map *map,

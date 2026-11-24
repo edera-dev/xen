@@ -80,6 +80,13 @@ rettype: compat int
 #define PREFIX_compat
 #endif
 
+/* hvm/hypercall.c names the compat handlers, in dead code without COMPAT. */
+#ifdef CONFIG_HVM
+#define PREFIX_compat_always compat
+#else
+#define PREFIX_compat_always PREFIX_compat
+#endif
+
 #ifdef CONFIG_ARM
 #define PREFIX_dep dep
 #define PREFIX_do_arm do_arm
@@ -104,10 +111,10 @@ defhandle: trap_info_compat_t
 defhandle: physdev_op_compat_t
 #endif
 
-prefix: do PREFIX_hvm PREFIX_compat PREFIX_do_arm
+prefix: do PREFIX_hvm PREFIX_compat_always PREFIX_do_arm
 physdev_op(int cmd, void *arg)
 
-prefix: do PREFIX_hvm PREFIX_compat
+prefix: do PREFIX_hvm PREFIX_compat_always
 #if defined(CONFIG_GRANT_TABLE) || defined(CONFIG_PV_SHIM)
 grant_table_op(unsigned int cmd, void *uop, unsigned int count)
 #endif
@@ -153,6 +160,9 @@ platform_op(compat_platform_op_t *u_xenpf_op)
 #ifdef CONFIG_KEXEC
 kexec_op(unsigned int op, void *uarg)
 #endif
+#elif defined(CONFIG_HVM)
+prefix: compat
+memory_op(unsigned int cmd, void *arg)
 #endif /* CONFIG_COMPAT */
 
 #if defined(CONFIG_PV) || defined(CONFIG_ARM)
@@ -194,7 +204,7 @@ dm_op(domid_t domid, unsigned int nr_bufs, xen_dm_op_buf_t *bufs)
 #ifdef CONFIG_SYSCTL
 sysctl(xen_sysctl_t *u_sysctl)
 #endif
-#if defined(CONFIG_X86) && defined(CONFIG_PAGING) && !defined(CONFIG_PV_SHIM_EXCLUSIVE)
+#if defined(CONFIG_X86) && defined(CONFIG_PAGING_LOG_DIRTY)
 paging_domctl_cont(xen_domctl_t *u_domctl)
 #endif
 #ifndef CONFIG_PV_SHIM_EXCLUSIVE
@@ -207,10 +217,10 @@ hvm_op(unsigned long op, void *arg)
 #ifdef CONFIG_HYPFS
 hypfs_op(unsigned int cmd, const char *arg1, unsigned long arg2, void *arg3, unsigned long arg4)
 #endif
-#ifdef CONFIG_X86
+#if defined(CONFIG_X86) && defined(CONFIG_VPMU)
 xenpmu_op(unsigned int op, xen_pmu_params_t *arg)
 #endif
-#ifdef CONFIG_HAS_PASSTHROUGH
+#ifdef CONFIG_PV_IOMMU
 iommu_op(unsigned int subop, void *arg)
 #endif
 
@@ -287,7 +297,9 @@ tmem_op                            -        -        -        -        -
 #ifdef CONFIG_ARGO
 argo_op                            compat   do       compat   do       do
 #endif
+#if defined(CONFIG_X86) && defined(CONFIG_VPMU)
 xenpmu_op                          do       do       do       do       -
+#endif
 #ifdef CONFIG_IOREQ_SERVER
 dm_op                              compat   do       compat   do       do
 #endif
@@ -295,10 +307,10 @@ dm_op                              compat   do       compat   do       do
 hypfs_op                           do       do       do       do       do
 #endif
 mca                                do       do       -        -        -
-#if defined(CONFIG_X86) && defined(CONFIG_PAGING) && !defined(CONFIG_PV_SHIM_EXCLUSIVE)
+#if defined(CONFIG_X86) && defined(CONFIG_PAGING_LOG_DIRTY)
 paging_domctl_cont                 do       do       do       do       -
 #endif
-#ifdef CONFIG_HAS_PASSTHROUGH
+#ifdef CONFIG_PV_IOMMU
 iommu_op                           do       do       do       do       -
 #endif
 

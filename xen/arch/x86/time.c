@@ -72,7 +72,9 @@ struct platform_timesource {
     /* Post-init this hook may only be invoked via the read_counter() wrapper! */
     uint64_t (*read_counter)(void);
     int64_t (*init)(struct platform_timesource *);
+#ifdef CONFIG_SYSTEM_SUSPEND
     void (*resume)(struct platform_timesource *);
+#endif
     int counter_bits;
 };
 
@@ -409,6 +411,7 @@ static int64_t __init cf_check init_pit(struct platform_timesource *pts)
     return (end - start) * CALIBRATE_FRAC;
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static void cf_check resume_pit(struct platform_timesource *pts)
 {
     /* Set CTC channel 2 to mode 0 again; initial value does not matter. */
@@ -417,6 +420,7 @@ static void cf_check resume_pit(struct platform_timesource *pts)
     outb(0, PIT_CH2);     /* LSB of count */
     outb(0, PIT_CH2);     /* MSB of count */
 }
+#endif
 
 static struct platform_timesource __initdata_cf_clobber plt_pit =
 {
@@ -426,7 +430,9 @@ static struct platform_timesource __initdata_cf_clobber plt_pit =
     .read_counter = read_pit_count,
     .counter_bits = 32,
     .init = init_pit,
+#ifdef CONFIG_SYSTEM_SUSPEND
     .resume = resume_pit,
+#endif
 };
 
 unsigned int __initdata pit_alias_mask;
@@ -582,10 +588,12 @@ static int64_t __init cf_check init_hpet(struct platform_timesource *pts)
     return calibrate_tsc(pts);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static void cf_check resume_hpet(struct platform_timesource *pts)
 {
     hpet_resume(NULL);
 }
+#endif
 
 static struct platform_timesource __initdata_cf_clobber plt_hpet =
 {
@@ -594,7 +602,9 @@ static struct platform_timesource __initdata_cf_clobber plt_hpet =
     .read_counter = read_hpet_count,
     .counter_bits = 32,
     .init = init_hpet,
+#ifdef CONFIG_SYSTEM_SUSPEND
     .resume = resume_hpet
+#endif
 };
 
 /************************************************************
@@ -792,10 +802,12 @@ static uint64_t cf_check read_xen_timer(void)
     return read_pvclock(&this_cpu(vcpu_info)->time, &xen_timer_last);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static void cf_check resume_xen_timer(struct platform_timesource *pts)
 {
     write_atomic(&xen_timer_last, 0);
 }
+#endif
 
 static struct platform_timesource __initdata_cf_clobber plt_xen_timer =
 {
@@ -804,7 +816,9 @@ static struct platform_timesource __initdata_cf_clobber plt_xen_timer =
     .frequency = 1000000000ULL,
     .read_counter = read_xen_timer,
     .init = init_xen_timer,
+#ifdef CONFIG_SYSTEM_SUSPEND
     .resume = resume_xen_timer,
+#endif
     .counter_bits = 63,
 };
 #endif
@@ -859,10 +873,12 @@ static uint64_t cf_check read_kvm_timer(void)
     return read_pvclock(info, &kvm_timer_last);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static void cf_check resume_kvm_timer(struct platform_timesource *pts)
 {
     write_atomic(&kvm_timer_last, 0);
 }
+#endif
 
 static struct platform_timesource __initdata_cf_clobber plt_kvm_timer =
 {
@@ -872,7 +888,9 @@ static struct platform_timesource __initdata_cf_clobber plt_kvm_timer =
     .frequency = 1000000000ULL,
     .read_counter = read_kvm_timer,
     .init = init_kvm_timer,
+#ifdef CONFIG_SYSTEM_SUSPEND
     .resume = resume_kvm_timer,
+#endif
     .counter_bits = 63,
 };
 #endif
@@ -1115,6 +1133,7 @@ static void platform_time_calibration(void)
     spin_unlock_irqrestore(&platform_timer_lock, flags);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static void resume_platform_timer(void)
 {
     /* Timer source can be reset when backing from S3 to S0 */
@@ -1124,6 +1143,7 @@ static void resume_platform_timer(void)
     plt_stamp64 = platform_timer_stamp;
     plt_stamp = read_counter();
 }
+#endif
 
 static void __init reset_platform_timer(void)
 {
@@ -1975,6 +1995,7 @@ void force_update_secondary_system_time(struct vcpu *v,
     write_time_guest_area(map, &u);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static void update_domain_rtc(void)
 {
     struct domain *d;
@@ -1987,6 +2008,7 @@ static void update_domain_rtc(void)
 
     rcu_read_unlock(&domlist_read_lock);
 }
+#endif
 
 void domain_set_time_offset(struct domain *d, int64_t time_offset_seconds)
 {
@@ -1997,6 +2019,7 @@ void domain_set_time_offset(struct domain *d, int64_t time_offset_seconds)
     update_domain_wallclock_time(d);
 }
 
+#ifdef CONFIG_PV
 int cpu_frequency_change(u64 freq)
 {
     struct cpu_time *t = &this_cpu(cpu_time);
@@ -2032,6 +2055,7 @@ int cpu_frequency_change(u64 freq)
 
     return 0;
 }
+#endif
 
 /* Per-CPU communication between rendezvous IRQ and softirq handler. */
 static DEFINE_PER_CPU(struct cpu_time_stamp, cpu_calibration);
@@ -2813,7 +2837,11 @@ static int _disable_pit_irq(bool init)
      */
     if ( cpuidle_usable_deep_cstate() && !boot_cpu_has(X86_FEATURE_XEN_ARAT) )
     {
+#ifdef CONFIG_SYSTEM_SUSPEND
         init ? hpet_broadcast_init() : hpet_broadcast_resume();
+#else
+        hpet_broadcast_init();
+#endif
         if ( !hpet_broadcast_is_available() )
         {
             if ( xen_cpuidle > 0 )
@@ -2868,13 +2896,17 @@ void send_timer_event(struct vcpu *v)
     send_guest_vcpu_virq(v, VIRQ_TIMER);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 /* "cmos_utc_offset" is the difference between UTC time and CMOS time. */
 static long cmos_utc_offset; /* in seconds */
+#endif
 
 int time_suspend(void)
 {
     unsigned int cpu = smp_processor_id();
 
+#ifdef CONFIG_SYSTEM_SUSPEND
+    /* CPU0 only goes down for system suspend. */
     if ( cpu == 0 )
     {
         cmos_utc_offset = -get_wallclock_time();
@@ -2884,6 +2916,7 @@ int time_suspend(void)
         /* Sync platform timer stamps. */
         platform_time_calibration();
     }
+#endif
 
     /* Better to cancel calibration timer for accuracy. */
     clear_bit(TIME_CALIBRATE_SOFTIRQ, &softirq_pending(cpu));
@@ -2891,6 +2924,7 @@ int time_suspend(void)
     return 0;
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 int time_resume(void)
 {
     unsigned long wc;
@@ -2915,6 +2949,7 @@ int time_resume(void)
 
     return 0;
 }
+#endif /* CONFIG_SYSTEM_SUSPEND */
 
 int hwdom_pit_access(struct ioreq *ioreq)
 {

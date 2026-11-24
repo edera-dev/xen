@@ -11,6 +11,22 @@ config DEBUG
 
 	  You probably want to say 'N' here.
 
+config DEBUG_KEYS
+	bool "Debug keys" if EXPERT
+	default y
+	help
+	  Debug keys are single characters, typed on the serial console once
+	  its input is switched to Xen or sent by the control domain with
+	  XEN_SYSCTL_debug_keys ("xl debug-keys"), which dump hypervisor
+	  state (registers, domains, run queues, timers, interrupts, IOMMU and
+	  PCI devices, memory) or reboot the host.
+
+	  Without them, these dumps, XEN_SYSCTL_debug_keys and the
+	  crash-debug-* command line options are not available.  Panic,
+	  fault and crash reports are unaffected.
+
+	  If unsure, say Y.
+
 if DEBUG || EXPERT
 
 config GDBSX

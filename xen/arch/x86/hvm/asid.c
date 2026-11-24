@@ -80,7 +80,9 @@ void hvm_asid_flush_vcpu_asid(struct hvm_vcpu_asid *asid)
 void hvm_asid_flush_vcpu(struct vcpu *v)
 {
     hvm_asid_flush_vcpu_asid(&v->arch.hvm.n1asid);
+#ifdef CONFIG_NESTED_VIRT
     hvm_asid_flush_vcpu_asid(&vcpu_nestedhvm(v).nv_n2asid);
+#endif
 }
 
 void hvm_asid_flush_core(void)

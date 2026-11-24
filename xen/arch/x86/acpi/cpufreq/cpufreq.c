@@ -145,7 +145,7 @@ static int __init cf_check cpufreq_driver_init(void)
                           acpi_cpufreq_register() : -ENODEV;
                     break;
                 case CPUFREQ_hwp:
-                    ret = IS_ENABLED(CONFIG_INTEL) ?
+                    ret = IS_ENABLED(CONFIG_INTEL_HWP) ?
                           hwp_register_driver() : -ENODEV;
                     break;
                 case CPUFREQ_none:
@@ -175,7 +175,8 @@ static int __init cf_check cpufreq_driver_init(void)
                     break;
 
                 case CPUFREQ_amd_cppc:
-                    ret = amd_cppc_register_driver();
+                    ret = IS_ENABLED(CONFIG_AMD_CPPC) ?
+                          amd_cppc_register_driver() : -ENODEV;
                     break;
 
                 case CPUFREQ_none:

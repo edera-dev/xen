@@ -1965,6 +1965,7 @@ int __init mwait_idle_init(struct notifier_block *nfb)
 	return err;
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 void mwait_idle_resume(void)
 {
 	if (!icpu.state_table)
@@ -1972,6 +1973,7 @@ void mwait_idle_resume(void)
 
 	mwait_idle_cpu_tweak(smp_processor_id(), true);
 }
+#endif
 
 /* Helper function for HPET. */
 bool __init mwait_pc10_supported(void)

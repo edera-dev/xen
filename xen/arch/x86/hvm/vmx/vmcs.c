@@ -37,8 +37,12 @@
 static bool __read_mostly opt_vpid_enabled = true;
 boolean_param("vpid", opt_vpid_enabled);
 
+#ifdef CONFIG_VMX_REALMODE_EMUL
 static bool __read_mostly opt_unrestricted_guest_enabled = true;
 boolean_param("unrestricted_guest", opt_unrestricted_guest_enabled);
+#else
+#define opt_unrestricted_guest_enabled true
+#endif
 
 static bool __read_mostly opt_apicv_enabled = true;
 boolean_param("apicv", opt_apicv_enabled);
@@ -500,6 +504,15 @@ static int vmx_init_vmcs_config(bool bsp)
     caps.vmentry_control = adjust_vmx_controls(
         "VMEntry Control", min, opt, MSR_IA32_VMX_ENTRY_CTLS, &mismatch);
 
+#ifndef CONFIG_VMX_REALMODE_EMUL
+    if ( !(caps.secondary_exec_control & SECONDARY_EXEC_UNRESTRICTED_GUEST) )
+    {
+        printk("VMX: CPU%u: no Unrestricted Guest, which this build needs\n",
+               smp_processor_id());
+        return -EINVAL;
+    }
+#endif
+
     if ( mismatch )
         return -EINVAL;
 
@@ -631,8 +644,10 @@ static void cf_check __vmx_clear_vmcs(void *info)
     if ( vmx->active_cpu == smp_processor_id() )
     {
         __vmpclear(vmx->vmcs_pa);
+#ifdef CONFIG_NESTED_VIRT
         if ( vmx->vmcs_shadow_maddr )
             __vmpclear(vmx->vmcs_shadow_maddr);
+#endif
 
         vmx->active_cpu = -1;
         vmx->launched   = 0;
@@ -1005,6 +1020,7 @@ bool vmx_msr_is_intercepted(struct vmx_msr_bitmap *msr_bitmap,
 }
 
 
+#ifdef CONFIG_NESTED_VIRT
 /*
  * Switch VMCS between layer 1 & 2 guest
  */
@@ -1086,6 +1102,7 @@ enum vmx_insn_errno virtual_vmcs_vmwrite_safe(const struct vcpu *v,
 
     return ret;
 }
+#endif /* CONFIG_NESTED_VIRT */
 
 /*
  * This function is only called in a vCPU's initialization phase,
@@ -1649,6 +1666,7 @@ void vmx_clear_eoi_exit_bitmap(struct vcpu *v, u8 vector)
                 &v->arch.hvm.vmx.eoi_exitmap_changed);
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 bool vmx_vcpu_pml_enabled(const struct vcpu *v)
 {
     return v->arch.hvm.vmx.secondary_exec_control & SECONDARY_EXEC_ENABLE_PML;
@@ -1797,6 +1815,7 @@ void vmx_domain_update_eptp(struct domain *d)
 
     ept_sync_domain(p2m);
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 int vmx_create_vmcs(struct vcpu *v)
 {
@@ -1896,12 +1915,14 @@ void cf_check vmx_do_resume(void)
         hvm_migrate_timers(v);
         hvm_migrate_pirqs(v);
         vmx_set_host_env(v);
+#ifdef CONFIG_NESTED_VIRT
         /*
          * Both n1 VMCS and n2 VMCS need to update the host environment after 
          * VCPU migration. The environment of current VMCS is updated in place,
          * but the action of another VMCS is deferred till it is switched in.
          */
         v->arch.hvm.vmx.hostenv_migrated = 1;
+#endif
 
         hvm_asid_flush_vcpu(v);
     }

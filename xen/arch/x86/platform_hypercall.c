@@ -63,11 +63,14 @@ DEFINE_SPINLOCK(xenpf_lock);
 # undef guest_from_compat_handle
 # define guest_from_compat_handle(x,y) ((x)=(y))
 
+#ifdef CONFIG_PV
 long cf_check cpu_frequency_change_helper(void *data)
 {
     return cpu_frequency_change((uint64_t)data);
 }
+#endif
 
+#ifdef CONFIG_RESOURCE_OP
 static bool msr_read_allowed(unsigned int msr)
 {
     switch ( msr )
@@ -237,6 +240,7 @@ void cf_check resource_access(void *info)
 
     ra->nr_done = i;
 }
+#endif /* CONFIG_RESOURCE_OP */
 #endif
 
 ret_t do_platform_op(
@@ -282,6 +286,7 @@ ret_t do_platform_op(
             ret = -EINVAL;
         break;
 
+#ifdef CONFIG_PV /* An HVM dom0 reads the MTRRs as MSRs. */
     case XENPF_add_memtype:
         ret = mtrr_add_page(
             op->u.add_memtype.mfn,
@@ -329,6 +334,7 @@ ret_t do_platform_op(
         }
         break;
     }
+#endif /* CONFIG_PV */
 
     case XENPF_microcode_update:
     {
@@ -499,9 +505,14 @@ ret_t do_platform_op(
         break;
 
     case XENPF_enter_acpi_sleep:
+#ifdef CONFIG_SYSTEM_SUSPEND
         ret = acpi_enter_sleep(&op->u.enter_acpi_sleep);
+#else
+        ret = -EOPNOTSUPP;
+#endif
         break;
 
+#ifdef CONFIG_PV /* Only a PV dom0 can be cpufreq controller. */
     case XENPF_change_freq:
         ret = -ENOSYS;
         if ( cpufreq_controller != FREQCTL_dom0_kernel )
@@ -561,6 +572,7 @@ ret_t do_platform_op(
             ret = -EFAULT;
         break;
     }
+#endif /* CONFIG_PV */
 
     case XENPF_set_processor_pminfo:
         switch ( op->u.set_pminfo.type )
@@ -609,7 +621,8 @@ ret_t do_platform_op(
         }
 
         case XEN_PM_CPPC:
-            if ( !(xen_processor_pmbits & XEN_PROCESSOR_PM_CPPC) )
+            if ( !IS_ENABLED(CONFIG_AMD_CPPC) ||
+                 !(xen_processor_pmbits & XEN_PROCESSOR_PM_CPPC) )
             {
                 /*
                  * Neglect CPPC-info when registered cpufreq driver
@@ -780,6 +793,7 @@ ret_t do_platform_op(
         break;
     }
 
+#ifdef CONFIG_HOTADD
     case XENPF_cpu_hotadd:
         ret = cpu_add(op->u.cpu_add.apic_id,
                       op->u.cpu_add.acpi_id,
@@ -791,6 +805,12 @@ ret_t do_platform_op(
                       op->u.mem_add.epfn,
                       op->u.mem_add.pxm);
         break;
+#else
+    case XENPF_cpu_hotadd:
+    case XENPF_mem_hotadd:
+        ret = -EOPNOTSUPP;
+        break;
+#endif
 
     case XENPF_core_parking:
     {
@@ -801,7 +821,7 @@ ret_t do_platform_op(
         case XEN_CORE_PARKING_SET:
             idle_nums = min_t(uint32_t,
                     op->u.core_parking.idle_nums, num_present_cpus() - 1);
-            if ( CONFIG_NR_CPUS > 1 )
+            if ( IS_ENABLED(CONFIG_CORE_PARKING) )
                 ret = continue_hypercall_on_cpu(
                         0, core_parking_helper,
                         (void *)(unsigned long)idle_nums);
@@ -810,7 +830,7 @@ ret_t do_platform_op(
             break;
 
         case XEN_CORE_PARKING_GET:
-            op->u.core_parking.idle_nums = CONFIG_NR_CPUS > 1
+            op->u.core_parking.idle_nums = IS_ENABLED(CONFIG_CORE_PARKING)
                                            ? get_cur_idle_nums() : 0;
             ret = __copy_field_to_guest(u_xenpf_op, op, u.core_parking) ?
                   -EFAULT : 0;
@@ -823,6 +843,7 @@ ret_t do_platform_op(
         break;
     }
 
+#ifdef CONFIG_RESOURCE_OP
     case XENPF_resource_op:
     {
         struct resource_access ra;
@@ -889,6 +910,7 @@ ret_t do_platform_op(
         xfree(ra.entries);
         break;
     }
+#endif /* CONFIG_RESOURCE_OP */
 
     case XENPF_get_symbol:
     {
@@ -937,7 +959,9 @@ ret_t do_platform_op(
         break;
     }
 
+#ifdef CONFIG_PV
  out:
+#endif
     spin_unlock(&xenpf_lock);
 
     return ret;

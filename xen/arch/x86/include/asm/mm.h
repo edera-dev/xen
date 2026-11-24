@@ -563,7 +563,15 @@ void subpage_mmio_write_emulate(
 
 int audit_adjust_pgtables(struct domain *d, int dir, int noisy);
 
+#ifdef CONFIG_HOTADD
 extern int pagefault_by_memadd(unsigned long addr, struct cpu_user_regs *regs);
+#else
+static inline int pagefault_by_memadd(unsigned long addr,
+                                      struct cpu_user_regs *regs)
+{
+    return 0;
+}
+#endif
 extern int handle_memadd_fault(unsigned long addr, struct cpu_user_regs *regs);
 
 #ifndef NDEBUG

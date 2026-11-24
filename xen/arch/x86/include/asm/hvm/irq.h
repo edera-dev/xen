@@ -211,6 +211,14 @@ void hvm_assert_evtchn_irq(struct vcpu *v);
 void hvm_set_callback_via(struct domain *d, uint64_t via);
 
 struct pirq;
+#ifdef CONFIG_HVM_PIRQ
 bool hvm_domain_use_pirq(const struct domain *d, const struct pirq *pirq);
+#else
+static inline bool hvm_domain_use_pirq(const struct domain *d,
+                                       const struct pirq *pirq)
+{
+    return false;
+}
+#endif
 
 #endif /* __ASM_X86_HVM_IRQ_H__ */

@@ -85,14 +85,18 @@ static inline bool ioreq_needs_completion(const ioreq_t *ioreq)
 
 bool domain_has_ioreq_server(const struct domain *d);
 
-bool vcpu_ioreq_pending(struct vcpu *v);
-bool vcpu_ioreq_handle_completion(struct vcpu *v);
-bool is_ioreq_server_page(struct domain *d, const struct page_info *page);
-
 int ioreq_server_get_frame(struct domain *d, ioservid_t id,
                            unsigned int idx, mfn_t *mfn);
 int ioreq_server_map_mem_type(struct domain *d, ioservid_t id,
                               uint32_t type, uint32_t flags);
+
+int ioreq_send(struct ioreq_server *s, ioreq_t *proto_p,
+               bool buffered);
+
+#ifdef CONFIG_IOREQ_SERVER
+bool vcpu_ioreq_pending(struct vcpu *v);
+bool vcpu_ioreq_handle_completion(struct vcpu *v);
+bool is_ioreq_server_page(struct domain *d, const struct page_info *page);
 
 int ioreq_server_add_vcpu_all(struct domain *d, struct vcpu *v);
 void ioreq_server_remove_vcpu_all(struct domain *d, struct vcpu *v);
@@ -100,13 +104,57 @@ void ioreq_server_destroy_all(struct domain *d);
 
 struct ioreq_server *ioreq_server_select(struct domain *d,
                                          ioreq_t *p);
-int ioreq_send(struct ioreq_server *s, ioreq_t *proto_p,
-               bool buffered);
 unsigned int ioreq_broadcast(ioreq_t *p, bool buffered);
 void ioreq_request_mapcache_invalidate(const struct domain *d);
 void ioreq_signal_mapcache_invalidate(void);
 
 void ioreq_domain_init(struct domain *d);
+#else /* !CONFIG_IOREQ_SERVER */
+/*
+ * Without ioreq servers there is never an emulation request pending with a
+ * device model, so I/O the hypervisor doesn't handle internally is dropped.
+ */
+static inline bool vcpu_ioreq_pending(struct vcpu *v)
+{
+    return false;
+}
+
+static inline bool vcpu_ioreq_handle_completion(struct vcpu *v)
+{
+    return true;
+}
+
+static inline bool is_ioreq_server_page(struct domain *d,
+                                        const struct page_info *page)
+{
+    return false;
+}
+
+static inline int ioreq_server_add_vcpu_all(struct domain *d, struct vcpu *v)
+{
+    return 0;
+}
+
+static inline void ioreq_server_remove_vcpu_all(struct domain *d,
+                                                struct vcpu *v) {}
+static inline void ioreq_server_destroy_all(struct domain *d) {}
+
+static inline struct ioreq_server *ioreq_server_select(struct domain *d,
+                                                       ioreq_t *p)
+{
+    return NULL;
+}
+
+static inline unsigned int ioreq_broadcast(ioreq_t *p, bool buffered)
+{
+    return 0;
+}
+
+static inline void ioreq_request_mapcache_invalidate(const struct domain *d) {}
+static inline void ioreq_signal_mapcache_invalidate(void) {}
+
+static inline void ioreq_domain_init(struct domain *d) {}
+#endif /* CONFIG_IOREQ_SERVER */
 
 int ioreq_server_dm_op(struct xen_dm_op *op, struct domain *d, bool *const_op);
 

@@ -1666,6 +1666,7 @@ static bool vgic_v3_emulate_sysreg(struct cpu_user_regs *regs, union hsr hsr)
 }
 #endif
 
+#ifdef CONFIG_ARM64_AARCH32_EL0
 static bool vgic_v3_emulate_cp64(struct cpu_user_regs *regs, union hsr hsr)
 {
     struct hsr_cp64 cp64 = hsr.cp64;
@@ -1683,6 +1684,7 @@ static bool vgic_v3_emulate_cp64(struct cpu_user_regs *regs, union hsr hsr)
         return false;
     }
 }
+#endif
 
 static bool vgic_v3_emulate_reg(struct cpu_user_regs *regs, union hsr hsr)
 {
@@ -1692,8 +1694,10 @@ static bool vgic_v3_emulate_reg(struct cpu_user_regs *regs, union hsr hsr)
     case HSR_EC_SYSREG:
         return vgic_v3_emulate_sysreg(regs, hsr);
 #endif
+#ifdef CONFIG_ARM64_AARCH32_EL0
     case HSR_EC_CP15_64:
         return vgic_v3_emulate_cp64(regs, hsr);
+#endif
     default:
         return false;
     }

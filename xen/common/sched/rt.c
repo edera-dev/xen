@@ -307,6 +307,7 @@ compare_unit_priority(const struct rt_unit *v1, const struct rt_unit *v2)
     return prio;
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 /*
  * Debug related code, dump unit/cpu information
  */
@@ -428,6 +429,7 @@ rt_dump(const struct scheduler *ops)
  out:
     spin_unlock_irqrestore(&prv->lock, flags);
 }
+#endif
 
 /*
  * update deadline and budget when now >= cur_deadline
@@ -1383,6 +1385,7 @@ out:
     unit_schedule_unlock_irq(lock, unit);
 }
 
+#ifdef CONFIG_SCHED_MGMT
 static int
 rt_validate_params(const struct xen_domctl_sched_rtds *rtds,
                    s_time_t *period, s_time_t *budget)
@@ -1537,6 +1540,7 @@ rt_dom_cntl(
 
     return rc;
 }
+#endif
 
 /*
  * The replenishment timer handler picks units
@@ -1625,8 +1629,10 @@ static const struct scheduler sched_rtds_def = {
     .sched_id       = XEN_SCHEDULER_RTDS,
     .sched_data     = NULL,
 
+#ifdef CONFIG_DEBUG_KEYS
     .dump_cpu_state = rt_dump_pcpu,
     .dump_settings  = rt_dump,
+#endif
     .init           = rt_init,
     .deinit         = rt_deinit,
     .switch_sched   = rt_switch_sched,
@@ -1638,7 +1644,9 @@ static const struct scheduler sched_rtds_def = {
     .insert_unit    = rt_unit_insert,
     .remove_unit    = rt_unit_remove,
 
+#ifdef CONFIG_SCHED_MGMT
     .adjust         = rt_dom_cntl,
+#endif
 
     .pick_resource  = rt_res_pick,
     .do_schedule    = rt_schedule,

@@ -824,6 +824,7 @@ int mp_register_lapic(u32 id, bool enabled, bool hotplug)
 	return MP_processor_info_x(&processor, id, hotplug);
 }
 
+#ifdef CONFIG_HOTADD
 void mp_unregister_lapic(uint32_t apic_id, uint32_t cpu)
 {
 	if (!cpu || (apic_id == boot_cpu_physical_apicid))
@@ -837,6 +838,7 @@ void mp_unregister_lapic(uint32_t apic_id, uint32_t cpu)
 	x86_cpu_to_apicid[cpu] = BAD_APICID;
 	cpumask_clear_cpu(cpu, &cpu_present_map);
 }
+#endif
 
 #define MP_ISA_BUS		0
 #define MP_MAX_IOAPIC_PIN	127

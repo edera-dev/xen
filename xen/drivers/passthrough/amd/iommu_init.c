@@ -1633,6 +1633,7 @@ int __init amd_iommu_init_late(void)
     return rc;
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static void invalidate_all_domain_pages(void)
 {
     struct domain *d;
@@ -1678,6 +1679,7 @@ int cf_check amd_iommu_suspend(void)
 
     return 0;
 }
+#endif
 
 void cf_check amd_iommu_crash_shutdown(void)
 {
@@ -1687,6 +1689,7 @@ void cf_check amd_iommu_crash_shutdown(void)
         disable_iommu(iommu);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 void cf_check amd_iommu_resume(void)
 {
     struct amd_iommu *iommu;
@@ -1711,6 +1714,7 @@ void cf_check amd_iommu_resume(void)
         invalidate_all_domain_pages();
     }
 }
+#endif
 
 void cf_check amd_iommu_quiesce(void)
 {

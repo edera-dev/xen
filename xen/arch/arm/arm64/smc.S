@@ -29,6 +29,7 @@ FUNC(__arm_smccc_1_0_smc)
         ret
 END(__arm_smccc_1_0_smc)
 
+#ifdef CONFIG_FFA
 /*
  * void arm_smccc_1_2_smc(const struct arm_smccc_1_2_regs *args,
  *                        struct arm_smccc_1_2_regs *res)
@@ -71,3 +72,4 @@ FUNC(arm_smccc_1_2_smc)
     ldp     xzr, x19, [sp], #16
     ret
 END(arm_smccc_1_2_smc)
+#endif /* CONFIG_FFA */

@@ -133,8 +133,9 @@ void *grant_ops_pin(struct gnttab_ops_pin *pin, unsigned long addr)
     struct domain *d = curr->domain;
     p2m_type_t p2mt;
 
-    if ( !hap_enabled(d) || !hvm_long_mode_active(curr) || curr->hcall_compat ||
-         nestedhvm_enabled(d) || altp2m_active(d) )
+    if ( !hap_enabled(d) || !hvm_long_mode_active(curr) ||
+         vcpu_is_hcall_compat(curr) || nestedhvm_enabled(d) ||
+         altp2m_active(d) )
         return NULL;
 
     if ( !hap_walk_write_4_levels(curr, addr, &pin->gfn, pin->pt) ||

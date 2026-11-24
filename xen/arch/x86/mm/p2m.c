@@ -44,6 +44,7 @@ bool __initdata opt_hap_2mb = true;
 boolean_param("hap_1gb", opt_hap_1gb);
 boolean_param("hap_2mb", opt_hap_2mb);
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 int p2m_init_logdirty(struct p2m_domain *p2m)
 {
     if ( p2m->logdirty_ranges )
@@ -76,14 +77,17 @@ int p2m_is_logdirty_range(struct p2m_domain *p2m, unsigned long start,
         return -1;
     return 0;
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 static void change_entry_type_global(struct p2m_domain *p2m,
                                      p2m_type_t ot, p2m_type_t nt)
 {
     p2m->change_entry_type_global(p2m, ot, nt);
+#ifdef CONFIG_PAGING_LOG_DIRTY
     /* Don't allow 'recalculate' operations to change the logdirty state. */
     if ( ot != nt )
         p2m->global_logdirty = (nt == p2m_ram_logdirty);
+#endif
 }
 
 /*
@@ -236,6 +240,7 @@ struct ioreq_server *p2m_get_ioreq_server(struct domain *d,
     return s;
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 void p2m_enable_hardware_log_dirty(struct domain *d)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
@@ -263,6 +268,7 @@ void p2m_flush_hardware_cached_dirty(struct domain *d)
         p2m_unlock(p2m);
     }
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 /*
  * Force a synchronous P2M TLB flush if a deferred flush is pending.
@@ -841,6 +847,7 @@ int p2m_change_type_one(struct domain *d, unsigned long gfn_l,
     return rc;
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 /* Modify the p2m type of [start, end_exclusive) from ot to nt. */
 static void change_type_range(struct p2m_domain *p2m,
                               unsigned long start, unsigned long end_exclusive,
@@ -970,6 +977,7 @@ void p2m_change_type_range(struct domain *d,
 
     p2m_unlock(hostp2m);
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 /*
  * Finish p2m type change for gfns which are marked as need_recalc in a range.
@@ -1365,6 +1373,7 @@ int set_shared_p2m_entry(struct domain *d, unsigned long gfn_l, mfn_t mfn)
 
 #endif /* CONFIG_MEM_SHARING */
 
+#ifdef CONFIG_NESTED_VIRT
 static struct p2m_domain *
 p2m_getlru_nestedp2m(struct domain *d, struct p2m_domain *p2m)
 {
@@ -1379,7 +1388,9 @@ p2m_getlru_nestedp2m(struct domain *d, struct p2m_domain *p2m)
 
     return p2m;
 }
+#endif
 
+#if defined(CONFIG_NESTED_VIRT) || defined(CONFIG_ALTP2M)
 void
 p2m_flush_table_locked(struct p2m_domain *p2m)
 {
@@ -1424,7 +1435,9 @@ p2m_flush_table_locked(struct p2m_domain *p2m)
     }
     page_list_add(top, &p2m->pages);
 }
+#endif
 
+#ifdef CONFIG_NESTED_VIRT
 /* Reset this p2m table to be empty */
 static void
 p2m_flush_table(struct p2m_domain *p2m)
@@ -1575,6 +1588,7 @@ struct p2m_domain *p2m_get_nestedp2m(struct vcpu *v)
 
     return p2m;
 }
+#endif /* CONFIG_NESTED_VIRT */
 
 struct p2m_domain *
 p2m_get_p2m(struct vcpu *v)
@@ -1585,6 +1599,7 @@ p2m_get_p2m(struct vcpu *v)
     return p2m_get_nestedp2m(v);
 }
 
+#ifdef CONFIG_NESTED_VIRT
 void np2m_schedule(int dir)
 {
     struct vcpu *curr = current;
@@ -1628,6 +1643,7 @@ void np2m_schedule(int dir)
         p2m_unlock(p2m);
     }
 }
+#endif /* CONFIG_NESTED_VIRT */
 
 unsigned long paging_gva_to_gfn(struct vcpu *v,
                                 unsigned long va,
@@ -2189,6 +2205,7 @@ int relinquish_p2m_mapping(struct domain *d)
     return rc;
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 void p2m_log_dirty_range(struct domain *d, unsigned long begin_pfn,
                          unsigned long nr, uint8_t *dirty_bitmap)
 {
@@ -2216,6 +2233,7 @@ void p2m_log_dirty_range(struct domain *d, unsigned long begin_pfn,
 
     guest_flush_tlb_mask(d, d->dirty_cpumask);
 }
+#endif /* CONFIG_PAGING_LOG_DIRTY */
 
 #if defined(CONFIG_VM_EVENT) || defined(CONFIG_ALTP2M)
 bool xenmem_access_to_p2m_access(const struct p2m_domain *p2m,

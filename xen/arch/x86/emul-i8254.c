@@ -574,6 +574,7 @@ static int cf_check handle_speaker_io(
     return X86EMUL_OKAY;
 }
 
+#ifdef CONFIG_PV
 int pv_pit_handler(int port, int data, int write)
 {
     ioreq_t ioreq = {
@@ -603,6 +604,7 @@ int pv_pit_handler(int port, int data, int write)
 
     return !write ? ioreq.data : 0;
 }
+#endif /* CONFIG_PV */
 
 void pit_reset(struct domain *d)
 {

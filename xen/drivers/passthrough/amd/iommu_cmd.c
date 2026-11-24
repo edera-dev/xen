@@ -637,7 +637,7 @@ static bool skip_dte_invalidation(const struct amd_iommu *iommu,
 {
     const struct amd_iommu_dte *dte = iommu->dev_table.buffer;
 
-    if ( !cpu_has_hypervisor || !dte )
+    if ( !IS_ENABLED(CONFIG_GUEST) || !cpu_has_hypervisor || !dte )
         return false;
 
     if ( !dte[bdf].tv )
@@ -690,6 +690,7 @@ void amd_iommu_flush_all_caches(struct amd_iommu *iommu)
     flush_command_buffer(iommu, 0);
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 void cf_check amd_iommu_dump_flush_stats(unsigned char key)
 {
     uint64_t done = 0, ns = 0;
@@ -706,6 +707,7 @@ void cf_check amd_iommu_dump_flush_stats(unsigned char key)
     printk("AMD-Vi: %"PRIu64" completion waits, %"PRIu64" ms, %"PRIu64" ns each\n",
            done, ns / 1000000, done ? ns / done : 0);
 
+#ifdef CONFIG_PV
     done = ns = 0;
     for_each_online_cpu ( cpu )
     {
@@ -717,4 +719,6 @@ void cf_check amd_iommu_dump_flush_stats(unsigned char key)
 
     printk("PV: %"PRIu64" mmu_update calls, %"PRIu64" ms inside, %"PRIu64" ns each\n",
            done, ns / 1000000, done ? ns / done : 0);
+#endif
 }
+#endif

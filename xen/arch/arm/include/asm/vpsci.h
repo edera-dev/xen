@@ -23,7 +23,11 @@
 #include <asm/psci.h>
 
 /* Number of function implemented by virtual PSCI (only 0.2 or later) */
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
 #define VPSCI_NR_FUNCS  14
+#else
+#define VPSCI_NR_FUNCS  12
+#endif
 
 /* Functions handle PSCI calls from the guests */
 bool do_vpsci_0_1_call(struct cpu_user_regs *regs, uint32_t fid);

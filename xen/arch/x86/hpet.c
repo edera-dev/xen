@@ -653,6 +653,7 @@ void __init hpet_broadcast_late_init(void)
         free_lopriority_vector(HPET_BROADCAST_VECTOR);
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 void hpet_broadcast_resume(void)
 {
     u32 cfg;
@@ -704,6 +705,7 @@ void hpet_broadcast_resume(void)
         hpet_events[i].next_event = STIME_MAX;
     }
 }
+#endif
 
 void hpet_disable_legacy_broadcast(void)
 {

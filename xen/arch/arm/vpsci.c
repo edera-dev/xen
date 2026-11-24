@@ -219,6 +219,7 @@ static void do_psci_0_2_system_reset(void)
     domain_shutdown(d,SHUTDOWN_reboot);
 }
 
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
 static int32_t do_psci_1_0_system_suspend(register_t epoint, register_t cid)
 {
     int32_t rc;
@@ -268,6 +269,7 @@ static int32_t do_psci_1_0_system_suspend(register_t epoint, register_t cid)
 
     return rc;
 }
+#endif
 
 static int32_t do_psci_1_0_features(uint32_t psci_func_id)
 {
@@ -288,9 +290,11 @@ static int32_t do_psci_1_0_features(uint32_t psci_func_id)
     case PSCI_1_0_FN32_PSCI_FEATURES:
     case ARM_SMCCC_VERSION_FID:
         return 0;
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
     case PSCI_1_0_FN32_SYSTEM_SUSPEND:
     case PSCI_1_0_FN64_SYSTEM_SUSPEND:
         return is_hardware_domain(current->domain) ? PSCI_NOT_SUPPORTED : 0;
+#endif
     default:
         return PSCI_NOT_SUPPORTED;
     }
@@ -424,6 +428,7 @@ bool do_vpsci_0_2_call(struct cpu_user_regs *regs, uint32_t fid)
         return true;
     }
 
+#ifdef CONFIG_VPSCI_SYSTEM_SUSPEND
     case PSCI_1_0_FN32_SYSTEM_SUSPEND:
     case PSCI_1_0_FN64_SYSTEM_SUSPEND:
     {
@@ -434,6 +439,7 @@ bool do_vpsci_0_2_call(struct cpu_user_regs *regs, uint32_t fid)
         PSCI_SET_RESULT(regs, do_psci_1_0_system_suspend(epoint, cid));
         return true;
     }
+#endif
 
     default:
         return false;

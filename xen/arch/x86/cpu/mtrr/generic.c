@@ -286,6 +286,7 @@ static void set_fixed_range(int msr, bool *changed, unsigned int *msrwords)
 	}
 }
 
+#ifdef CONFIG_PV
 int mtrr_get_free_region(
     unsigned long base, unsigned long size, int replace_reg)
 /*  [SUMMARY] Get a free MTRR.
@@ -334,6 +335,7 @@ void mtrr_get(
 	*base = _base >> PAGE_SHIFT;
 	*type = _base & 0xff;
 }
+#endif
 
 /**
  * Checks and updates the fixed-range MTRRs if they differ from the saved set
@@ -566,6 +568,7 @@ void mtrr_set(
 	local_irq_restore(flags);
 }
 
+#ifdef CONFIG_PV
 int mtrr_validate_add_page(
     unsigned long base, unsigned long size, unsigned int type)
 {
@@ -591,3 +594,4 @@ bool mtrr_have_wrcomb(void)
 	rdmsrl(MSR_MTRRcap, config);
 	return (config & (1ULL << 10));
 }
+#endif

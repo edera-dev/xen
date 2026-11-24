@@ -13,6 +13,7 @@
 #include <asm/arm64/sve.h>
 #include <asm/cpufeature.h>
 
+#ifdef CONFIG_ARM64_AARCH32
 static long switch_mode(struct domain *d, enum domain_type type)
 {
     struct vcpu *v;
@@ -32,11 +33,13 @@ static long switch_mode(struct domain *d, enum domain_type type)
 
     return 0;
 }
+#endif
 
 static long set_address_size(struct domain *d, uint32_t address_size)
 {
     switch ( address_size )
     {
+#ifdef CONFIG_ARM64_AARCH32
     case 32:
         if ( !cpu_has_el1_32 )
             return -EINVAL;
@@ -46,6 +49,11 @@ static long set_address_size(struct domain *d, uint32_t address_size)
         return switch_mode(d, DOMAIN_32BIT);
     case 64:
         return switch_mode(d, DOMAIN_64BIT);
+#else
+    case 64:
+        /* Every vCPU already runs AArch64, see arch_vcpu_create(). */
+        return domain_tot_pages(d) ? -EBUSY : 0;
+#endif
     default:
         return -EINVAL;
     }

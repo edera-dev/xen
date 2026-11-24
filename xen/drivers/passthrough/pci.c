@@ -1609,6 +1609,7 @@ bool pcie_aer_get_firmware_first(const struct pci_dev *pdev)
 }
 #endif
 
+#if defined(CONFIG_DEBUG_KEYS) || defined(CONFIG_PCI_DEVICE_DEBUG)
 static int cf_check _dump_pci_devices(struct pci_seg *pseg, void *arg)
 {
     struct pci_dev *pdev;
@@ -1634,6 +1635,7 @@ void cf_check dump_pci_devices(unsigned char ch)
     pci_segments_iterate(_dump_pci_devices, NULL);
     pcidevs_unlock();
 }
+#endif
 
 static int __init cf_check setup_dump_pcidevs(void)
 {

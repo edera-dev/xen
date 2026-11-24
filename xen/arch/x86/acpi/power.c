@@ -41,6 +41,7 @@
 
 uint32_t system_reset_counter = 1;
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 static int __init cf_check parse_acpi_sleep(const char *s)
 {
     const char *ss;
@@ -495,3 +496,5 @@ acpi_status acpi_enter_sleep_state(u8 sleep_state)
 
     return_ACPI_STATUS(AE_OK);
 }
+
+#endif /* CONFIG_SYSTEM_SUSPEND */

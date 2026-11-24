@@ -319,7 +319,11 @@ extern struct hpet_sbdf {
 
 extern unsigned int amd_iommu_acpi_info;
 extern unsigned int amd_iommu_max_paging_mode;
+#ifdef CONFIG_GUEST
 extern unsigned int amd_iommu_guest_pt_levels;
+#else
+#define amd_iommu_guest_pt_levels 0U
+#endif
 extern unsigned int amd_iommu_dump_bdf;
 extern int8_t amd_iommu_flush_on_map;
 

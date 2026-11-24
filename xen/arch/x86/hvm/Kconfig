@@ -2,8 +2,6 @@ menuconfig HVM
 	bool "HVM support"
 	depends on !PV_SHIM_EXCLUSIVE
 	default !PV_SHIM
-	select COMPAT
-	select IOREQ_SERVER
 	help
 	  Interfaces to support HVM domains.  HVM domains require hardware
 	  virtualisation extensions (e.g. Intel VT-x, AMD SVM), but can boot
@@ -27,12 +25,32 @@ config AMD_SVM
 config INTEL_VMX
 	bool "Intel VT-x" if EXPERT
 	default INTEL
-	select ARCH_VCPU_IOREQ_COMPLETION
 	help
 	  Enables virtual machine extensions on platforms that implement the
 	  Intel Virtualization Technology (Intel VT-x).
 	  If your system includes a processor with Intel VT-x support, say Y.
 	  If in doubt, say Y.
+
+config VMX_REALMODE_EMUL
+	bool "VT-x real mode emulation" if EXPERT && !SHADOW_PAGING
+	depends on INTEL_VMX
+	default y
+	select ARCH_VCPU_IOREQ_COMPLETION
+	help
+	  Runs guest real mode code in vm86 mode, and emulates what vm86 mode
+	  cannot run, on Intel CPUs without Unrestricted Guest (or with it
+	  disabled by "unrestricted_guest=0").  Shadow paging needs it.
+
+	  Without it, VT-x is only used on CPUs with Unrestricted Guest (all
+	  CPUs since Westmere), HVM guests must use HAP, and the
+	  "unrestricted_guest" command line option is not recognised.
+
+	  If unsure, say Y.
+
+# The p2m in page table format, used with AMD NPT and with shadow paging.
+# Intel EPT has its own format.
+config P2M_PT
+	def_bool AMD_SVM || SHADOW_PAGING
 
 config VMTRACE
 	bool "HW VM tracing support"
@@ -45,6 +63,20 @@ config VMTRACE
 	  to the software being traced. The trace data can be retrieved using buffer
 	  shared between Xen and domain
 	  (see XENMEM_acquire_resource(XENMEM_resource_vmtrace_buf)).
+
+config HVM_COMPAT
+	bool "HVM 32-bit compat hypercall support" if EXPERT
+	select COMPAT
+	default y
+	help
+	  Support hypercalls from HVM and PVH guest code running in 32-bit or
+	  16-bit mode.  Hypercalls from 64-bit code are always supported.
+
+	  Without it such hypercalls fail with -ENOSYS.  HVM guests need them
+	  for hvmloader, so only 64-bit PVH guests that make no hypercall
+	  before entering long mode can run.
+
+	  If unsure, say Y.
 
 config HVM_FEP
 	bool "HVM Forced Emulation Prefix support (UNSUPPORTED)" if UNSUPPORTED
@@ -63,6 +95,18 @@ config HVM_FEP
 
 	  If unsure, say N.
 
+config HVM_EMUL_SIMD
+	bool "Emulation of x87, MMX and SIMD instructions" if EXPERT
+	default y
+	help
+	  The instruction emulator handles HVM guest instructions that access
+	  emulated MMIO (local APIC, IO-APIC, PCI config space, MSI-X tables)
+	  or that Xen otherwise intercepts.  Without this option it cannot
+	  emulate x87 FPU, MMX, SSE or AVX instructions: a guest using one
+	  for such an access gets #UD instead.
+
+	  If unsure, say Y.
+
 config ALTP2M
 	bool "Alternate P2M support" if EXPERT
 	depends on INTEL_VMX
@@ -74,6 +118,20 @@ config ALTP2M
 
 	  If unsure, stay with defaults.
 
+config NESTED_VIRT
+	bool "Nested virtualization support" if EXPERT
+	default y
+	help
+	  Support for HVM guests running their own hypervisor: nested VT-x or
+	  SVM, with nested HAP, for domains created with nested
+	  virtualization enabled.
+
+	  Without it, creating such a domain fails, and guests get #UD on
+	  VMX and SVM instructions, as all domains without nested
+	  virtualization do.
+
+	  If unsure, say Y.
+
 config VIRIDIAN
 	bool "Hyper-V enlightenments for guests" if EXPERT
 	default y
@@ -84,12 +142,112 @@ config VIRIDIAN
 
 	  If unsure, say Y.
 
+config HVM_PIRQ
+	bool "Event channel delivery of device interrupts to HVM guests" if EXPERT
+	default y
+	help
+	  Lets an HVM guest created with XEN_X86_EMU_USE_PIRQ take device
+	  interrupts as event channels instead of through its emulated
+	  IO-APIC and local APIC (XENFEAT_hvm_pirqs, used by Linux "PVHVM"
+	  guests): PHYSDEVOP_eoi, PHYSDEVOP_irq_status_query,
+	  PHYSDEVOP_get_free_pirq, PHYSDEVOP_map_pirq on itself and
+	  EVTCHNOP_bind_pirq.  PVH guests never use them.
+
+	  Without it, creating a domain with XEN_X86_EMU_USE_PIRQ fails with
+	  -EOPNOTSUPP, and with PV also off these sub-ops return -ENOSYS or
+	  -EOPNOTSUPP.
+
+	  If unsure, say Y.
+
 config MEM_PAGING
 	bool "Xen memory paging support (UNSUPPORTED)" if UNSUPPORTED
 	depends on VM_EVENT
 
 config MEM_SHARING
 	bool "Xen memory sharing support (UNSUPPORTED)" if UNSUPPORTED
-	depends on INTEL_VMX
+	depends on INTEL_VMX || AMD_SVM
 
 endif
+
+menu "Emulated HVM devices support"
+	visible if EXPERT && HVM
+
+config X86_HVM_PIT
+	bool "i8254 PIT emulation" if !PV
+	default y
+	help
+	  Emulated i8254 Programmable Interval Timer and PC speaker port
+	  (I/O ports 0x40-0x43 and 0x61).  PV domains use it too (a PV dom0
+	  always does), so it can only be disabled when PV support is.
+
+	  PVH guests and a PVH dom0 do not use it.  Without it, HVM guests
+	  other than PVH ones cannot be created.
+
+	  If unsure, say Y.
+
+config X86_HVM_PIC
+	bool "i8259 PIC emulation"
+	depends on HVM
+	default y
+	help
+	  Emulated pair of i8259 Programmable Interrupt Controllers and their
+	  ELCR registers (I/O ports 0x20-0x21, 0xa0-0xa1 and 0x4d0-0x4d1).
+
+	  PVH guests and a PVH dom0 do not use it.  Without it, HVM guests
+	  other than PVH ones cannot be created.
+
+	  If unsure, say Y.
+
+config X86_HVM_RTC
+	bool "MC146818 RTC emulation"
+	depends on HVM
+	default y
+	help
+	  Emulated real-time clock and CMOS (I/O ports 0x70-0x71).  The
+	  hardware domain's mediated access to the physical RTC does not
+	  depend on it.
+
+	  PVH guests and a PVH dom0 do not use it.  Without it, HVM guests
+	  other than PVH ones cannot be created.
+
+	  If unsure, say Y.
+
+config X86_HVM_HPET
+	bool "HPET emulation"
+	depends on HVM
+	default y
+	help
+	  Emulated High Precision Event Timer.
+
+	  PVH guests and a PVH dom0 do not use it.  Without it, HVM guests
+	  other than PVH ones cannot be created.
+
+	  If unsure, say Y.
+
+config X86_HVM_PMTIMER
+	bool "ACPI PM timer emulation"
+	depends on HVM
+	default y
+	help
+	  Emulated ACPI PM timer and PM1a event registers, which also deliver
+	  the power and sleep button triggers of XEN_DOMCTL_sendtrigger.
+
+	  PVH guests and a PVH dom0 do not use it.  Without it, HVM guests
+	  other than PVH ones cannot be created.
+
+	  If unsure, say Y.
+
+config X86_HVM_STDVGA
+	bool "Standard VGA emulation"
+	depends on HVM
+	default y
+	help
+	  Forwarding of writes to the standard VGA memory window as buffered
+	  ioreqs, to speed up the device model's VGA emulation.
+
+	  PVH guests and a PVH dom0 do not use it.  Without it, HVM guests
+	  other than PVH ones cannot be created.
+
+	  If unsure, say Y.
+
+endmenu

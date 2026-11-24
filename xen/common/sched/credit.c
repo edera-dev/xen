@@ -1182,6 +1182,7 @@ csched_unit_yield(const struct scheduler *ops, struct sched_unit *unit)
     set_bit(CSCHED_FLAG_UNIT_YIELD, &svc->flags);
 }
 
+#ifdef CONFIG_SCHED_MGMT
 static int cf_check
 csched_dom_cntl(
     const struct scheduler *ops,
@@ -1226,6 +1227,7 @@ csched_dom_cntl(
 
     return rc;
 }
+#endif
 
 static void cf_check
 csched_aff_cntl(const struct scheduler *ops, struct sched_unit *unit,
@@ -1255,7 +1257,7 @@ __csched_set_tslice(struct csched_private *prv, unsigned int timeslice_ms)
     prv->credit = prv->credits_per_tslice * prv->ncpus;
 }
 
-#ifdef CONFIG_SYSCTL
+#if defined(CONFIG_SYSCTL) && defined(CONFIG_SCHED_MGMT)
 static int cf_check
 csched_sys_cntl(const struct scheduler *ops,
                         struct xen_sysctl_scheduler_op *sc)
@@ -1298,7 +1300,7 @@ csched_sys_cntl(const struct scheduler *ops,
     out:
     return rc;
 }
-#endif /* CONFIG_SYSCTL */
+#endif /* CONFIG_SYSCTL && CONFIG_SCHED_MGMT */
 
 static void *cf_check
 csched_alloc_domdata(const struct scheduler *ops, struct domain *dom)
@@ -2036,6 +2038,7 @@ out:
     CSCHED_UNIT_CHECK(unit->next_task);
 }
 
+#ifdef CONFIG_DEBUG_KEYS
 static void
 csched_dump_unit(const struct csched_unit *svc)
 {
@@ -2183,6 +2186,7 @@ csched_dump(const struct scheduler *ops)
 
     spin_unlock_irqrestore(&prv->lock, flags);
 }
+#endif
 
 static int __init cf_check
 csched_global_init(void)
@@ -2297,17 +2301,21 @@ static const struct scheduler sched_credit_def = {
     .wake           = csched_unit_wake,
     .yield          = csched_unit_yield,
 
+#ifdef CONFIG_SCHED_MGMT
     .adjust         = csched_dom_cntl,
+#endif
     .adjust_affinity= csched_aff_cntl,
-#ifdef CONFIG_SYSCTL
+#if defined(CONFIG_SYSCTL) && defined(CONFIG_SCHED_MGMT)
     .adjust_global  = csched_sys_cntl,
 #endif
 
     .pick_resource  = csched_res_pick,
     .do_schedule    = csched_schedule,
 
+#ifdef CONFIG_DEBUG_KEYS
     .dump_cpu_state = csched_dump_pcpu,
     .dump_settings  = csched_dump,
+#endif
     .init           = csched_init,
     .deinit         = csched_deinit,
     .alloc_udata    = csched_alloc_udata,

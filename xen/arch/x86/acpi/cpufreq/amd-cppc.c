@@ -455,7 +455,9 @@ static void amd_cppc_prepare_policy(struct cpufreq_policy *policy,
          * or powersave
          */
         *epp = CPPC_ENERGY_PERF_BALANCE;
+#ifdef CONFIG_CPUFREQ_GOV_ONDEMAND
         policy->governor = &cpufreq_gov_dbs;
+#endif
         break;
 
     default:

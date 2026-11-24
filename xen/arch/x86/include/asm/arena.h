@@ -8,6 +8,7 @@
 
 #include "xen/domain.h"
 #include "xen/atomic.h"
+#include "xen/bug.h"
 #include "xen/mm-frame.h"
 #include "xen/types.h"
 
@@ -46,8 +47,25 @@ int iommu_arena_initialize(struct iommu_arena *arena, struct domain *domain,
  */
 int iommu_arena_teardown(struct iommu_arena *arena, bool check);
 
+#ifdef CONFIG_PV_IOMMU
 struct page_info *iommu_arena_allocate_page(struct iommu_arena *arena);
 bool iommu_arena_free_page(struct iommu_arena *arena, struct page_info *page);
+#else
+/* Only PV-IOMMU contexts take their page tables from an arena. */
+static inline struct page_info *iommu_arena_allocate_page(
+    struct iommu_arena *arena)
+{
+    ASSERT_UNREACHABLE();
+    return NULL;
+}
+
+static inline bool iommu_arena_free_page(struct iommu_arena *arena,
+                                         struct page_info *page)
+{
+    ASSERT_UNREACHABLE();
+    return false;
+}
+#endif
 
 #define iommu_arena_size(arena) (1LLU << (arena)->order)
 

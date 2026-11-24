@@ -52,7 +52,9 @@
 u32 __read_mostly num_var_ranges = 0;
 
 unsigned int *__read_mostly usage_table;
+#ifdef CONFIG_PV
 static DEFINE_MUTEX(mtrr_mutex);
+#endif
 
 u64 __read_mostly size_or_mask;
 u64 __read_mostly size_and_mask;
@@ -62,6 +64,7 @@ static bool __ro_after_init mtrr_if;
 static void set_mtrr(unsigned int reg, unsigned long base,
 		     unsigned long size, mtrr_type type);
 
+#ifdef CONFIG_PV
 static const char *const mtrr_strings[MTRR_NUM_TYPES] =
 {
     "uncachable",               /* 0 */
@@ -77,6 +80,7 @@ static const char *mtrr_attrib_to_str(int x)
 {
 	return (x <= 6) ? mtrr_strings[x] : "?";
 }
+#endif
 
 /*  This function returns the number of variable MTRRs  */
 static void __init set_num_var_ranges(void)
@@ -261,6 +265,7 @@ static void set_mtrr(unsigned int reg, unsigned long base,
 	local_irq_restore(flags);
 }
 
+#ifdef CONFIG_PV /* XENPF_{add,del}_memtype, from a PV dom0 only. */
 /**
  *	mtrr_add_page - Add a memory type region
  *	@base: Physical base address of region in pages (in units of 4 kB!)
@@ -536,6 +541,7 @@ mtrr_del(int reg, unsigned long base, unsigned long size)
 		return -EINVAL;
 	return mtrr_del_page(reg, base >> PAGE_SHIFT, size >> PAGE_SHIFT);
 }
+#endif /* CONFIG_PV */
 
 /* The suspend/resume methods are only for CPU without MTRR. CPU using generic
  * MTRR driver doesn't require this
@@ -610,11 +616,13 @@ void mtrr_aps_sync_end(void)
 	hold_mtrr_updates_on_aps = false;
 }
 
+#ifdef CONFIG_SYSTEM_SUSPEND
 void asmlinkage mtrr_bp_restore(void)
 {
 	if (mtrr_if)
 		mtrr_set_all();
 }
+#endif
 
 static int __init cf_check mtrr_init_finialize(void)
 {

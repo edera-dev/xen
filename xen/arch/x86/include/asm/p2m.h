@@ -223,11 +223,13 @@ struct p2m_domain {
 
 #ifdef CONFIG_HVM
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
     /* Host p2m: Log-dirty ranges registered for the domain. */
     struct rangeset   *logdirty_ranges;
 
     /* Host p2m: Global log-dirty mode enabled for the domain. */
     bool               global_logdirty;
+#endif
 
     /* Translated domain: p2m mapping */
     pagetable_t        phys_table;
@@ -253,16 +255,20 @@ struct p2m_domain {
                                     bool *sve);
     int                (*recalc)(struct p2m_domain *p2m,
                                  unsigned long gfn);
+#ifdef CONFIG_PAGING_LOG_DIRTY
     void               (*enable_hardware_log_dirty)(struct p2m_domain *p2m);
     void               (*disable_hardware_log_dirty)(struct p2m_domain *p2m);
     void               (*flush_hardware_cached_dirty)(struct p2m_domain *p2m);
+#endif
     void               (*change_entry_type_global)(struct p2m_domain *p2m,
                                                    p2m_type_t ot,
                                                    p2m_type_t nt);
+#ifdef CONFIG_PAGING_LOG_DIRTY
     int                (*change_entry_type_range)(struct p2m_domain *p2m,
                                                   p2m_type_t ot, p2m_type_t nt,
                                                   unsigned long first_gfn,
                                                   unsigned long last_gfn);
+#endif
     void               (*memory_type_changed)(struct p2m_domain *p2m);
     void               (*write_p2m_entry_pre)(struct domain *d,
                                               unsigned long gfn,
@@ -419,7 +425,7 @@ struct p2m_domain *p2m_get_p2m(struct vcpu *v);
 #define NP2M_SCHEDLE_IN  0
 #define NP2M_SCHEDLE_OUT 1
 
-#ifdef CONFIG_HVM
+#ifdef CONFIG_NESTED_VIRT
 void np2m_schedule(int dir);
 #else
 static inline void np2m_schedule(int dir) {}
@@ -432,7 +438,7 @@ static inline bool p2m_is_hostp2m(const struct p2m_domain *p2m)
 
 static inline bool p2m_is_nestedp2m(const struct p2m_domain *p2m)
 {
-    return p2m->p2m_class == p2m_nested;
+    return IS_ENABLED(CONFIG_NESTED_VIRT) && p2m->p2m_class == p2m_nested;
 }
 
 static inline bool p2m_is_altp2m(const struct p2m_domain *p2m)
@@ -630,7 +636,7 @@ int __must_check guest_physmap_add_page(struct domain *d, gfn_t gfn, mfn_t mfn,
 int guest_physmap_mark_populate_on_demand(struct domain *d, unsigned long gfn,
                                           unsigned int order);
 
-#ifdef CONFIG_HVM
+#if defined(CONFIG_HVM) && defined(CONFIG_PAGING_LOG_DIRTY)
 
 /* Enable hardware-assisted log-dirty. */
 void p2m_enable_hardware_log_dirty(struct domain *d);
@@ -667,15 +673,24 @@ int p2m_finish_type_change(struct domain *d,
 
 static inline bool p2m_is_global_logdirty(const struct domain *d)
 {
-#ifdef CONFIG_HVM
+#if defined(CONFIG_HVM) && defined(CONFIG_PAGING_LOG_DIRTY)
     return p2m_get_hostp2m(d)->global_logdirty;
 #else
     return false;
 #endif
 }
 
+#ifdef CONFIG_PAGING_LOG_DIRTY
 int p2m_is_logdirty_range(struct p2m_domain *p2m, unsigned long start,
                           unsigned long end);
+#else
+static inline int p2m_is_logdirty_range(struct p2m_domain *p2m,
+                                        unsigned long start,
+                                        unsigned long end)
+{
+    return 0;
+}
+#endif
 
 /* Set mmio addresses in the p2m table (for pass-through) */
 int set_mmio_p2m_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
@@ -796,7 +811,7 @@ int __must_check p2m_set_entry(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
                                unsigned int page_order, p2m_type_t p2mt,
                                p2m_access_t p2ma);
 
-#if defined(CONFIG_HVM)
+#ifdef CONFIG_P2M_PT
 /* Set up function pointers for PT implementation: only for use by p2m code */
 extern void p2m_pt_init(struct p2m_domain *p2m);
 #else

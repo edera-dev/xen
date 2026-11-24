@@ -23,8 +23,12 @@
 #define vcpu_nestedsvm(v) (vcpu_nestedhvm(v).u.nsvm)
 
 /* True when l1 guest enabled SVM in EFER */
+#ifdef CONFIG_NESTED_VIRT
 #define nsvm_efer_svm_enabled(v) \
     (!!((v)->arch.hvm.guest_efer & EFER_SVME))
+#else
+#define nsvm_efer_svm_enabled(v) ((void)(v), false)
+#endif
 
 int nestedsvm_vmcb_map(struct vcpu *v, uint64_t vmcbaddr);
 void nestedsvm_vmexit_defer(struct vcpu *v,
@@ -51,8 +55,23 @@ enum hvm_intblk cf_check nsvm_intr_blocked(struct vcpu *v);
 void cf_check nsvm_domain_relinquish_resources(struct domain *d);
 
 /* Interrupts, vGIF */
+#ifdef CONFIG_NESTED_VIRT
 void svm_vmexit_do_clgi(struct cpu_user_regs *regs, struct vcpu *v);
 void svm_vmexit_do_stgi(struct cpu_user_regs *regs, struct vcpu *v);
+#else
+/* As for any domain without nested virtualization. */
+static inline void svm_vmexit_do_clgi(struct cpu_user_regs *regs,
+                                      struct vcpu *v)
+{
+    hvm_inject_hw_exception(X86_EXC_UD, X86_EVENT_NO_EC);
+}
+
+static inline void svm_vmexit_do_stgi(struct cpu_user_regs *regs,
+                                      struct vcpu *v)
+{
+    hvm_inject_hw_exception(X86_EXC_UD, X86_EVENT_NO_EC);
+}
+#endif
 bool nestedsvm_gif_isset(struct vcpu *v);
 int cf_check nsvm_hap_walk_L1_p2m(
     struct vcpu *v, paddr_t L2_gpa, paddr_t *L1_gpa, unsigned int *page_order,
