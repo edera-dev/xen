@@ -1160,6 +1160,13 @@ struct domain *domain_create(domid_t domid,
     if ( domain_teardown(d) )
         ASSERT_UNREACHABLE();
 
+    /*
+     * Freeing the domain's last counted page above, such as VMX's APIC
+     * access page, drops the reference its allocation took, which takes the
+     * count off DOMAIN_DESTROYED.
+     */
+    atomic_set(&d->refcnt, DOMAIN_DESTROYED);
+
     _domain_destroy(d);
 
     return ERR_PTR(err);
