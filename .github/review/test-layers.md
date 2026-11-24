@@ -81,6 +81,19 @@ upstream code.
   arch and platform hooks and the device move are stand-ins, so it does not
   cover the arena, the VT-d or AMD-Vi teardown, two calls racing, or the rest
   of `iommu.c`.
+- `tools/tests/iommu-teardown` covers a domain's default context on the
+  VT-d and AMD-Vi drivers from context init to domain teardown, built from
+  their context init, teardown and IOTLB flush functions and x86's list setup
+  and identity map teardown. Teardown must leave no allocation, page-table
+  page, root, identity map or DID behind, whether the domain's resources were
+  relinquished first, the domain's creation failed after the context was set
+  up, or the context's init failed at its DID map, its device counts, its
+  root table or for want of a DID, including on VT-d with the p2m's tables
+  shared. A flush after teardown, as the p2m teardown that follows sends,
+  must send nothing, and a flush of a context in use must reach each IOMMU
+  it has devices behind, under its DID. The IOMMUs, allocators and commands
+  are stand-ins, so it does not cover the order in which
+  `arch_domain_destroy()` runs these, or a real IOTLB.
 - `tools/tests/iort` covers the IORT parser in `xen/arch/arm/acpi/iort.c`:
   translating a requester ID through an SMMUv3 to its StreamID and its
   DeviceID, stopping a mapping loop, and the IORT built for the hardware
