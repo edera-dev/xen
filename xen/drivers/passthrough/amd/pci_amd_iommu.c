@@ -777,10 +777,11 @@ static void cf_check amd_iommu_domain_destroy(struct domain *d)
 
     /*
      * Its devices have been moved to dom_io by now. Return the default
-     * context's DIDs so they can be reused, but keep the arrays: the
-     * domain's p2m is only torn down after this.
+     * context's DIDs so they can be reused, and free its arrays.
      */
     amd_iommu_free_dids(ctx);
+    XFREE(ctx->arch.amd.didmap);
+    XFREE(ctx->arch.amd.iommu_dev_cnt);
 }
 
 static int cf_check amd_iommu_group_id(u16 seg, u8 bus, u8 devfn)

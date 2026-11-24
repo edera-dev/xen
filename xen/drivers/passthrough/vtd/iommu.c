@@ -575,6 +575,14 @@ static int __must_check cf_check iommu_flush_iotlb(struct domain *d,
     }
 
     /*
+     * A dying domain's default context loses its arrays in
+     * iommu_domain_teardown(), before the p2m is torn down. It has no
+     * devices by then, so there is nothing to flush.
+     */
+    if ( !ctx->arch.vtd.iommu_dev_cnt )
+        return 0;
+
+    /*
      * No need pcideves_lock here because we have flush
      * when assign/deassign device
      */
@@ -1723,14 +1731,16 @@ static void cf_check iommu_domain_teardown(struct domain *d)
     if ( list_empty(&acpi_drhd_units) )
         return;
 
+    iommu_identity_map_teardown(d, ctx);
     ASSERT(!ctx->arch.vtd.pgd_maddr);
 
     /*
      * Its devices have been moved to dom_io by now. Return the default
-     * context's DIDs so they can be reused, but keep the arrays: the
-     * domain's p2m is only torn down after this.
+     * context's DIDs so they can be reused, and free its arrays.
      */
     intel_iommu_free_dids(ctx);
+    XFREE(ctx->arch.vtd.didmap);
+    XFREE(ctx->arch.vtd.iommu_dev_cnt);
 }
 
 static int __must_check cf_check intel_iommu_map_page(
