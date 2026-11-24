@@ -22,6 +22,11 @@ static bool has_sb_instruction(const struct arm_cpu_capabilities *entry)
 {
     return system_cpuinfo.isa64.sb;
 }
+
+static bool has_lse_atomics(const struct arm_cpu_capabilities *entry)
+{
+    return system_cpuinfo.isa64.atomic >= 2;
+}
 #endif
 
 static const struct arm_cpu_capabilities arm_features[] = {
@@ -30,6 +35,11 @@ static const struct arm_cpu_capabilities arm_features[] = {
         .desc = "Speculation barrier instruction (SB)",
         .capability = ARM_HAS_SB,
         .matches = has_sb_instruction,
+    },
+    {
+        .desc = "LSE atomic instructions",
+        .capability = ARM64_HAS_LSE_ATOMICS,
+        .matches = has_lse_atomics,
     },
 #endif
     {},
