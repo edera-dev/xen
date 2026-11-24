@@ -2,6 +2,7 @@
 #define __ASM_ARM64_CMPXCHG_H
 
 #include <xen/bug.h>
+#include <asm/arm64/lse.h>
 
 extern void __bad_xchg(volatile void *ptr, int size);
 
@@ -11,6 +12,14 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
 
 	switch (size) {
 	case 1:
+		if (system_uses_lse_atomics()) {
+			asm volatile(__LSE_PREAMBLE
+			"	swpalb	%w2, %w0, %1"
+				: "=&r" (ret), "+Q" (*(volatile u8 *)ptr)
+				: "r" (x)
+				: "memory");
+			break;
+		}
 		asm volatile("//	__xchg1\n"
 		"1:	ldxrb	%w0, %2\n"
 		"	stlxrb	%w1, %w3, %2\n"
@@ -20,6 +29,14 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
 			: "memory");
 		break;
 	case 2:
+		if (system_uses_lse_atomics()) {
+			asm volatile(__LSE_PREAMBLE
+			"	swpalh	%w2, %w0, %1"
+				: "=&r" (ret), "+Q" (*(volatile u16 *)ptr)
+				: "r" (x)
+				: "memory");
+			break;
+		}
 		asm volatile("//	__xchg2\n"
 		"1:	ldxrh	%w0, %2\n"
 		"	stlxrh	%w1, %w3, %2\n"
@@ -29,6 +46,14 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
 			: "memory");
 		break;
 	case 4:
+		if (system_uses_lse_atomics()) {
+			asm volatile(__LSE_PREAMBLE
+			"	swpal	%w2, %w0, %1"
+				: "=&r" (ret), "+Q" (*(volatile u32 *)ptr)
+				: "r" (x)
+				: "memory");
+			break;
+		}
 		asm volatile("//	__xchg4\n"
 		"1:	ldxr	%w0, %2\n"
 		"	stlxr	%w1, %w3, %2\n"
@@ -38,6 +63,14 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
 			: "memory");
 		break;
 	case 8:
+		if (system_uses_lse_atomics()) {
+			asm volatile(__LSE_PREAMBLE
+			"	swpal	%2, %0, %1"
+				: "=&r" (ret), "+Q" (*(volatile u64 *)ptr)
+				: "r" (x)
+				: "memory");
+			break;
+		}
 		asm volatile("//	__xchg8\n"
 		"1:	ldxr	%0, %2\n"
 		"	stlxr	%w1, %3, %2\n"
@@ -74,6 +107,14 @@ static inline bool __cmpxchg_case_##name(volatile void *ptr,		\
 {									\
 	unsigned long oldval;						\
 	unsigned long res;						\
+									\
+	if (system_uses_lse_atomics()) {				\
+		asm volatile(__LSE_PREAMBLE				\
+		"	cas" #sz "	%" #w "0, %" #w "2, %1"		\
+		: "+r" (*old), "+Q" (*(volatile unsigned long *)ptr)	\
+		: "r" (new));						\
+		return true;						\
+	}								\
 									\
 	do {								\
 		asm volatile("// __cmpxchg_case_" #name "\n"		\
