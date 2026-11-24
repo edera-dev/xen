@@ -494,6 +494,15 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
     unsigned int i;
     int rc;
 
+    /*
+     * Set up the lists before anything that can fail: domain teardown walks
+     * the default context's even when this fails, and iommu_alloc_pgtable()
+     * puts the root on them.
+     */
+    rc = arch_iommu_context_init(d, ctx, flags);
+    if ( rc )
+        return rc;
+
     ctx->arch.amd.didmap = xmalloc_array(domid_t, nr_amd_iommus);
     if ( !ctx->arch.amd.didmap )
         return -ENOMEM;
@@ -505,7 +514,7 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
     ctx->arch.amd.iommu_dev_cnt = xzalloc_array(unsigned long, nr_amd_iommus);
     if ( !ctx->arch.amd.iommu_dev_cnt )
     {
-        xfree(ctx->arch.amd.didmap);
+        XFREE(ctx->arch.amd.didmap);
         return -ENOMEM;
     }
 
@@ -537,14 +546,6 @@ static int cf_check amd_iommu_context_init(struct domain *d, struct iommu_contex
          ctx->arch.amd.paging_mode > amd_iommu_guest_pt_levels )
         ctx->arch.amd.paging_mode = max(amd_iommu_guest_pt_levels,
                                         (unsigned int)amd_iommu_min_paging_mode);
-
-    /*
-     * Set up the page table list first: iommu_alloc_pgtable() puts the root
-     * on it, and teardown frees what is on it.
-     */
-    rc = arch_iommu_context_init(d, ctx, flags);
-    if ( rc )
-        goto fail;
 
     if ( !ctx->opaque )
     {
@@ -772,8 +773,15 @@ static void cf_check amd_iommu_domain_destroy(struct domain *d)
 {
     struct iommu_context *ctx = iommu_default_context(d);
 
+    /*
+     * Relinquishing the domain's resources freed the default context's page
+     * tables and cleared its root, unless the domain is being destroyed
+     * because its creation failed after the context was set up.
+     */
+    while ( iommu_free_pgtables(d, ctx) == -ERESTART )
+        /* nothing */;
+
     iommu_identity_map_teardown(d, ctx);
-    ASSERT(!ctx->arch.amd.root_table);
 
     /*
      * Its devices have been moved to dom_io by now. Return the default

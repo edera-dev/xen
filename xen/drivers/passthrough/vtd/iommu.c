@@ -1261,6 +1261,15 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
     unsigned int i;
     int rc;
 
+    /*
+     * Set up the lists before anything that can fail: domain teardown walks
+     * the default context's even when this fails, and iommu_alloc_pgtable()
+     * puts the new tables on them.
+     */
+    rc = arch_iommu_context_init(d, ctx, flags);
+    if ( rc )
+        return rc;
+
     ctx->arch.vtd.didmap = xmalloc_array(domid_t, nr_iommus);
     if ( !ctx->arch.vtd.didmap )
         return -ENOMEM;
@@ -1272,7 +1281,7 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
     ctx->arch.vtd.iommu_dev_cnt = xzalloc_array(unsigned long, nr_iommus);
     if ( !ctx->arch.vtd.iommu_dev_cnt )
     {
-        xfree(ctx->arch.vtd.didmap);
+        XFREE(ctx->arch.vtd.didmap);
         return -ENOMEM;
     }
 
@@ -1313,14 +1322,6 @@ static int cf_check intel_iommu_context_init(struct domain *d, struct iommu_cont
             return -ENOSPC;
         }
     }
-
-    /*
-     * Set up the page table list first: iommu_alloc_pgtable() puts the new
-     * tables on it, and teardown frees what is on it.
-     */
-    rc = arch_iommu_context_init(d, ctx, flags);
-    if ( rc )
-        goto fail;
 
     if ( !ctx->opaque )
     {
@@ -1731,8 +1732,15 @@ static void cf_check iommu_domain_teardown(struct domain *d)
     if ( list_empty(&acpi_drhd_units) )
         return;
 
+    /*
+     * Relinquishing the domain's resources freed the default context's page
+     * tables and cleared its root, unless the domain is being destroyed
+     * because its creation failed after the context was set up.
+     */
+    while ( iommu_free_pgtables(d, ctx) == -ERESTART )
+        /* nothing */;
+
     iommu_identity_map_teardown(d, ctx);
-    ASSERT(!ctx->arch.vtd.pgd_maddr);
 
     /*
      * Its devices have been moved to dom_io by now. Return the default
