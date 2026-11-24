@@ -3,6 +3,7 @@
 #define __ASM_ARM64_SYSTEM_H
 
 #include <asm/arm64/cmpxchg.h>
+#include <asm/arm64/lse.h>
 
 /* Uses uimm4 as a bitmask to select the clearing of one or more of
  * the DAIF exception mask bits:
@@ -56,6 +57,25 @@ static inline int local_fiq_is_enabled(void)
     unsigned long flags;
     local_save_flags(flags);
     return !(flags & PSR_FIQ_MASK);
+}
+
+/* For Armv8.0 the compiler builds the builtin from an LL/SC loop. */
+static always_inline uint32_t arch_fetch_and_add(volatile uint32_t *ptr,
+                                                 uint32_t v)
+{
+    if ( system_uses_lse_atomics() )
+    {
+        uint32_t old;
+
+        asm volatile ( __LSE_PREAMBLE
+                       "ldaddal %w2, %w0, %1"
+                       : "=&r" (old), "+Q" (*ptr)
+                       : "r" (v)
+                       : "memory" );
+        return old;
+    }
+
+    return __sync_fetch_and_add(ptr, v);
 }
 
 #endif
