@@ -8,3 +8,7 @@ cpu=neoverse-n2,midr=0x410fd4f1
 # The branch history sequence Xen runs on exception entry for this core, the
 # one Linux runs for it.
 expect+=('^\(XEN\) CPU0 will use 132 loops workaround on exception entry')
+
+# If Xen stops detecting LSE, every atomic falls back to the exclusive loops,
+# which QEMU never makes livelock, so the boot would still pass.
+expect+=('^\(XEN\) enabled support for: LSE atomic instructions')
